@@ -778,6 +778,35 @@ def test_confirm_makes_a_mails_thing_his_and_the_whole_sender_sets_the_rule(make
     assert world.thing(spam).state == "cancelled"
 
 
+def test_a_thing_from_a_mail_shows_that_mails_id_so_one_mail_read_opens_it(make: Maker) -> None:
+    """ADR 0365: ``mail:<id>`` in the row, confirmed or not; an interview's reference is no id."""
+    world = make()
+    world.seed(
+        "Pay Example Cloud", "go", by="mail", source="mail", confirmed=False,
+        source_ref="18c2f9a01b7d4e55", sender="example.com",
+        start_at="2026-10-13T11:00:00-07:00",
+    )
+    world.seed(
+        "Dentist", "go", by="mail", source="mail", confirmed=True, source_ref="18c2f9a01b7d4e56",
+        sender="clinic.example", start_at="2026-10-13T15:00:00-07:00",
+    )
+    world.seed(
+        "Interview at Acme", "go", by="mail", source="mail", confirmed=True, source_ref="job:12",
+        sender="acme.example", start_at="2026-10-13T17:00:00-07:00",
+    )
+    rows = {row["what"].split(" (")[0]: row["what"] for row in _rows(world.call(at="2026-10-13"))}
+    assert rows == {
+        "Pay Example Cloud": "Pay Example Cloud (from mail:18c2f9a01b7d4e55, not confirmed yet)",
+        "Dentist": "Dentist (from mail:18c2f9a01b7d4e56)",
+        "Interview at Acme": "Interview at Acme",
+    }
+    one = world.call(action="cancel", id=world.seed(
+        "Pay Other", "go", by="mail", source="mail", confirmed=False, source_ref="18c2f9a01b7d4e57",
+        start_at="2026-10-14T11:00:00-07:00",
+    ))
+    assert one["summary"] == 'Cancelled "Pay Other" (from mail:18c2f9a01b7d4e57, not confirmed).'
+
+
 def test_a_sender_rule_needs_a_mail_and_a_said_thing_is_already_confirmed(make: Maker) -> None:
     """``whole_sender`` on something he said is refused; confirming it changes nothing."""
     world = make()
@@ -941,14 +970,25 @@ def test_no_arguments_is_today_from_now_and_tomorrow_then_late_due_and_waiting(
         ({"at": "yesterday"}, "yesterday (Sun Oct 11)"),
         ({"at": "tomorrow"}, "tomorrow (Tue Oct 13)"),
         ({"at": "Fri"}, "Fri Oct 16"),
-        ({"at": "next fri"}, "Fri Oct 16"),
-        ({"at": "Mon"}, "Mon Oct 19"),  # the next Monday, not today
+        ({"at": "next fri"}, "Fri Oct 23"),  # that day next week; it was this Friday
+        ({"at": "Mon"}, "today (Mon Oct 12)"),  # today's own weekday counts; it was Oct 19
+        ({"at": "next Mon"}, "Mon Oct 19"),
         ({"at": "2026-10-15"}, "Thu Oct 15"),
         ({"at": "2026-10-15T09:30:00"}, "Thu Oct 15"),
+        ({"at": "2026-10-15 09:30"}, "Thu Oct 15"),
         ({"at": "Fri", "to": "Sun"}, "Fri Oct 16 to Sun Oct 18"),
         ({"at": "Sat", "to": "Mon"}, "Sat Oct 17 to Mon Oct 19"),
         ({"at": "2026-10-12", "to": "2026-10-25"}, "today (Mon Oct 12) to Sun Oct 25"),
         ({"to": "Wed"}, "today (Mon Oct 12) to Wed Oct 14"),
+        # His words for a stretch, in either language (ADR 0356).
+        ({"at": "this weekend"}, "Sat Oct 17 to Sun Oct 18"),
+        ({"at": "这周末"}, "Sat Oct 17 to Sun Oct 18"),
+        ({"at": "this week"}, "today (Mon Oct 12) to Sun Oct 18"),
+        ({"at": "下周五"}, "Fri Oct 23"),
+        ({"at": "周五到周日"}, "Fri Oct 16 to Sun Oct 18"),
+        ({"at": "the 15th"}, "Thu Oct 15"),
+        ({"at": "明天"}, "tomorrow (Tue Oct 13)"),
+        ({"at": "Wed", "to": "周五"}, "Wed Oct 14 to Fri Oct 16"),
     ],
 )
 def test_a_day_or_a_span_is_named_the_way_he_says_it(
@@ -1050,9 +1090,12 @@ def test_a_search_finds_a_thing_past_sixty_days_by_its_first_time(make: Maker) -
 
 
 READ_REFUSED = [
-    ({"at": "soon"}, "a day looks like today, tomorrow, Mon or 2026-10-15, not 'soon'"),
+    ({"at": "soon"}, "schedule: I read today, tonight, tomorrow"),
+    ({"at": "soon"}, "not 'soon'"),
     ({"at": "2026-13-45"}, "not '2026-13-45'"),
-    ({"at": "2026-10-20", "to": "2026-10-19"}, "to=2026-10-19 is before at=2026-10-20"),
+    ({"at": "2026-10-20", "to": "2026-10-19"}, "'2026-10-20 to 2026-10-19' ends before it starts"),
+    ({"to": "yesterday"}, "to=yesterday is before today; to is the last day"),
+    ({"at": "past 3 days"}, "not 'past 3 days'"),  # a read looks ahead: back-only words
     ({"at": "2026-10-12", "to": "2026-10-26"}, "a span is at most 14 days"),
     ({"what": "x", "at": "today"}, "what searches everything open and the next 60 days"),
     ({"what": "x", "to": "Fri"}, 'To keep a new thing, pass action="add"'),

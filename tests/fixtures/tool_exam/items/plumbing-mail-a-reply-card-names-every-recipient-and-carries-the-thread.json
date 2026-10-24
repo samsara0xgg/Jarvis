@@ -1,0 +1,52 @@
+{
+  "id": "plumbing-mail-a-reply-card-names-every-recipient-and-carries-the-thread",
+  "layer": "plumbing",
+  "at": "2026-10-21T11:00:00-07:00",
+  "zone": "America/Vancouver",
+  "state": null,
+  "turns": [
+    {
+      "said": "reply to everyone on Sam's lunch mail that Thursday works",
+      "script": [
+        {
+          "tool_calls": [
+            {
+              "name": "mail",
+              "arguments": {
+                "action": "send",
+                "reply_to": "lunch1",
+                "reply_all": true,
+                "body": "Thursday works."
+              }
+            }
+          ]
+        }
+      ],
+      "card": {
+        "tool": "mail",
+        "letter": true,
+        "args": {
+          "to": [
+            "Sam Lee <sam@example.com>",
+            "Cc Kim Ray <kim@example.com>"
+          ],
+          "subject": "Re: Lunch Thursday?",
+          "body": "Thursday works.",
+          "threadId": "T9"
+        }
+      }
+    }
+  ],
+  "recording": "plumbing-mail-a-reply-card-names-every-recipient-and-carries-the-thread.recording.json",
+  "expect": {
+    "model_requests": [
+      1
+    ],
+    "gmail": [
+      {
+        "tool": "gmail_createDraft",
+        "count": 0
+      }
+    ]
+  }
+}

@@ -73,7 +73,6 @@ if TYPE_CHECKING:
     from jarvis.runtime import JarvisRuntime
     from jarvis.runtime.daemon.voice_boot import Voice
     from jarvis.runtime.daemon.voice_wiring import VoiceKnobs
-    from jarvis.runtime.spend_cap import SpendCapSettings
     from jarvis.surface.codex_sessions import CodexSession
     from jarvis.surface.inherent_output import InherentBroadcaster
     from jarvis.surface.phone_link import PhoneHub
@@ -107,7 +106,6 @@ def build_deps(  # noqa: PLR0913 - one declarative table: each route's reads, bo
     usage_observer: UsageObserver | None,
     codex_board: dict[str, CodexSession],
     phone_hub: PhoneHub | None,
-    spend: SpendCapSettings | None,
     v2_token: str,
     port: int,
 ) -> InherentDeps:
@@ -139,7 +137,7 @@ def build_deps(  # noqa: PLR0913 - one declarative table: each route's reads, bo
         else None
     )
     # ADR 0147: the Dashboard's mail page exists only with ``dashboard.mail.enabled``.
-    mail_home = None if runtime.mail_drafts is None else runtime.home
+    mail_home = None if runtime.mail_page is None else runtime.home
     local_zone = runtime.config.zone
     return InherentDeps(
         submit_callable=submit_callable,
@@ -280,7 +278,7 @@ def build_deps(  # noqa: PLR0913 - one declarative table: each route's reads, bo
         mail_mark_read=None if mail_home is None else functools.partial(mark_mail_read, mail_home),
         mail_trash=None if mail_home is None else functools.partial(mail_trash, mail_home),
         view_set=None if runtime.view is None else runtime.view.set,
-        **draft_deps(runtime, mail_home),
+        **draft_deps(runtime),
         **settings_notice_deps(
             notice_deps(
                 runtime.job_mail, runtime.reminders, runtime.moment,
@@ -289,7 +287,7 @@ def build_deps(  # noqa: PLR0913 - one declarative table: each route's reads, bo
                         runtime.memory.db_path, lambda: controls.quiet, runtime.moment,
                         runtime.sound_output,
                     )
-                    if spend is not None and runtime.memory is not None else None
+                    if runtime.memory is not None else None
                 ),
             ),
             runtime.settings_drift,
@@ -410,6 +408,7 @@ def build_deps(  # noqa: PLR0913 - one declarative table: each route's reads, bo
             brain_urls=brain_urls(
                 runtime.config.listen_addresses, runtime.config.listen_hosts, port,
             ),
+            event_log=runtime.runtime_paths.event_log,
         ),
         v2=InherentV2Deps(
             token_matches=functools.partial(inherent_v2_token_matches, v2_token),

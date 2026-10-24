@@ -243,7 +243,7 @@ final class Reporter {
         guard DeviceRole.senses else { return }          // an iPad senses nothing (ADR 0338)
         let cs: [Collector] = switch s {
         case .location: [LocationCollector()]
-        case .motion: [MotionCollector(), HealthCollector(.totals)]
+        case .motion: [MotionCollector(), HealthCollector(.totals), AccelRecorder()]
         case .health: [HealthCollector(.records)]
         case .focusAlarm: [FocusCollector(), PowerCollector()]
         case .headphonesCalls: [HeadphonesCollector(), CallCollector()]
@@ -296,7 +296,7 @@ final class Reporter {
             switch change {
             case .focus, .alarm, .power: .focusAlarm
             case .headphones, .call: .headphonesCalls
-            case .battery: .focusAlarm
+            case .battery, .watchBattery: .focusAlarm
             }
         }
     }

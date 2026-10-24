@@ -73,17 +73,18 @@ class ShareRequest(BaseModel):
 async def start_turn(  # noqa: PLR0913 - the phone message's fields, as `say` has them.
     deps: InherentDeps, device: str | None, text: str, ids: Sequence[str] = (),
     about: dict[str, Any] | None = None, utterance_id: str | None = None,
+    *, via: str | None = None,
 ) -> str:
     """Start the turn of ``text`` (with stored files ``ids``), written under ``device`` if any.
 
     ``about`` (ADR 0214) is the item the paired phone has open; the caller has refused it for
     anyone else. ``utterance_id`` (ADR 0262) names the message: a second call with it starts
-    no second turn.
+    no second turn. ``via`` (ADR 0401) is the watch the paired phone asked for.
     """
     if device is not None and deps.submit_as_device is not None:
         try:
             return await asyncio.to_thread(
-                deps.submit_as_device, device, text, ids, about, utterance_id,
+                deps.submit_as_device, device, text, ids, about, utterance_id, via,
             )
         except ValueError as exc:  # only a named message is checked on the way in
             raise HTTPException(status_code=422, detail=str(exc)) from exc

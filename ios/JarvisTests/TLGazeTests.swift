@@ -23,8 +23,8 @@ final class TLGazeTests: XCTestCase {
     // MARK: where it looks
 
     func testTheEyesTurnFromOneEndOfTheBarToTheOtherAsTheFingerGoesAlongIt() {
-        let under = TLGaze.toward(TLGaze.bar(x: TLSeat.home.x - 30))
-        let left = TLGaze.toward(TLGaze.bar(x: 0)), mid = TLGaze.toward(TLGaze.bar(x: TLLayout.barW / 2)), right = TLGaze.toward(TLGaze.bar(x: TLLayout.barW))
+        let under = TLGaze.toward(TLGaze.bar(x: TLSeat.home.x - TLLayout.Today.side))
+        let left = TLGaze.toward(TLGaze.bar(x: 0)), mid = TLGaze.toward(TLGaze.bar(x: TLLayout.Today.barW / 4)), right = TLGaze.toward(TLGaze.bar(x: TLLayout.Today.barW))
         XCTAssertLessThan(left.0, mid.0, "the finger goes to the right and so do her eyes")
         XCTAssertLessThan(mid.0, under.0)
         XCTAssertLessThan(under.0, right.0)
@@ -50,17 +50,17 @@ final class TLGazeTests: XCTestCase {
     }
 
     func testAFingerIsOnTheBarAtTheMiddleOfItsHeightAndNotPastItsEnds() {
-        XCTAssertEqual(TLGaze.bar(x: 0).x, 30)
-        XCTAssertEqual(TLGaze.bar(x: 190).x, 220)
-        XCTAssertEqual(TLGaze.bar(x: -40).x, 30, "a finger dragged past the left end is at it")
-        XCTAssertEqual(TLGaze.bar(x: 900).x, 30 + TLLayout.barW, "and past the right")
-        XCTAssertEqual(TLGaze.bar(x: 100).y, TLLayout.barY + TLLayout.barH / 2)
+        XCTAssertEqual(TLGaze.bar(x: 0).x, 20)
+        XCTAssertEqual(TLGaze.bar(x: 190).x, 210)
+        XCTAssertEqual(TLGaze.bar(x: -40).x, 20, "a finger dragged past the left end is at it")
+        XCTAssertEqual(TLGaze.bar(x: 900).x, 20 + TLLayout.Today.barW, "and past the right")
+        XCTAssertEqual(TLGaze.bar(x: 100).y, TLLayout.Today.barY + TLLayout.Today.barH / 2)
     }
 
     func testARowIsWhereItsWordsBeginHalfWayDownItsLineAndMovesUpAsTheListGoes() {
         let a = TLGaze.row(top: 100, height: 44, scrolled: 0), b = TLGaze.row(top: 100, height: 44, scrolled: 60)
-        XCTAssertEqual(a.x, 30 + TLColumns.text + 60)
-        XCTAssertEqual(a.y, TLLayout.listTop + 122)
+        XCTAssertEqual(a.x, 20 + TLColumns.text + 60)
+        XCTAssertEqual(a.y, TLLayout.Today.listTop + 122)
         XCTAssertEqual(a.x, b.x)
         XCTAssertEqual(a.y - b.y, 60, "a list scrolled up by 60 pt has the row 60 pt higher")
     }

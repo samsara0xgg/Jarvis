@@ -74,18 +74,19 @@ struct TLTidySweep: View {
     let scene: TLBarScene
     let rects: [CGRect]                 // where the bar draws its pieces
     @Environment(\.tlBarWidth) private var bw
+    @Environment(\.tlBarHeight) private var bh
     @State private var going = false
     private let band = 130.0, period = 2.2, sweep = 1.6
 
     var body: some View {
         let lit = zip(scene.pieces, rects).filter { TLPaint.look($0.0.fill) != nil }.map(\.1)
         LinearGradient(colors: [.clear, Color.white.opacity(0.4), .clear], startPoint: .leading, endPoint: .trailing)
-            .frame(width: band, height: TLLayout.barH)
+            .frame(width: band, height: bh)
             .offset(x: going ? -band + (bw + band) * period / sweep : -band)
-            .frame(width: bw, height: TLLayout.barH, alignment: .leading)
+            .frame(width: bw, height: bh, alignment: .leading)
             .mask {
                 Canvas { ctx, _ in for r in lit { ctx.fill(Path(r), with: .color(.black)) } }
-                    .frame(width: bw, height: TLLayout.barH)
+                    .frame(width: bw, height: bh)
             }
             .onAppear { withAnimation(.easeInOut(duration: period).repeatForever(autoreverses: false)) { going = true } }
             .allowsHitTesting(false).accessibilityHidden(true)

@@ -1,0 +1,38 @@
+{
+  "id": "mail-read-two-after-a-second-search-is-that-searchs-second-row",
+  "tool": "mail",
+  "said": "open the second one",
+  "at": "2026-10-21T11:00:00-07:00",
+  "zone": "America/Vancouver",
+  "state": null,
+  "setup": [
+    {
+      "tool": "mail",
+      "args": {
+        "action": "search",
+        "query": "other"
+      }
+    },
+    {
+      "tool": "mail",
+      "args": {
+        "action": "search",
+        "query": "plan"
+      }
+    }
+  ],
+  "args": {
+    "action": "read",
+    "message": "2"
+  },
+  "recording": "mail-read-two-after-a-second-search-is-that-searchs-second-row.recording.json",
+  "expect": {
+    "result": [
+      {
+        "path": "message",
+        "op": "eq",
+        "value": "s2"
+      }
+    ]
+  }
+}

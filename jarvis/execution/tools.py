@@ -32,7 +32,6 @@ from __future__ import annotations
 
 import base64
 import binascii
-import codecs
 import ipaddress
 import json
 import logging
@@ -43,16 +42,12 @@ import subprocess
 import sys
 import tempfile
 import threading
-import time
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
-from html.parser import HTMLParser
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
-from urllib.parse import urljoin, urlsplit, urlunsplit
-
-import httpx
+from urllib.parse import urlsplit, urlunsplit
 
 from jarvis.execution.path_resolver import TargetKind, load_file_targets_config
 from jarvis.execution.path_resolver import resolve as resolve_path_target
@@ -67,7 +62,15 @@ from jarvis.shared import (
 from jarvis.shared.action_admission import action_admission_guard
 from jarvis.shared.clock import Clock, SystemClock
 from jarvis.shared.device_link import DeviceCallError
-from jarvis.shared.receipts import FailureKind, Receipt, derive, failure_kind, only_reads
+from jarvis.shared.receipts import (
+    Completed,
+    FailureKind,
+    Receipt,
+    call_asks,
+    derive,
+    failure_kind,
+    only_reads,
+)
 from jarvis.shared.text import truncate_utf8
 from jarvis.state.authorized_dispatch_outbox import (
     ConfirmationRevalidationError,
@@ -91,10 +94,10 @@ if TYPE_CHECKING:
     from jarvis.execution.around import Surroundings
     from jarvis.execution.bus_tool import RideControl
     from jarvis.execution.highlight_tool import HighlightMarker
-    from jarvis.execution.mail_draft_tool import DraftStore
     from jarvis.execution.night_tools import NightControl
-    from jarvis.execution.transit_tool import TransitOffers
+    from jarvis.execution.transit_tool import BusTimes, TransitOffers
     from jarvis.execution.weather_tool import WeatherRequest
+    from jarvis.execution.web_search_tool import DeepSearch
     from jarvis.shared import Event
     from jarvis.shared.device_link import DeviceLink
     from jarvis.shared.here import Here, HereSource
@@ -366,8 +369,14 @@ class Tool:
     writes by argument; ``None`` keeps ``read_only`` for every call."""
     supersedes: Mapping[str, str] = field(default_factory=dict)
     """Deferred tools whose job this one now does, each with how to call this one instead
-    (``{"mcp__gmail__gmail_search": "mail(query=...)"}``). While this tool is on the menu,
-    ``tool_search`` loads none of them and says to call this one (ADR 0242)."""
+    (``{"mcp__gmail__gmail_search": 'mail(action="search", query=...)'}``). While this tool is
+    on the menu, ``tool_search`` loads none of them and says to call this one (ADR 0242)."""
+    effect: Callable[[Mapping[str, Any]], RiskLevel] | None = None
+    """The level of a call with these arguments (ADR 0361), for a tool whose calls differ: L0, L1
+    or L3. ``risk_level`` is then the highest of them. ``None``: one level for every call."""
+    complete: Callable[[Mapping[str, Any], ToolContext], Mapping[str, Any]] | None = None
+    """Before a call that needs a card is frozen (ADR 0361): the full arguments it will run
+    with, or a :class:`ToolError` saying why it cannot. It only reads."""
 
 
 def tool(  # noqa: PLR0913 — one keyword per Tool field.
@@ -472,6 +481,14 @@ def _fit_result(payload: dict[str, Any], cap: int) -> dict[str, Any]:
     return payload
 
 
+def _unexpected(tool_name: str, exc: Exception) -> str:
+    """What the model is told when a tool's code failed in a way the tool did not name."""
+    return (
+        f"{tool_name} failed unexpectedly ({type(exc).__name__}: {exc}); "
+        "tell him it failed, and do not repeat the same call"
+    )
+
+
 def _call_reads(tool_def: Tool, arguments: Mapping[str, Any]) -> bool:
     """Whether this call only reads; a ``reads`` that cannot take these arguments means a write."""
     try:
@@ -525,10 +542,7 @@ def _observe(  # noqa: PLR0913 — the four handler arguments plus the definitio
         # The terminal row is the dispatcher's whatever the handler did.
         LOGGER.exception("tool %s raised", tool_def.name)
         error = "unexpected_error"
-        message = (
-            f"{tool_def.name} failed unexpectedly ({type(exc).__name__}: {exc}); "
-            "tell him it failed, and do not repeat the same call"
-        )
+        message = _unexpected(tool_def.name, exc)
     if error is not None:
         tool_output = tool_result(
             _fit_result({"error": message, "code": error, "kind": kind}, cap),
@@ -1464,7 +1478,7 @@ def _strict_ip_literal(
     return False, None
 
 
-def _resolve_hostname_ips(host: str) -> list[ipaddress.IPv4Address | ipaddress.IPv6Address]:
+def resolve_hostname_ips(host: str) -> list[ipaddress.IPv4Address | ipaddress.IPv6Address]:
     """Resolve `host` to its address(es), literal IPs parsed directly.
 
     Everything else goes via `socket.getaddrinfo` (real DNS). This is
@@ -1591,7 +1605,7 @@ def _parse_egress_url(url: str) -> tuple[_EgressUrlParts | None, str]:
     `parts.canonical` is rebuilt from ONLY the parsed scheme/host/port/
     path/query — userinfo and fragment are dropped unconditionally,
     never forwarded to `open` or `httpx`. `validate_egress_url` and
-    `_normalize_egress_url` both call this SAME function, so the string
+    `normalize_egress_url` both call this SAME function, so the string
     a caller ends up acting on is always byte-identical to the one the
     guard's scheme/address checks ran against.
 
@@ -1635,7 +1649,7 @@ def _parse_egress_url(url: str) -> tuple[_EgressUrlParts | None, str]:
     return _EgressUrlParts(scheme=scheme, host=host, port=port, canonical=canonical), ""
 
 
-def _normalize_egress_url(url: str) -> str | None:
+def normalize_egress_url(url: str) -> str | None:
     """Canonical re-serialized form of an already-guard-allowed `url`.
 
     The ONLY string a call site may act on (ADR-0011 §12 MUST-FIX 1/2
@@ -1653,7 +1667,7 @@ def validate_egress_url(
     *,
     resolver: Callable[
         [str], Sequence[ipaddress.IPv4Address | ipaddress.IPv6Address]
-    ] = _resolve_hostname_ips,
+    ] = resolve_hostname_ips,
 ) -> tuple[bool, str]:
     """SSRF egress guard shared by `web_fetch` and `open_url` (ADR-0011 D5).
 
@@ -1678,7 +1692,7 @@ def validate_egress_url(
     Callers that walk redirects (`web_fetch`) MUST call this again on
     every hop's `Location` — this function only ever sees one URL. A
     caller that gets `allowed=True` back MUST fetch/open
-    `_normalize_egress_url(url)`, never `url` itself (see
+    `normalize_egress_url(url)`, never `url` itself (see
     `_parse_egress_url`'s docstring for why).
     """
     parts, reason = _parse_egress_url(url)
@@ -1699,18 +1713,13 @@ def validate_egress_url(
     return True, ""
 
 
-# --- web_search ----------------------------------------------------------------
+# --- web_search / web_fetch defaults ---------------------------------------------
 
 DEFAULT_WEB_SEARCH_MAX_RESULTS: Final[int] = 5
 """Default `max_results` absent both a request argument and a
 `tools.web.search_max_results` config override (ADR-0011 D7). Public so
 `jarvis.runtime` can fall back to it — same single-source-of-truth
 reasoning as `DEFAULT_OBSIDIAN_VAULT_ROOT` (NIT-FIX 8, ADR-0011 §12)."""
-
-_WEB_SEARCH_MAX_RESULTS_CAP: Final[int] = 8
-"""Hard ceiling (ADR-0011 D5) — NOT configurable, unlike the default
-above. Applies regardless of what the request argument or config asks
-for."""
 
 DEFAULT_WEB_SEARCH_PROVIDER: Final[str] = "ddgs"
 """Default `tools.web.search_provider`.
@@ -1724,16 +1733,6 @@ Te3815a16 burned three of its five tool-loop iterations on it and got
 (with `search_api_key_env` set) and search returns page text directly,
 which is both better grounded and cheaper in loop iterations."""
 
-_WEB_SEARCH_RESULT_TEXT_CAP: Final[int] = 1500
-"""Per-result text budget, in characters, requested from a text-bearing
-provider and enforced locally regardless of what it returns. Bounds any
-ONE result; `_WEB_SEARCH_TOTAL_MAX_BYTES` bounds the sum."""
-
-_WEB_SEARCH_TOTAL_MAX_BYTES: Final[int] = 8192
-"""Aggregate cap across all rendered rows — same 8 KiB order as every
-other tool's output cap. Without it, 8 results x full page text would
-dwarf the rest of the decision packet."""
-
 DEFAULT_WEB_TIMEOUT_S: Final[float] = 20.0
 """Shared `web_search`/`web_fetch` timeout absent a `tools.web.timeout_s`
 config override. ADR-0011 D5's prose gives the two tools DIFFERENT
@@ -1742,381 +1741,6 @@ timeouts (15s / 20s) but D7's shipped config schema has only ONE
 `search_max_results`/`fetch_max_bytes` siblings, which reads as intent
 to share one knob. Step 6 resolves the conflict by applying the single
 configured value to both tools (ADR-0011 §12 errata candidate)."""
-
-_WEB_SEARCH_INPUT_SCHEMA: Final[Mapping[str, Any]] = {
-    "type": "object",
-    "properties": {
-        "query": {
-            "type": "string",
-            "description": "Search query text.",
-        },
-        "max_results": {
-            "type": "integer",
-            "minimum": 1,
-            "description": "Maximum number of results to return. Default 5, capped at 8. "
-            "Only for depth quick.",
-        },
-        "depth": {
-            "type": "string",
-            "enum": ["quick", "deep"],
-            "description": (
-                "quick: one fact or a quick check, a few seconds. "
-                "deep: about half a minute; searches many sources and cross-checks them."
-            ),
-        },
-    },
-    "required": ["query", "depth"],
-}
-
-_WEB_DEEP_SUMMARY_MAX_BYTES: Final[int] = 8192
-"""Cap on a deep search's researched summary — the same 8 KiB order as
-`_WEB_SEARCH_TOTAL_MAX_BYTES`, so a long brief cannot dwarf the decision packet."""
-
-
-@dataclass(frozen=True)
-class DeepFindings:
-    """What one deep web search found: a researched summary and where it came from."""
-
-    summary: str
-    sources: tuple[tuple[str, str], ...]  # (title, url)
-    searches: int
-    complete: bool  # False: the provider stopped before it finished its brief
-
-
-def _ddgs_search_backend(
-    query: str,
-    max_results: int,
-    *,
-    timeout_s: float,
-) -> list[tuple[str, str, str]]:
-    """Real DuckDuckGo backend via the `ddgs` package (ADR-0011 D5).
-
-    One function, as D5 explicitly asks for, so a keyed API is a
-    config-sized swap later — nothing above this function knows or
-    cares that DuckDuckGo is behind it. Returns `(title, url, snippet)`
-    tuples. The acceptance script monkeypatches this name directly
-    rather than mocking `ddgs` internals, so it never makes a real
-    network call.
-    """
-    # Imported here, not at module top, so a `ddgs` import error surfaces as
-    # this tool's own error observation rather than failing
-    # `import jarvis.execution.tools` for every caller.
-    from ddgs import DDGS  # noqa: PLC0415
-
-    # NIT-FIX 8, ADR-0011 §12: `int(timeout_s)` floors any sub-1s config
-    # value to 0 — `max(1, ...)` keeps a deliberately-short timeout at a
-    # sane floor instead of silently becoming "no timeout" / "instant
-    # timeout" depending on how `ddgs` treats `0`.
-    with DDGS(timeout=max(1, int(timeout_s))) as client:
-        rows = client.text(query, max_results=max_results)
-    return [
-        (str(row.get("title", "")), str(row.get("href", "")), str(row.get("body", "")))
-        for row in rows
-    ]
-
-
-def _collapse_ws(text: str) -> str:
-    """Squeeze runs of whitespace to single spaces.
-
-    Extracted page text arrives with the source document's newlines and
-    indentation intact. Those bytes count against
-    `_WEB_SEARCH_RESULT_TEXT_CAP` while carrying no meaning, and one
-    result rendered across many lines would also break the one-row-per-
-    result shape the results list promises.
-    """
-    return " ".join(text.split())
-
-
-class _KeyedSearchBackend(Protocol):
-    """A `web_search` backend that needs a credential (Exa, Tavily)."""
-
-    def __call__(
-        self, query: str, max_results: int, *, timeout_s: float, api_key: str,
-    ) -> list[tuple[str, str, str]]: ...
-
-
-def _exa_search_backend(
-    query: str,
-    max_results: int,
-    *,
-    timeout_s: float,
-    api_key: str,
-) -> list[tuple[str, str, str]]:
-    """Exa `/search` with page text inlined (`contents.text`).
-
-    The point of a text-bearing provider is that ONE tool call answers
-    "what does the web say about X" — the LLM does not have to spend a
-    second tool-loop iteration on `web_fetch` to see any actual content.
-    That matters directly: the loop bound is 5, and the search-then-
-    fetch dance is what exhausted it in turn Te3815a16.
-
-    `highlights` (Exa's query-relevant passages) is preferred over
-    `text` (the page from its top) for the same reason Tavily's
-    `content` beats its `raw_content`: against a per-result budget, a
-    page's opening bytes are nav chrome, not the answer. That reasoning
-    is EVIDENCED for Tavily and only INFERRED here — this backend has
-    never run against a real Exa key, so treat the field preference as
-    unverified.
-    """
-    response = httpx.post(
-        "https://api.exa.ai/search",
-        headers={"x-api-key": api_key},
-        json={
-            "query": query,
-            "numResults": max_results,
-            "contents": {
-                "text": {"maxCharacters": _WEB_SEARCH_RESULT_TEXT_CAP},
-                "highlights": True,
-            },
-        },
-        timeout=timeout_s,
-    )
-    response.raise_for_status()
-    payload = response.json()
-    rows = payload.get("results") if isinstance(payload, dict) else None
-    if not isinstance(rows, list):
-        return []
-    return [
-        (
-            str(row.get("title") or ""),
-            str(row.get("url") or ""),
-            _exa_row_text(row),
-        )
-        for row in rows
-        if isinstance(row, dict)
-    ]
-
-
-def _exa_row_text(row: Mapping[str, Any]) -> str:
-    """Prefer an Exa row's `highlights` over its `text` (see caller)."""
-    highlights = row.get("highlights")
-    if isinstance(highlights, list) and highlights:
-        return " … ".join(str(h) for h in highlights if h)
-    return str(row.get("text") or "")
-
-
-def _tavily_search_backend(
-    query: str,
-    max_results: int,
-    *,
-    timeout_s: float,
-    api_key: str,
-) -> list[tuple[str, str, str]]:
-    """Tavily `/search`, taking its relevance-selected `content`.
-
-    `content` is Tavily's query-relevant extract; `raw_content` is the
-    whole parsed page. `raw_content` was tried first and was WRONG:
-    against a per-result budget of `_WEB_SEARCH_RESULT_TEXT_CAP`, a
-    page's opening bytes are nav chrome, so the budget bought
-    "[Skip to content](#main) ![logo]…" while `content` for the same
-    result read "operated by Air Canada and China Eastern Airlines and
-    the flight time is 13 hours and 50 minutes" — the actual answer, at
-    ~1.3 KB. So `content` is requested and preferred, `raw_content` is
-    not asked for at all (it is billed payload we would discard), and
-    the fallback stays only for a row that somehow carries one and not
-    the other. A result whose full page IS needed can be handed to
-    `web_fetch` — which, since the extract-then-cap fix, can read it.
-    """
-    response = httpx.post(
-        "https://api.tavily.com/search",
-        headers={"Authorization": f"Bearer {api_key}"},
-        json={"query": query, "max_results": max_results},
-        timeout=timeout_s,
-    )
-    response.raise_for_status()
-    payload = response.json()
-    rows = payload.get("results") if isinstance(payload, dict) else None
-    if not isinstance(rows, list):
-        return []
-    return [
-        (
-            str(row.get("title") or ""),
-            str(row.get("url") or ""),
-            str(row.get("content") or row.get("raw_content") or ""),
-        )
-        for row in rows
-        if isinstance(row, dict)
-    ]
-
-
-class _SearchBackend(Protocol):
-    """Uniform call shape every `web_search` backend is adapted to."""
-
-    def __call__(
-        self, query: str, max_results: int, *, timeout_s: float,
-    ) -> list[tuple[str, str, str]]: ...
-
-
-def _resolve_search_backend(
-    provider: str, api_key: str | None,
-) -> tuple[_SearchBackend, str]:
-    """Pick the `web_search` backend, returning `(backend, name_actually_used)`.
-
-    A keyed provider named without its key does NOT fail boot — it warns
-    and degrades to `ddgs`, because losing web search entirely is worse
-    than losing result quality. The degrade is never silent: it is
-    logged here AND the provider actually used is reported in every
-    `web_search` result payload, so the event log shows which backend
-    answered rather than leaving it to be inferred.
-    """
-    normalized = provider.strip().lower()
-    keyed: Mapping[str, _KeyedSearchBackend] = {
-        "exa": _exa_search_backend,
-        "tavily": _tavily_search_backend,
-    }
-    if normalized in keyed:
-        if not api_key:
-            LOGGER.warning(
-                "tools.web.search_provider=%r but its search_api_key_env names an "
-                "unset/empty variable — degrading to the ddgs backend",
-                normalized,
-            )
-            return _call_ddgs, "ddgs"
-        return _with_api_key(keyed[normalized], api_key), normalized
-    if normalized != "ddgs":
-        LOGGER.warning(
-            "unknown tools.web.search_provider=%r — using the ddgs backend",
-            provider,
-        )
-    return _call_ddgs, "ddgs"
-
-
-def _call_ddgs(
-    query: str, max_results: int, *, timeout_s: float,
-) -> list[tuple[str, str, str]]:
-    """Adapt `_ddgs_search_backend` to `_SearchBackend`.
-
-    Deliberately a late-bound module-global lookup rather than a
-    captured function object: `_ddgs_search_backend`'s own docstring
-    promises the acceptance script can monkeypatch that NAME, and
-    capturing it at registry-build time would quietly break that seam.
-    """
-    return _ddgs_search_backend(query, max_results, timeout_s=timeout_s)
-
-
-def _with_api_key(backend: _KeyedSearchBackend, api_key: str) -> _SearchBackend:
-    """Close a keyed backend over its credential, yielding a `_SearchBackend`."""
-
-    def _call(
-        query: str, max_results: int, *, timeout_s: float,
-    ) -> list[tuple[str, str, str]]:
-        return backend(query, max_results, timeout_s=timeout_s, api_key=api_key)
-
-    return _call
-
-
-class DeepSearch(Protocol):
-    """Injected deep-research seam for `web_search` depth deep.
-
-    L4 cannot import `jarvis.decision.llm.LLMClient` — sibling layers under
-    `.importlinter` — the same seam `VisionClient` is. `jarvis.runtime` builds
-    the real implementation around Anthropic's own web search server tool and
-    binds it into `build_default_registry`. One question in, findings out; any
-    failure is raised, and the handler turns it into an error observation.
-    """
-
-    def research(self, query: str) -> DeepFindings:
-        """Search widely, cross-check, and return the brief with its sources."""
-        ...
-
-
-def _deep_web_search(deep_search: DeepSearch, query: str) -> dict[str, Any]:
-    """One deep search as the tool's result payload."""
-    try:
-        findings = deep_search.research(query)
-    except Exception as exc:
-        # The type only in the message: a provider error can carry request headers or a key.
-        msg = (
-            f"web_search: the deep search failed ({type(exc).__name__}); try a quick "
-            "search, or tell him the search failed"
-        )
-        raise ToolError(msg, code="web_search_backend_error") from exc
-    summary = "".join(_cap_rows_total_bytes([findings.summary], _WEB_DEEP_SUMMARY_MAX_BYTES))
-    payload: dict[str, Any] = {
-        "summary": summary,
-        "sources": [
-            f"{i}. {title} — {url}" for i, (title, url) in enumerate(findings.sources, start=1)
-        ],
-        "provider": "anthropic",
-        "depth": "deep",
-        "searches": findings.searches,
-    }
-    if not findings.complete:
-        payload["incomplete"] = True
-    return payload
-
-
-def _make_web_search(
-    *,
-    default_max_results: int,
-    timeout_s: float,
-    provider: str = DEFAULT_WEB_SEARCH_PROVIDER,
-    api_key: str | None = None,
-    deep_search: DeepSearch | None = None,
-) -> Tool:
-    """Bind `tools.web.{search_max_results,timeout_s,search_provider}` into `web_search`."""
-    backend, provider_used = _resolve_search_backend(provider, api_key)
-
-    def web_search(args: Mapping[str, Any], _ctx: ToolContext) -> dict[str, Any]:
-        query = args.get("query")
-        if not isinstance(query, str) or not query.strip():
-            msg = f"web_search: query must be the words to search for (got {query!r})"
-            raise ToolError(msg, code="invalid_arguments")
-        deep = args.get("depth") == "deep"
-        if deep and deep_search is not None:
-            return _deep_web_search(deep_search, query)
-        max_results = default_max_results
-        max_results_arg = args.get("max_results")
-        if (
-            isinstance(max_results_arg, (int, float))
-            and not isinstance(max_results_arg, bool)
-            and math.isfinite(max_results_arg)
-        ):
-            # `json.loads` accepts Infinity/NaN on the tool-arg path and `int(inf)`
-            # raises; a malformed value means "use the default" (ADR-0011 §12).
-            max_results = int(max_results_arg)
-        if deep:  # no deep backend on this build: the widest quick search is the nearest thing
-            max_results = _WEB_SEARCH_MAX_RESULTS_CAP
-        max_results = max(1, min(max_results, _WEB_SEARCH_MAX_RESULTS_CAP))
-        try:
-            rows = backend(query, max_results, timeout_s=timeout_s)
-        except Exception as exc:
-            # ddgs anti-bot churn and keyed 401/429 are routine (ADR-0011 §5):
-            # name the backend, no in-handler retry.
-            msg = (
-                f"web_search: the {provider_used} search did not answer ({exc}); tell him the "
-                "search failed, or try web_fetch on a page he names"
-            )
-            raise ToolError(msg, code="web_search_backend_error") from exc
-        # Naming the backend keeps the `_resolve_search_backend` degrade visible
-        # in the event log instead of inferable; `depth` does the same for a deep
-        # request that ran quick.
-        return {
-            "results": [
-                f"{i}. {title} — {url} — {_collapse_ws(text)[:_WEB_SEARCH_RESULT_TEXT_CAP]}"
-                for i, (title, url, text) in enumerate(rows, start=1)
-            ],
-            "provider": provider_used,
-            "depth": "quick",
-        }
-
-    return Tool(
-        name="web_search",
-        description=(
-            "Search the web. depth quick returns numbered title — url — text rows. "
-            "depth deep takes about half a minute: it searches many sources, cross-checks them "
-            "and returns a researched summary with its sources. Use deep when he wants a "
-            "recommendation or a choice among options, a comparison, anything that costs "
-            "money or is booked, when sources may disagree or the stakes are high, or when he "
-            "asks you to look carefully; also after a quick search came back thin or "
-            "contradictory. Otherwise quick."
-        ),
-        input_schema=_WEB_SEARCH_INPUT_SCHEMA,
-        handler=web_search,
-        allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
-        risk_level="L1",
-        read_only=True,
-    )
 
 
 # --- web_fetch -----------------------------------------------------------------
@@ -2149,568 +1773,6 @@ This is the 8 KiB context bound the old `fetch_max_bytes` was really
 reaching for. Capping extracted text (rather than raw bytes) is what
 makes the number mean what it says: 8 KiB of readable prose, not 8 KiB
 of markup that may contain none."""
-
-_WEB_FETCH_HEADERS: Final[Mapping[str, str]] = {
-    # httpx's default UA (`python-httpx/x.y.z`) is refused outright by a
-    # meaningful slice of the web. Wikipedia answers it with a bare 403
-    # whose body reads "Please set a user-agent and respect our robot
-    # policy" — which reached the LLM as an unexplained failure on an
-    # ordinary encyclopedia lookup.
-    #
-    # Self-identifying (a real name plus a contact URL) is what the
-    # sites asking for a UA actually want, and it keeps this honest:
-    # `web_fetch` does not pretend to be a browser, and pairing a
-    # browser UA with a client that runs no JS earns bot-detection
-    # blocks rather than avoiding them.
-    "User-Agent": "Jarvis/1.0 (+https://github.com/alllllenshi/jarvis)",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.5",
-    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-}
-"""Request headers for every `web_fetch` hop (see the UA note above)."""
-
-_WEB_FETCH_MAX_REDIRECTS: Final[int] = 3
-"""Hard ceiling on redirects FOLLOWED (ADR-0011 D5: "at most 3
-redirects") — not configurable. A 4th redirect response is refused
-rather than followed; up to `_WEB_FETCH_MAX_REDIRECTS` + 1 HTTP
-requests are made in total (the initial request plus each followed
-redirect)."""
-
-_WEB_FETCH_INPUT_SCHEMA: Final[Mapping[str, Any]] = {
-    "type": "object",
-    "properties": {
-        "url": {
-            "type": "string",
-            "description": "The http(s) URL to fetch.",
-        },
-    },
-    "required": ["url"],
-}
-
-_REDIRECT_STATUS_CODES: Final[frozenset[int]] = frozenset({301, 302, 303, 307, 308})
-
-
-def _parse_content_length(raw: str | None) -> int | None:
-    """Parse a `Content-Length` header value, or `None` if absent/junk."""
-    if raw is None:
-        return None
-    try:
-        value = int(raw.strip())
-    except ValueError:
-        return None
-    return value if value >= 0 else None
-
-
-@dataclass(frozen=True)
-class _HopResponse:
-    """One non-redirect-following HTTP response (ADR-0011 D5 `web_fetch`)."""
-
-    status_code: int
-    location: str | None
-    content_type: str | None
-    body: bytes
-    total_bytes: int
-    total_bytes_exact: bool = True
-    """False iff `total_bytes` is a lower bound, not a measured total —
-    the drain stopped at `max_bytes` (or the fetch deadline) on a
-    response with no usable `Content-Length` (MUST-FIX 3, ADR-0011
-    §12). `body` itself is always the true prefix actually read,
-    capped at `max_bytes` regardless of this flag."""
-
-
-class _FetchDeadlineExceededError(Exception):
-    """Raised when the overall wall-clock fetch budget elapses mid-drain.
-
-    MUST-FIX 3, ADR-0011 §12. Raised by `_http_get_one_hop`, caught by
-    `_fetch_url_backend` — never escapes this module.
-    """
-
-
-def _http_get_one_hop(
-    url: str, *, timeout_s: float, max_bytes: int, deadline: float,
-) -> _HopResponse:
-    """Issue ONE GET with redirects disabled, streamed, body capped at `max_bytes`.
-
-    The caller (`_fetch_url_backend`) owns redirect-following — this
-    function never does, so every hop's `Location` can be re-validated
-    by the SSRF guard before it is followed (ADR-0011 D5 point 5).
-
-    The drain STOPS as soon as `max_bytes` is collected (MUST-FIX 3,
-    ADR-0011 §12) — `httpx`'s `timeout` is a per-read timeout, not a
-    wall-clock budget, so draining the FULL body (as this used to do,
-    to report an exact `total_bytes`) let a slow/adversarial server
-    hold the connection open indefinitely while trickling data, and let
-    a huge body cost full transfer time to deliver a capped prefix.
-    `deadline` (an absolute `time.monotonic()` value, shared across
-    every hop by `_fetch_url_backend`) is also checked every chunk, so
-    a slow-loris server that never triggers `httpx`'s own read timeout
-    still gets cut off.
-
-    `total_bytes`/`total_bytes_exact`: when the server sends a
-    `Content-Length`, that is trusted as the exact total (matches what
-    every HTTP client does). Otherwise, if the drain reached the cap or
-    deadline before the stream ended, `total_bytes` is only the number
-    of bytes actually read off the wire — a true LOWER BOUND, reported
-    as such via `total_bytes_exact=False` — never a claimed exact count
-    for data that was never measured.
-
-    This is the one seam the acceptance script monkeypatches
-    (`tools._http_get_one_hop`) to exercise `_fetch_url_backend`'s
-    redirect-walking + guard-revalidation + truncation logic without a
-    real socket — same "substitute a seam" shape Step 5 used for
-    `vault_root`.
-    """
-    with (
-        httpx.Client(timeout=timeout_s, follow_redirects=False, trust_env=False) as client,
-        client.stream("GET", url, headers=_WEB_FETCH_HEADERS) as response,
-    ):
-        content_type = response.headers.get("content-type")
-        location = response.headers.get("location")
-        declared_length = _parse_content_length(response.headers.get("content-length"))
-        chunks: list[bytes] = []
-        collected = 0
-        stopped_early = False
-        for chunk in response.iter_bytes():
-            if collected < max_bytes:
-                chunks.append(chunk[: max_bytes - collected])
-            collected += len(chunk)
-            if collected >= max_bytes:
-                stopped_early = True
-                break
-            if time.monotonic() >= deadline:
-                # Distinct from the `max_bytes` cap above: reaching the
-                # cap is a normal, expected truncation of a large body;
-                # running out of wall-clock time mid-drain means the
-                # server is too slow (slow-loris) — surfaced as an
-                # error by `_fetch_url_backend`, not a truncated
-                # success.
-                msg = f"exceeded the fetch deadline after {collected} bytes"
-                raise _FetchDeadlineExceededError(msg)
-        body = b"".join(chunks)
-        if declared_length is not None:
-            total_bytes, total_bytes_exact = declared_length, True
-        elif stopped_early:
-            total_bytes, total_bytes_exact = collected, False
-        else:
-            total_bytes, total_bytes_exact = collected, True
-        return _HopResponse(
-            status_code=response.status_code,
-            location=location,
-            content_type=content_type,
-            body=body,
-            total_bytes=total_bytes,
-            total_bytes_exact=total_bytes_exact,
-        )
-
-
-@dataclass(frozen=True)
-class _FetchOutcome:
-    """Result of `_fetch_url_backend` — success fields XOR error fields."""
-
-    ok: bool
-    status_code: int = 0
-    content_type: str | None = None
-    body: bytes = b""
-    total_bytes: int = 0
-    total_bytes_exact: bool = True
-    final_url: str = ""
-    error_code: str | None = None
-    error_message: str | None = None
-
-
-def _fetch_url_backend(  # noqa: PLR0911 — one linear guard/canonicalize/fetch/redirect loop; each return is a distinct named terminal outcome (`_FetchOutcome.error_code`), same rationale as the other D5 handlers' error exits — splitting them apart would scatter the outcomes from the loop that produces them.
-    url: str,
-    *,
-    timeout_s: float,
-    max_bytes: int,
-    max_redirects: int = _WEB_FETCH_MAX_REDIRECTS,
-    resolver: Callable[
-        [str], Sequence[ipaddress.IPv4Address | ipaddress.IPv6Address]
-    ]
-    | None = None,
-) -> _FetchOutcome:
-    """Guarded GET with manual redirect walking (ADR-0011 D5).
-
-    Validates EVERY hop — the initial `url` and each `Location` header —
-    through `validate_egress_url` before issuing that hop's request,
-    and always fetches `_normalize_egress_url`'s canonical form of that
-    hop, never the raw `Location`/input string (ADR-0011 §12 MUST-FIX
-    1/2 root cause — the validated string must be the used string).
-    This is what stops the classic bypass: a public URL that 302s to
-    `http://127.0.0.1:8006/`. A guard refusal at any hop, and exceeding
-    `max_redirects`, both return `ok=False` with a named `error_code`;
-    neither ever raises past this function.
-
-    A single wall-clock `deadline` (MUST-FIX 3, ADR-0011 §12) is set
-    ONCE from `timeout_s` and shared across every hop, including the
-    guard/canonicalization work between hops — no redirect chain can
-    make one `web_fetch` call run longer than `timeout_s` total,
-    contrary to the previous per-hop-only `httpx` timeout.
-
-    `resolver` defaults to `None`, resolved to the module-level
-    `_resolve_hostname_ips` INSIDE the function body rather than as a
-    literal default value — a default value is bound once at `def`
-    time, so monkeypatching `tools._resolve_hostname_ips` afterward
-    (the acceptance script's hermetic seam for every caller that does
-    not pass `resolver` explicitly, e.g. `web_fetch`'s registered
-    handler) would silently have no effect against a frozen default.
-    """
-    resolve = resolver if resolver is not None else _resolve_hostname_ips
-    deadline = time.monotonic() + timeout_s
-    current = url
-    hops_followed = 0
-    while True:
-        allowed, reason = validate_egress_url(current, resolver=resolve)
-        if not allowed:
-            return _FetchOutcome(
-                ok=False,
-                error_code="ssrf_guard_refused",
-                error_message=(
-                    f"web_fetch: {current!r} was refused ({reason}); only public http(s) "
-                    "pages can be fetched"
-                ),
-            )
-
-        normalized = _normalize_egress_url(current)
-        if normalized is None:
-            # Should be unreachable — `validate_egress_url` just
-            # allowed `current` via the identical parser — but refuse
-            # rather than ever fall back to the raw string.
-            return _FetchOutcome(
-                ok=False,
-                error_code="ssrf_guard_refused",
-                error_message=f"web_fetch: {current!r} is not a usable address; check the URL",
-            )
-
-        remaining_s = deadline - time.monotonic()
-        if remaining_s <= 0:
-            return _FetchOutcome(
-                ok=False,
-                error_code="deadline_exceeded",
-                error_message=(
-                    f"web_fetch: the page took longer than {timeout_s:g}s through its redirects; "
-                    "tell him it did not load, or try web_search"
-                ),
-            )
-
-        try:
-            hop = _http_get_one_hop(
-                normalized, timeout_s=remaining_s, max_bytes=max_bytes, deadline=deadline,
-            )
-        except _FetchDeadlineExceededError:
-            return _FetchOutcome(
-                ok=False,
-                error_code="deadline_exceeded",
-                error_message=(
-                    f"web_fetch: the page took longer than {timeout_s:g}s to load; tell him it "
-                    "did not load, or try web_search"
-                ),
-            )
-        except httpx.HTTPError as exc:
-            return _FetchOutcome(
-                ok=False,
-                error_code="network_error",
-                error_message=(
-                    f"web_fetch: the page could not be fetched ({exc}); tell him, or try "
-                    "web_search for the same information"
-                ),
-            )
-
-        if hop.status_code in _REDIRECT_STATUS_CODES:
-            if hop.location is None:
-                return _FetchOutcome(
-                    ok=False,
-                    error_code="network_error",
-                    error_message=(
-                        f"web_fetch: {normalized!r} redirected to nowhere; tell him the page is "
-                        "broken, or try web_search"
-                    ),
-                )
-            if hops_followed >= max_redirects:
-                return _FetchOutcome(
-                    ok=False,
-                    error_code="too_many_redirects",
-                    error_message=(
-                        f"web_fetch: {url!r} redirected more than {max_redirects} times; "
-                        "try the address it ends at, or web_search"
-                    ),
-                )
-            hops_followed += 1
-            current = urljoin(normalized, hop.location)
-            continue
-
-        return _FetchOutcome(
-            ok=True,
-            status_code=hop.status_code,
-            content_type=hop.content_type,
-            body=hop.body,
-            total_bytes=hop.total_bytes,
-            total_bytes_exact=hop.total_bytes_exact,
-            final_url=normalized,
-        )
-
-
-class _ReadableHTMLParser(HTMLParser):
-    """Strip an HTML document to its page title + tag-stripped visible text.
-
-    stdlib-only (ADR-0011 D5: no bs4/lxml — `html.parser` is fine).
-    `<script>`/`<style>` contents are dropped entirely; every other
-    tag's text is kept, collapsed to single-space-joined chunks. Feeding
-    a byte-capped, possibly mid-tag-truncated document is safe —
-    `HTMLParser` is deliberately lenient about malformed/incomplete
-    markup, and an unclosed tag at EOF simply stops emitting text there.
-    """
-
-    def __init__(self) -> None:
-        """Start with empty title/text buffers and zero script/style depth."""
-        super().__init__(convert_charrefs=True)
-        self._title_parts: list[str] = []
-        self._text_parts: list[str] = []
-        self._in_title = False
-        self._skip_depth = 0
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:  # noqa: ARG002 — HTMLParser calls this positionally; attrs is unused but must stay in the override's signature.
-        """Track entry into `<title>` and `<script>`/`<style>` regions."""
-        if tag in ("script", "style"):
-            self._skip_depth += 1
-        elif tag == "title":
-            self._in_title = True
-
-    def handle_endtag(self, tag: str) -> None:
-        """Track exit from `<title>` and `<script>`/`<style>` regions."""
-        if tag in ("script", "style"):
-            self._skip_depth = max(0, self._skip_depth - 1)
-        elif tag == "title":
-            self._in_title = False
-
-    def handle_data(self, data: str) -> None:
-        """Collect text data outside of skipped regions."""
-        if self._skip_depth:
-            return
-        if self._in_title:
-            self._title_parts.append(data)
-            return
-        stripped = data.strip()
-        if stripped:
-            self._text_parts.append(stripped)
-
-    @property
-    def title(self) -> str:
-        """Return the concatenated `<title>` text, stripped."""
-        return "".join(self._title_parts).strip()
-
-    @property
-    def text(self) -> str:
-        """Return the space-joined visible text chunks."""
-        return " ".join(self._text_parts)
-
-
-def _extract_readable_html(html_text: str) -> tuple[str, str]:
-    """Return `(title, stripped_text)` from an HTML document (stdlib-only)."""
-    parser = _ReadableHTMLParser()
-    parser.feed(html_text)
-    return parser.title, parser.text
-
-
-def _parse_content_type_charset(content_type: str | None) -> str | None:
-    """Extract a `charset=` parameter from a `Content-Type` header value."""
-    if not content_type:
-        return None
-    for part in content_type.split(";")[1:]:
-        key, _, value = part.strip().partition("=")
-        if key.strip().lower() == "charset":
-            return value.strip().strip('"').strip("'") or None
-    return None
-
-
-def _decode_hop_body(
-    body: bytes, total_bytes: int, content_type: str | None,
-) -> tuple[str, int, bool]:
-    """`(text, undelivered_bytes, lossy)` honoring a declared `charset=`.
-
-    SHOULD-FIX 7, ADR-0011 §12 — a `charset=gb2312` page used to decode
-    to 100% U+FFFD because everything went through the UTF-8-only
-    `truncate_utf8` path regardless of what `Content-Type` declared.
-
-    UTF-8 (declared, or no usable charset named) still goes through
-    `truncate_utf8` UNCHANGED — its codepoint-safe boundary handling is
-    never duplicated here; this only adds ONE more decode attempt in
-    front of it for a charset Python actually knows (stdlib `codecs`,
-    no new dependency). A body cut mid-character by the caller's own
-    `max_bytes` cap decodes with `errors="replace"` and is reported
-    `lossy=True`, same signal `truncate_utf8` gives its own lossy case.
-    """
-    charset = _parse_content_type_charset(content_type)
-    if charset is None or charset.lower().replace("_", "-") in ("utf-8", "utf8"):
-        return truncate_utf8(body, total_bytes)
-    try:
-        codec_name = codecs.lookup(charset).name
-    except LookupError:
-        return truncate_utf8(body, total_bytes)
-    undelivered = max(0, total_bytes - len(body))
-    try:
-        return body.decode(codec_name), undelivered, False
-    except UnicodeDecodeError:
-        return body.decode(codec_name, errors="replace"), undelivered, True
-    except LookupError:
-        # A declared charset can name a REGISTERED but non-text codec
-        # (e.g. `charset=base64`) — `codecs.lookup` accepts it but
-        # `bytes.decode` refuses it with `LookupError`, not
-        # `UnicodeDecodeError`. Caught here (not left to MUST-FIX 2's
-        # handler-boundary catch-all) so an unusual header degrades to
-        # the same lossy-UTF-8 fallback as an unknown charset, rather
-        # than a generic "unexpected error" observation.
-        return truncate_utf8(body, total_bytes)
-
-
-def _looks_like_html(body: bytes) -> bool:
-    """Sniff a leading `<`/`<!doctype` to detect an HTML document.
-
-    SHOULD-FIX 7, ADR-0011 §12 — used only when `Content-Type` is
-    absent, so a header-less HTML response still gets routed through
-    the tag-stripping path instead of being dumped as raw markup under
-    the "plain text" branch.
-    """
-    stripped = body.lstrip(b"\xef\xbb\xbf \t\r\n").lower()
-    return stripped.startswith(b"<")
-
-
-_WEB_EXTRACT_URL: Final[str] = "https://api.tavily.com/extract"
-
-
-def _tavily_extract(url: str, *, api_key: str, timeout_s: float) -> dict[str, Any]:
-    """Tavily `/extract` (basic depth) for one URL: markdown text, PDFs included.
-
-    Raises `ToolError` when Tavily answered but could not extract the page
-    (its `failed_results` reason) and `httpx.HTTPError` when Tavily itself
-    failed; `web_fetch` falls back to fetching here on either.
-    """
-    response = httpx.post(
-        _WEB_EXTRACT_URL,
-        headers={"Authorization": f"Bearer {api_key}"},
-        json={"urls": [url], "extract_depth": "basic"},
-        timeout=timeout_s,
-    )
-    response.raise_for_status()
-    data = response.json()
-    results = data.get("results") or []
-    if not results:
-        failed = (data.get("failed_results") or [{}])[0]
-        msg = f"web_fetch: Tavily could not read {url} ({failed.get('error', 'unknown')})"
-        raise ToolError(msg, code="web_fetch_failed")
-    return {
-        "url": results[0].get("url") or url,
-        "content": results[0].get("raw_content") or "",
-        "source": "tavily",
-    }
-
-
-def _html_content(html_text: str, *, body_truncated: bool) -> str:
-    """The extracted text, or the one-line reason there is none."""
-    if html_text.strip():
-        return html_text
-    if body_truncated:
-        return (
-            "(the page was cut off by the download cap before any body text "
-            "was parsed — cannot tell whether it has visible content past the cut)"
-        )
-    # ADR-0011 D5: no JS rendering — an SPA that hydrates via script returns
-    # only its shell here. Declared limitation, not an empty-page bug.
-    return (
-        "(no visible text in the initial HTML — this may be a "
-        "JavaScript-rendered page; this tool does not execute JS)"
-    )
-
-
-def _self_fetch(url: str, *, timeout_s: float, max_bytes: int) -> dict[str, Any]:
-    """Fetch and tag-strip one page here: the keyless path and Tavily's fallback (ADR-0011 D5)."""
-    outcome = _fetch_url_backend(url, timeout_s=timeout_s, max_bytes=max_bytes)
-    if not outcome.ok:
-        raise ToolError(
-            outcome.error_message or "web_fetch: the page could not be fetched; tell him",
-            code=outcome.error_code or "web_fetch_failed",
-        )
-    mime = (outcome.content_type or "").split(";", 1)[0].strip().lower()
-    if not mime and _looks_like_html(outcome.body):
-        # No Content-Type at all: sniff, or raw markup would pass as plain text.
-        mime = "text/html"
-    payload: dict[str, Any] = {
-        "url": outcome.final_url,
-        "status_code": outcome.status_code,
-        "content_type": outcome.content_type,
-        "source": "fetch",
-    }
-    if mime and not mime.startswith("text/"):
-        payload["note"] = (
-            f"non-text content-type {outcome.content_type!r}; body not decoded as text"
-        )
-        return payload
-    text, undelivered_bytes, lossy = _decode_hop_body(
-        outcome.body, outcome.total_bytes, outcome.content_type,
-    )
-    body_truncated = undelivered_bytes > 0
-    if mime == "text/html":
-        title, html_text = _extract_readable_html(text)
-        if title:
-            payload["title"] = title
-        payload["content"] = _html_content(html_text, body_truncated=body_truncated)
-    else:
-        payload["content"] = text
-    payload["total_bytes"] = outcome.total_bytes
-    if body_truncated:
-        # The 2 MiB drain cap fired; the text cap is the dispatcher's.
-        payload["download_truncated"] = True
-    if not outcome.total_bytes_exact:
-        payload["total_bytes_exact"] = False
-    if lossy:
-        payload["encoding"] = "lossy"
-    return payload
-
-
-def _make_web_fetch(
-    *, max_bytes: int, max_text_chars: int, timeout_s: float, extract_api_key: str | None,
-) -> Tool:
-    """Bind the `tools.web.*` fetch knobs and the Tavily key into `web_fetch`.
-
-    With a key the page comes from Tavily extract (markdown, PDFs, no JS
-    limitation); any Tavily failure falls back to fetching here. The egress
-    guard runs first either way, so no private address leaves the machine.
-    """
-
-    def web_fetch(args: Mapping[str, Any], _ctx: ToolContext) -> dict[str, Any]:
-        url = args.get("url")
-        if not isinstance(url, str) or not url.strip():
-            msg = f"web_fetch: url must be the page address, http or https (got {url!r})"
-            raise ToolError(msg, code="invalid_arguments")
-        allowed, reason = validate_egress_url(url)
-        if not allowed:
-            msg = (
-                f"web_fetch: {url!r} was refused ({reason}); only public http(s) pages "
-                "can be fetched"
-            )
-            raise ToolError(msg, code="ssrf_guard_refused")
-        if extract_api_key:
-            try:
-                return _tavily_extract(url, api_key=extract_api_key, timeout_s=timeout_s)
-            except (httpx.HTTPError, ToolError, ValueError) as exc:
-                LOGGER.warning(
-                    "web_fetch: tavily extract failed for %s (%s); fetching directly", url, exc,
-                )
-        return _self_fetch(url, timeout_s=timeout_s, max_bytes=max_bytes)
-
-    return Tool(
-        name="web_fetch",
-        description=(
-            "Fetch a URL's readable content: markdown (PDFs included) via Tavily "
-            "extract when configured, else the page title plus tag-stripped text. "
-            "The direct path does not execute JavaScript."
-        ),
-        input_schema=_WEB_FETCH_INPUT_SCHEMA,
-        handler=web_fetch,
-        allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
-        risk_level="L1",
-        read_only=True,
-        max_result_chars=max_text_chars,
-    )
 
 
 # --- open_url --------------------------------------------------------------
@@ -2745,7 +1807,7 @@ def open_url(args: Mapping[str, Any], _ctx: ToolContext) -> dict[str, Any]:
     Same scheme + address checks as `web_fetch` via `validate_egress_url`
     — `open http://127.0.0.1:8006/shutdown` would otherwise open Allen's
     browser against his own daemon. `open` is handed
-    `_normalize_egress_url`'s canonical re-serialization of `url`, never
+    `normalize_egress_url`'s canonical re-serialization of `url`, never
     `url` itself (ADR-0011 §12 MUST-FIX 1/2 root cause) — the browser's
     WHATWG URL parser reads some strings (a backslash before the last
     `@` in the authority, in particular) differently from the
@@ -2767,7 +1829,7 @@ def open_url(args: Mapping[str, Any], _ctx: ToolContext) -> dict[str, Any]:
         )
         raise ToolError(msg, code="ssrf_guard_refused")
 
-    normalized = _normalize_egress_url(url)
+    normalized = normalize_egress_url(url)
     if normalized is None:
         # Should be unreachable — the guard just allowed `url` via
         # the identical parser — but refuse rather than ever fall
@@ -3173,6 +2235,17 @@ def _refuse_unleased(_args: Mapping[str, Any], _ctx: ToolContext) -> dict[str, A
     raise ToolError(msg, code="no_lease", kind="dont_retry")
 
 
+_NOT_A_READ: Final = (
+    "this view only reads: that call would change something and was not run; tell him it needs "
+    "his own session"
+)
+
+
+def _refuse_not_a_read(_args: Mapping[str, Any], _ctx: ToolContext) -> dict[str, Any]:
+    """The handler a call that changes something gets in a view that only reads."""
+    raise ToolError(_NOT_A_READ, code="reads_only_view", kind="impossible")
+
+
 class ToolRegistry:
     """L4 dispatch surface (ADR § Module map L4 row).
 
@@ -3299,14 +2372,49 @@ class ToolRegistry:
                 t for t in self._tools.values() if caller_principal in t.allowed_callers
             )
 
+    def complete(
+        self,
+        tool_name: str,
+        arguments: Mapping[str, Any],
+        conn: sqlite3.Connection,
+        runtime_paths: RuntimePathsLike,
+        turn_id: str | None = None,
+    ) -> Completed:
+        """The full arguments a call that needs a card will run with (ADR 0361).
+
+        A tool with no completion gives its arguments as they are. A completion that raises
+        :class:`ToolError` comes back as the failure it names, any other error as an unexpected
+        one; it only reads, so nothing was done, and no card follows either.
+        """
+        with self._lock:
+            tool_def = self._tools.get(tool_name)
+        if tool_def is None or tool_def.complete is None:
+            return Completed(arguments)
+        ctx = ToolContext(
+            conn, runtime_paths, "", self._clock, None,
+            None if self._here is None else self._here.bind(turn_id),
+        )
+        try:
+            return Completed(dict(tool_def.complete(arguments, ctx)))
+        except ToolError as exc:
+            return Completed(None, str(exc), exc.code, exc.kind)
+        except Exception as exc:
+            LOGGER.exception("tool %s's completion raised", tool_def.name)
+            return Completed(None, _unexpected(tool_def.name, exc), "unexpected_error")
+
     def dispatch(
         self,
         action_request: ActionRequest,
         conn: sqlite3.Connection,
         runtime_paths: RuntimePathsLike,
         lifecycle: ActionLifecycle,
+        *,
+        reads_only: bool = False,
     ) -> RawResult:
         """Dispatch one ActionRequest and return its :class:`RawResult`.
+
+        ``reads_only`` is a view that only reads (ADR-0016 D6): a call that changes something
+        gets the failure :data:`_NOT_A_READ`, as an unleased one gets L4's refusal.
 
         Preconditions:
             - `action_request.tool_name` is registered → else `UnknownToolError`.
@@ -3332,7 +2440,9 @@ class ToolRegistry:
         return or its raised error into the one `RawResult`.
         """
         tool_def = self._checked_tool_def(action_request, lifecycle)
-        if tool_def.requires_confirmation and not _leased(
+        if reads_only and not only_reads(tool_def, action_request.arguments):
+            tool_def = replace(tool_def, handler=_refuse_not_a_read)
+        elif call_asks(tool_def, action_request.arguments) and not _leased(
             action_request, int(self._clock.time() * 1000),
         ):
             tool_def = replace(tool_def, handler=_refuse_unleased)  # ADR 0321, I7
@@ -3607,7 +2717,7 @@ _OFF_MENU_DAILY: Final[frozenset[str]] = frozenset(
 """ADR 0247: the daily-loop tools no turn needs by default; ``tool_search`` finds them."""
 
 
-def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct D7 config value threaded into one tool's closure at registry-build time; bundling them into one options object defeats the point of each tool owning its own defaulted knobs.
+def build_default_registry(  # noqa: PLR0913, PLR0915, C901 — every kwarg is a distinct D7 config value threaded into one tool's closure at registry-build time; bundling them into one options object defeats the point of each tool owning its own defaulted knobs.
     *,
     obsidian_vault_root: Path | None = DEFAULT_OBSIDIAN_VAULT_ROOT,
     web_search_max_results: int = DEFAULT_WEB_SEARCH_MAX_RESULTS,
@@ -3627,13 +2737,12 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
     daily_report_run: DailyReportRun | None = None,
     night: NightControl | None = None,
     voice_settings: VoiceSettings | None = None,
-    mail_drafts: DraftStore | None = None,
     device_link: DeviceLink | None = None,
     weather_lookup: Callable[[WeatherRequest], Mapping[str, Any]] | None = None,
     transit_api_key: str | None = None,
     transit_places: Callable[[], Mapping[str, str]] | None = None,
     transit_offers: TransitOffers | None = None,
-    bus_live: Callable[[str, tuple[float, float], int], int | None] | None = None,
+    bus_live: BusTimes | None = None,
     ride_control: RideControl | None = None,
     highlight_marker: HighlightMarker | None = None,
     maps_monthly_usd: float = 10.0,
@@ -3702,8 +2811,6 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
             registered as proxies to the terminal, whose run they drive.
         voice_settings: ADR 0174 — her voice volume and speed; `None` leaves
             `set_voice` off the menu.
-        mail_drafts: ADR 0147 — the Dashboard's reply drafts; `None` leaves
-            `write_mail_draft` off the menu.
         memory_db_path: `memory.db_path` — registers `search_records`
             over that memory.db. `None` (hand-built test registries)
             registers no memory tool.
@@ -3733,8 +2840,8 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
         ring_before_min: `commitments.remind_before_min` — how long before it a thing he goes to
             rings, when `schedule` adds one and `remind` is left out.
         transit_offers: where `bus` leaves its options, for the chat card (ADR 0205) and `pin`.
-        bus_live: the live departure (epoch ms) of a route at a stop position around a time, for
-            a route `bus` is asked about.
+        bus_live: BC Transit's timetable and realtime feed (`runtime.bus_live.BusLive`), for the
+            times `bus` gives and the next buses at a stop.
         ride_control: ADR 0224 — what the runtime does when the model says he is heading out,
             has boarded, gets off at a stop, or is off the bus, and how his ride is going; gives
             `bus` its `ride` and `get_off`. `None` leaves them out of its answers.
@@ -3772,8 +2879,10 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
     registry.register(ask_user)
     registry.register(dismiss_card)
     if web_search_provider is not None:
+        from jarvis.execution.web_search_tool import make_web_search  # noqa: PLC0415 — same cycle.
+
         registry.register(
-            _make_web_search(
+            make_web_search(
                 default_max_results=web_search_max_results,
                 timeout_s=web_timeout_s,
                 provider=web_search_provider,
@@ -3781,8 +2890,10 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
                 deep_search=web_deep_search,
             )
         )
+    from jarvis.execution.web_fetch_tool import make_web_fetch  # noqa: PLC0415 — same cycle.
+
     registry.register(
-        _make_web_fetch(
+        make_web_fetch(
             max_bytes=web_fetch_max_bytes,
             max_text_chars=web_fetch_max_text_bytes,
             timeout_s=web_timeout_s,
@@ -3819,14 +2930,15 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
         registry.register(state_tool)
     for report_tool in build_daily_report_tool(daily_report_run):
         registry.register(report_tool)
+    from jarvis.execution import maps_spend  # noqa: PLC0415 — same cycle.
     from jarvis.execution.bus_tool import build_bus_tool  # noqa: PLC0415 — same cycle.
     from jarvis.execution.highlight_tool import build_highlight_tool  # noqa: PLC0415 — same cycle.
     from jarvis.execution.keep_tool import build_keep_tools  # noqa: PLC0415 — same cycle.
     from jarvis.execution.location_tool import build_where_tool  # noqa: PLC0415 — same cycle.
-    from jarvis.execution.mail_draft_tool import build_mail_draft_tool  # noqa: PLC0415
     from jarvis.execution.map_tool import build_map_tool  # noqa: PLC0415 — same cycle.
     from jarvis.execution.night_tools import build_night_tools  # noqa: PLC0415 — same cycle.
     from jarvis.execution.picture_tool import build_picture_tool  # noqa: PLC0415 — same cycle.
+    from jarvis.execution.place_reader import PlaceReader  # noqa: PLC0415 — same cycle.
     from jarvis.execution.place_tools import build_place_tools  # noqa: PLC0415 — same cycle.
     from jarvis.execution.places_api import PlaceBook  # noqa: PLC0415 — same cycle.
     from jarvis.execution.plan_tool import build_plan_tool  # noqa: PLC0415 — same cycle.
@@ -3844,20 +2956,30 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
         *build_voice_tool(voice_settings),
         *build_weather_tool(weather_lookup, here),
         *build_picture_tool(vision_client, memory_db_path),
-        *(() if memory_db_path is None else build_place_tools(memory_db_path)),
+        *(() if memory_db_path is None else build_place_tools(
+            memory_db_path,
+            PlaceReader(
+                transit_api_key, found_places, saved=transit_places or dict,
+                kept=lambda: read_kept(memory_db_path),
+                before_request=lambda ctx: maps_spend.guard(
+                    ctx.conn, maps_monthly_usd, ctx.clock.now(),
+                ),
+            ),
+        )),
         *build_bus_tool(
             transit_api_key, transit_places or dict,
             offers=transit_offers, bus_live=bus_live, control=ride_control,
             kept=None if memory_db_path is None else lambda: read_kept(memory_db_path),
             cap_usd=maps_monthly_usd, book=found_places,
         ),
-        *build_map_tool(transit_api_key, maps_monthly_usd, found_places),
+        *build_map_tool(
+            transit_api_key, maps_monthly_usd, found_places, places=transit_places,
+            kept=None if memory_db_path is None else lambda: read_kept(memory_db_path),
+        ),
         *build_where_tool(here, surroundings),
         *build_highlight_tool(highlight_marker),
     ):
         registry.register(conversation_tool)
-    for draft_tool in build_mail_draft_tool(mail_drafts):
-        registry.register(draft_tool)
     if device_link is not None:
         registry.set_device_tools(device_catalogue)
     return registry
@@ -3866,11 +2988,11 @@ def build_default_registry(  # noqa: PLR0913, C901 — every kwarg is a distinct
 class ReadOnlyToolRegistry:
     """Read-only view of a :class:`ToolRegistry` for one turn (ADR-0016 D6).
 
-    Exposes only tools with ``read_only=True``;
-    ``dispatch`` of anything else raises :class:`UnknownToolError` before the
-    inner registry emits ``action.dispatched``. The shared registry is not
-    mutated: the composition root hands this view to ``decide()`` for turns
-    whose ``surface.user_intent.channel`` is ``gpt_live``.
+    Exposes the tools with ``read_only=True`` and the tools whose calls differ in effect
+    (ADR 0361), whose calls that change something fail with :data:`_NOT_A_READ` and make no card;
+    ``dispatch`` of any other tool raises :class:`UnknownToolError` before the inner registry
+    emits ``action.dispatched``. The shared registry is not mutated: the composition root hands
+    this view to ``decide()`` for turns whose ``surface.user_intent.channel`` is ``gpt_live``.
     """
 
     def __init__(self, inner: ToolRegistry) -> None:
@@ -3879,15 +3001,32 @@ class ReadOnlyToolRegistry:
 
     @staticmethod
     def _visible(tool_def: Tool) -> bool:
-        return tool_def.read_only
+        return tool_def.read_only or tool_def.effect is not None
 
     def get_definitions(self) -> tuple[Tool, ...]:
-        """Every read-only tool, in registration order."""
+        """Every tool that can read, in registration order."""
         return tuple(t for t in self._inner.get_definitions() if self._visible(t))
 
     def for_caller(self, caller_principal: CallerPrincipal) -> tuple[Tool, ...]:
-        """The caller's tools narrowed to the read-only ones."""
+        """The caller's tools narrowed to the ones that can read."""
         return tuple(t for t in self._inner.for_caller(caller_principal) if self._visible(t))
+
+    def _seen(self, tool_name: str) -> Tool | None:
+        return next((t for t in self.get_definitions() if t.name == tool_name), None)
+
+    def complete(
+        self,
+        tool_name: str,
+        arguments: Mapping[str, Any],
+        conn: sqlite3.Connection,
+        runtime_paths: RuntimePathsLike,
+        turn_id: str | None = None,
+    ) -> Completed:
+        """A call that would ask for a card here fails instead: this view makes no card."""
+        tool_def = self._seen(tool_name)
+        if tool_def is not None and not only_reads(tool_def, arguments):
+            return Completed(None, _NOT_A_READ, "reads_only_view", "impossible")
+        return self._inner.complete(tool_name, arguments, conn, runtime_paths, turn_id)
 
     def dispatch(
         self,
@@ -3896,15 +3035,17 @@ class ReadOnlyToolRegistry:
         runtime_paths: RuntimePathsLike,
         lifecycle: ActionLifecycle,
     ) -> RawResult:
-        """Forward a read-only dispatch; refuse everything else without a trace."""
-        if action_request.tool_name not in {t.name for t in self.get_definitions()}:
+        """Forward a read; a call that changes something fails; any other tool is refused."""
+        if self._seen(action_request.tool_name) is None:
             LOGGER.warning(
                 "read-only registry refused %r for action %s (ADR-0016 D6)",
                 action_request.tool_name, action_request.action_id,
             )
             msg = f"unknown tool: {action_request.tool_name!r} (read-only view)"
             raise UnknownToolError(msg)
-        return self._inner.dispatch(action_request, conn, runtime_paths, lifecycle)
+        return self._inner.dispatch(
+            action_request, conn, runtime_paths, lifecycle, reads_only=True,
+        )
 
 
 __all__ = [
@@ -3918,8 +3059,6 @@ __all__ = [
     "TERMINAL_TOOL_NAMES",
     "ActionLifecycle",
     "CallerNotAllowedError",
-    "DeepFindings",
-    "DeepSearch",
     "DuplicateToolError",
     "IllegalLifecycleTransition",
     "LifecycleState",

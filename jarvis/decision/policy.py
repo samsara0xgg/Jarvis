@@ -21,9 +21,11 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Final, Literal, Protocol
 
 from jarvis.shared import CallerPrincipal
+from jarvis.shared.receipts import call_asks, call_risk
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping
+    from collections.abc import Callable, Iterable, Mapping
+    from typing import Any
 
     from jarvis.shared import RiskLevel
 
@@ -212,11 +214,21 @@ class _ToolLike(Protocol):
 
 
 class _ConfirmationToolLike(_ToolLike, Protocol):
-    """``_ToolLike`` plus ``requires_confirmation``, for the boot validator."""
+    """``_ToolLike`` plus what the boot validator reads: the confirmation flag and the effect."""
 
     @property
     def requires_confirmation(self) -> bool:
         """Whether dispatch needs a valid ``authorization_lease``."""
+        ...
+
+    @property
+    def effect(self) -> Callable[[Mapping[str, Any]], RiskLevel] | None:
+        """ADR 0361: the level of a call with these arguments; ``None``: ``risk_level`` for all."""
+        ...
+
+    @property
+    def input_schema(self) -> Mapping[str, Any]:
+        """The arguments' schema; its ``action`` enum lists the calls an effect is checked on."""
         ...
 
 
@@ -292,6 +304,9 @@ def validate_requires_confirmation(
     """
     threshold_rank = risk_rank(confirmation_threshold)
     for tool in tool_defs:
+        if tool.effect is not None:
+            _validate_effect(tool, confirmation_threshold)
+            continue
         expected = risk_rank(tool.risk_level) >= threshold_rank
         if tool.requires_confirmation != expected:
             msg = (
@@ -300,6 +315,35 @@ def validate_requires_confirmation(
                 f"{tool.risk_level!r} vs confirmation_threshold="
                 f"{confirmation_threshold!r} implies requires_confirmation="
                 f"{expected!r}"
+            )
+            raise PolicyConsistencyError(msg)
+
+
+def _validate_effect(tool: _ConfirmationToolLike, confirmation_threshold: RiskLevel) -> None:
+    """ADR 0361: a tool whose calls differ is checked once per action its schema declares.
+
+    The call's own effect decides whether it needs a card, so the tool's flag must not say
+    otherwise; the tool's level is the highest of its calls, so no action may be above it; and
+    the answer to "needs a card" must agree with the threshold for every action. This cannot
+    prove a call's consent (its tests do); it fails the boot on a declaration that drifts.
+    """
+    if tool.requires_confirmation:
+        msg = f"tool {tool.name!r} declares an effect per call and requires_confirmation"
+        raise PolicyConsistencyError(msg)
+    properties = tool.input_schema.get("properties", {})
+    declared = properties.get("action", {}).get("enum") if isinstance(properties, dict) else None
+    for action in declared or [None]:
+        arguments = {} if action is None else {"action": action}
+        level = call_risk(tool, arguments)
+        where = f"tool {tool.name!r}" + ("" if action is None else f", action {action!r}")
+        if risk_rank(level) > risk_rank(tool.risk_level):
+            msg = f"{where}: effect is {level}, above the tool's risk_level {tool.risk_level}"
+            raise PolicyConsistencyError(msg)
+        expected = risk_rank(level) >= risk_rank(confirmation_threshold)
+        if call_asks(tool, arguments) != expected:
+            msg = (
+                f"{where}: effect {level} vs confirmation_threshold {confirmation_threshold!r} "
+                f"implies needing a card: {expected!r}"
             )
             raise PolicyConsistencyError(msg)
 

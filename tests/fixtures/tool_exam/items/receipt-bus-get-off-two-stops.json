@@ -15,7 +15,7 @@
     ]
   },
   "setup": [],
-  "args": {"get_off": "Douglas"},
+  "args": {"ride": "get_off", "stop": "Douglas"},
   "recording": null,
   "expect": {
     "summary_must": ["More than one stop matches"],

@@ -794,8 +794,10 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         # words (``jarvis.state.attachments``); the bytes stay in their files.
         # ADR 0214: ``about`` is the item a paired phone has open, checked by
         # ``jarvis.shared.about.clean_about``.
+        # ADR 0401: ``via`` is ``"watch"`` when the paired phone asked for its watch.
         optional_payload=(
             "channel", "language", "record_id", "confirmation_decision", "attachments", "about",
+            "via",
         ),
         schema_version=1,
     ),
@@ -1560,7 +1562,7 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         required_payload=(
             "pin_id", "tid", "reminder_id", "ring", "leave_at_ms", "departs_at_ms", "arrive_at",
         ),
-        optional_payload=(),
+        optional_payload=("bus_trip_id",),
         schema_version=1,
     ),
     EventTypeSchema(
@@ -1569,6 +1571,40 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         actor="user",
         required_payload=("pin_id",),
         optional_payload=(),
+        schema_version=1,
+    ),
+    # Mail taken out of his inbox, or put back (ADR 0362): the mail tool's archive writes one row
+    # with the messages it changed and `in_inbox` false; its undo writes the opposite row naming
+    # the first in `undoes`. Nothing folds over them: the row is what an undo reads.
+    EventTypeSchema(
+        event_type="mail.inbox_changed",
+        owner_layer="L4",
+        actor="jarvis_llm",
+        required_payload=("message_ids", "in_inbox", "action_id"),
+        optional_payload=("undoes",),
+        schema_version=1,
+    ),
+    # A mail draft in his Gmail (ADR 0366). `mail.draft_written` holds the draft's Gmail ids, the
+    # conversation it is in and the letter, so a send from any device and the Dashboard's mail
+    # page can name it; `mail.draft_closed` says how it ended: `replaced` by a revision,
+    # `discarded` (its undo, naming the row it reverses in `undoes`) or `sent`. A draft is open
+    # until a closing row names it; `in_drafts` is true when Gmail would not move a replaced or
+    # discarded draft to Trash, so it is still there. `by` is `owner` on a draft his own edit on
+    # the Dashboard's mail page wrote; absent on one the tool wrote.
+    EventTypeSchema(
+        event_type="mail.draft_written",
+        owner_layer="L4",
+        actor="jarvis_llm",
+        required_payload=("draft_id", "message_id", "thread_id", "letter"),
+        optional_payload=("action_id", "replaces", "reply_to", "by"),
+        schema_version=1,
+    ),
+    EventTypeSchema(
+        event_type="mail.draft_closed",
+        owner_layer="L4",
+        actor="jarvis_llm",
+        required_payload=("draft_id", "how"),
+        optional_payload=("action_id", "undoes", "in_drafts", "message_id"),
         schema_version=1,
     ),
     # A followed bus ride (ADR 0224): the ride is a fold over these types (`jarvis.state.rides`).
@@ -1606,8 +1642,18 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         optional_payload=(
             "trip_id", "vehicle_id", "board_stop", "board_stop_id", "alight_stop",
             "alight_stop_id", "alight_seq", "destination", "pin_tid", "service_date",
-            "scheduled_end_ms", "device",
+            "scheduled_end_ms", "device", "headsign",
         ),
+        schema_version=1,
+    ),
+    # ADR 0344: the ride followed the wrong trip; it follows this one now (his stop is served by
+    # it and not by the first, and one bus of it is near him).
+    EventTypeSchema(
+        event_type="ride.moved",
+        owner_layer="L4",
+        actor="jarvis_llm",
+        required_payload=("ride_id", "trip_id"),
+        optional_payload=("vehicle_id", "headsign", "service_date", "scheduled_end_ms"),
         schema_version=1,
     ),
     EventTypeSchema(
@@ -2532,6 +2578,22 @@ def turn_intent_channel(conn: sqlite3.Connection, turn_id: str) -> str | None:
     return turn_origin(conn, turn_id)[0]
 
 
+_SELECT_WATCH_RELAYS_SQL: Final = (
+    "SELECT DISTINCT ingestion_node FROM events WHERE (type = 'phone.state_observed' "
+    "AND json_extract(payload_json, '$.signal') = 'watch_battery') "
+    "OR (type = 'surface.user_intent' AND json_extract(payload_json, '$.via') = 'watch')"
+)
+
+
+def watch_relays(conn: sqlite3.Connection) -> frozenset[str]:
+    """The paired phones a watch has reached the brain through (ADR 0401).
+
+    A watch has no name of its own here: the phone sends its charge (ADR 0377) and asks for it
+    (``via``), under the phone's name.
+    """
+    return frozenset(node for (node,) in conn.execute(_SELECT_WATCH_RELAYS_SQL) if node)
+
+
 __all__ = [
     "EVENT_COLUMNS",
     "MAC_NODE",
@@ -2560,4 +2622,5 @@ __all__ = [
     "row_to_event",
     "turn_intent_channel",
     "turn_origin",
+    "watch_relays",
 ]

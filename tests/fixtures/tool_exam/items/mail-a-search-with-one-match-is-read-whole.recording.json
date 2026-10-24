@@ -1,0 +1,21 @@
+{
+ "version": 1,
+ "mailbox": {
+  "messages": [
+   {
+    "id": "pp1",
+    "subject": "Passport photo",
+    "plain": "Do you have the photo? Bring it Friday.",
+    "sender": "Kim Ray <kim@example.com>",
+    "ago": 30
+   },
+   {
+    "id": "pp2",
+    "subject": "Gym schedule",
+    "plain": "Classes move.",
+    "sender": "Sam Lee <sam@example.com>",
+    "ago": 40
+   }
+  ]
+ }
+}

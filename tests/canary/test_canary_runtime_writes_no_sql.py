@@ -1,16 +1,14 @@
-"""Canary — the runtime asks L2 named questions and writes no SQL over the event log (ADR 0349).
+"""Canary — the runtime asks L2 named questions and writes no SQL (ADR 0349).
 
-``import-linter`` reads imports, not strings, so a query written in ``jarvis/runtime`` over the
-log's columns or payload keys breaks silently when L2 renames one. This reads the string
-literals of every ``jarvis/runtime/**/*.py`` and counts the files that hold SQL: a SELECT, INSERT,
-UPDATE or DELETE statement, or a ``json_extract`` call. Docstrings and comments are prose and are
-not read; a string built from literals joined by ``+``, or an f-string, is read whole.
+``import-linter`` reads imports, not strings, so a query written in ``jarvis/runtime`` over a
+table's columns or a payload's keys breaks silently when L2 renames one. This reads the string
+literals of every ``jarvis/runtime/**/*.py`` and fails on any file that holds SQL: a SELECT,
+INSERT, UPDATE or DELETE statement, or a ``json_extract`` call. Docstrings and comments are prose
+and are not read; a string built from literals joined by ``+``, or an f-string, is read whole.
 
-The count only goes down. ``_SQL_FILES`` is the number of files still holding SQL; the commit
-that moves a file's last query into ``jarvis/state`` lowers it, and no commit raises it, since a
-new question belongs in ``jarvis/state`` as a function that says what it answers. No file is
-named here (ADR 0325: a canary's rule sits with the thing, not in a list of file names): a
-failure prints the files that hold SQL now.
+The rule has no exceptions and no count: a new question belongs in ``jarvis/state`` as a function
+that says what it answers, and the runtime calls it. No file is named here (ADR 0325: a canary's
+rule sits with the thing, not in a list of file names): a failure prints the files that hold SQL.
 
 Canary house style: stdlib only, no import of the code under test.
 """
@@ -19,7 +17,6 @@ from __future__ import annotations
 
 import ast
 import re
-from pathlib import Path
 from typing import Final
 
 from tests.canary._helpers import relative_to_repo, repo_root
@@ -34,10 +31,6 @@ _SQL: Final = re.compile(
     r"|(?i:\bjson_extract\s*\()",
     re.DOTALL,
 )
-
-# Files under jarvis/runtime that still hold SQL. Lower it in the commit that moves a file's
-# last query into jarvis/state; it never goes up.
-_SQL_FILES: Final = 9
 
 
 def _text(node: ast.expr) -> str | None:
@@ -122,16 +115,12 @@ def _holders() -> dict[str, list[int]]:
     return held
 
 
-def test_runtime_files_holding_sql_only_go_down() -> None:
-    """No more runtime files hold SQL than before; when one stops, the count is lowered."""
+def test_runtime_files_hold_no_sql() -> None:
+    """No file under jarvis/runtime holds SQL; the queries are jarvis/state's functions."""
     held = _holders()
     listing = "\n".join(f"{rel}:{lines[0]}" for rel, lines in held.items())
-    assert len(held) <= _SQL_FILES, (
-        f"{len(held) - _SQL_FILES} more file(s) under jarvis/runtime hold SQL than before. The"
-        " runtime asks L2 named questions (ADR 0349): put the query in jarvis/state as a"
-        f" function that says what it answers and call it. Files holding SQL now:\n{listing}"
-    )
-    assert len(held) == _SQL_FILES, (
-        f"{_SQL_FILES - len(held)} file(s) under jarvis/runtime no longer hold SQL: lower"
-        f" _SQL_FILES to {len(held)} in {Path(__file__).name}."
+    assert not held, (
+        f"{len(held)} file(s) under jarvis/runtime hold SQL. The runtime asks L2 named questions"
+        " (ADR 0349): put the query in jarvis/state as a function that says what it answers and"
+        f" call it. Files holding SQL now:\n{listing}"
     )

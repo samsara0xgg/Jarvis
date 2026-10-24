@@ -7,23 +7,39 @@ elapsed time or a wait takes it from there. A test hands the same code
 :class:`SystemClock` reads through ``time.time()``, ``time.monotonic()`` and ``datetime.now()``
 and nothing lower, so a freeze that replaces those (the tool exam's ``time_machine``) holds for
 every reader that is already on the clock.
+
+:func:`zone_data_problem` checks the tz database for one rule an old one lacks. The database is
+the pinned ``tzdata`` package, which ``jarvis/__init__.py`` makes the only one ``zoneinfo`` reads,
+and the one the C library reads too when the host's own disagrees (:func:`pin_local_time`,
+ADR 0398).
 """
 
 from __future__ import annotations
 
+import functools
 import os
 import time
 from datetime import UTC, datetime, timedelta, tzinfo
+from importlib.resources import files
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Protocol
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from zoneinfo import TZPATH, ZoneInfo, ZoneInfoNotFoundError
 
 if TYPE_CHECKING:
     import threading
+    from collections.abc import Callable, Iterable
 
 _LOCALTIME: Final = Path("/etc/localtime")
 _HALF_YEAR_S: Final = 182 * 24 * 3600
 """Far enough from now to land on the other side of a daylight-saving change."""
+_RULE_ZONE: Final = "America/Vancouver"
+_RULE_AT: Final = datetime(2026, 11, 2, 12, 0, tzinfo=UTC)
+_RULE_OFFSET: Final = timedelta(hours=-7)
+"""The rule the host's tz database must hold: ``_RULE_ZONE`` is on UTC-7 at 12:00 on 2026-11-02.
+
+``_RULE_AT`` is that wall time; the zone replaces its UTC label. A database older than the rule
+gives UTC-8 there, and every time of day in BC after it is an hour off.
+"""
 
 
 class ZoneError(ValueError):
@@ -119,22 +135,62 @@ def system_zone() -> tzinfo:
     """The machine's zone: ``TZ`` if it names one, else what ``/etc/localtime`` points at, else UTC.
 
     ``TZ`` comes first because the C library's local time (``datetime.now()`` with no zone)
-    follows it, and the clock must agree with those readers.
+    follows it, and the clock must agree with those readers. A ``TZ`` that is the path of a zone
+    file (as :func:`pin_local_time` sets it) names the zone its path ends in.
     """
     named = os.environ.get("TZ")
     if named is not None:
         name = named.removeprefix(":").strip()
         if not name:
             return UTC
-        zone = _load(name)
+        zone = _load(_tree_name(Path(name)) if name.startswith("/") else name)
         if zone is not None:
             return zone
     try:
-        parts = _LOCALTIME.resolve().parts
-        zone = _load("/".join(parts[parts.index("zoneinfo") + 1 :]))
+        zone = _load(_tree_name(_LOCALTIME.resolve()))
     except (OSError, ValueError):
         zone = None
     return UTC if zone is None else zone
+
+
+def pin_local_time() -> str | None:
+    """ADR 0398: point the C library at the package's file when the host's database disagrees.
+
+    The machine's zone is compared at now, half a year on and the rule moment. When the C
+    library's offset differs from the package's at any of them, ``TZ`` becomes the package's file
+    for that zone (``:/…/tzdata/zoneinfo/America/Vancouver``), so ``datetime.astimezone()``,
+    ``time.localtime`` and the processes Jarvis starts read the same rule as every ``ZoneInfo``.
+    Returns the zone pinned, else None; a host that agrees is left as it is.
+    """
+    zone = zone_key(system_zone())
+    if zone is None or zone == "UTC":
+        return None
+    started = time.time()
+    moments = (started, started + _HALF_YEAR_S, _RULE_AT.timestamp())
+    try:
+        package = ZoneInfo(zone)
+        if all(
+            datetime.fromtimestamp(moment, package).utcoffset()
+            == timedelta(seconds=time.localtime(moment).tm_gmtoff or 0)
+            for moment in moments
+        ):
+            return None
+        path = Path(str(files("tzdata.zoneinfo").joinpath(*zone.split("/"))))
+    except (ZoneInfoNotFoundError, ValueError, OverflowError, OSError):
+        return None
+    if not path.is_file():
+        return None
+    os.environ["TZ"] = f":{path}"
+    time.tzset()
+    return zone
+
+
+def _tree_name(path: Path) -> str:
+    """The zone a file in a zoneinfo tree is: what its path holds after the last ``zoneinfo``."""
+    parts = path.parts
+    if "zoneinfo" not in parts:
+        return ""
+    return "/".join(parts[len(parts) - parts[::-1].index("zoneinfo") :])
 
 
 def _load(name: str) -> ZoneInfo | None:
@@ -142,6 +198,72 @@ def _load(name: str) -> ZoneInfo | None:
         return ZoneInfo(name)
     except (ZoneInfoNotFoundError, ValueError, OSError):
         return None
+
+
+def tz_database_version(directories: Iterable[str] = TZPATH) -> str:
+    """The version of the tz database the zone files are read from, else ``unknown``.
+
+    The first directory that holds a zone file names it: ``tzdata.zi`` begins ``# version 2026e``,
+    and some systems keep it in ``+VERSION``. With no directory to read (ADR 0398 empties
+    ``TZPATH``) the zones come from the ``tzdata`` package, and its ``IANA_VERSION`` names it.
+    """
+    for directory in directories:
+        root = Path(directory)
+        if not (root / _RULE_ZONE).is_file():
+            continue
+        for name in ("tzdata.zi", "+VERSION"):
+            try:
+                first = (root / name).read_text(encoding="utf-8").splitlines()[0]
+            except (OSError, UnicodeDecodeError, IndexError):
+                continue
+            version = first.removeprefix("#").strip().removeprefix("version").strip()
+            if version:
+                return version
+        return "unknown"
+    try:
+        import tzdata  # noqa: PLC0415 - read only when no directory holds the zones
+    except ImportError:
+        return "unknown"
+    return str(tzdata.IANA_VERSION)
+
+
+def zone_data_problem(
+    load: Callable[[str], tzinfo] = ZoneInfo,
+    version: Callable[[], str] = tz_database_version,
+) -> str | None:
+    """None when the tz database gives America/Vancouver UTC-7 at 2026-11-02 12:00.
+
+    Otherwise the sentence that says the tzdata is out of date, naming what it gives there (no
+    offset for a zone it lacks) and its version. ``load`` is the zone provider and ``version``
+    the database's version.
+    """
+    try:
+        offset = _RULE_AT.replace(tzinfo=load(_RULE_ZONE)).utcoffset()
+    except (ZoneInfoNotFoundError, ValueError, OverflowError, OSError):
+        offset = None
+    if offset == _RULE_OFFSET:
+        return None
+    gives = "no offset" if offset is None else f"UTC{_signed(offset)}"
+    return (
+        f"the tzdata is out of date: {_RULE_ZONE} gives {gives} at "
+        f"{_RULE_AT:%Y-%m-%d %H:%M}, not UTC{_signed(_RULE_OFFSET)} (tz database {version()})"
+    )
+
+
+def zone_country(zone: str | None) -> str | None:
+    """The country a time zone is in (``America/Vancouver`` -> ``CA``), from ``zone.tab``.
+
+    The table is the pinned ``tzdata`` package's, the same release the zones are read from
+    (ADR 0398).
+    """
+    return _zone_countries().get(zone) if zone else None
+
+
+@functools.cache
+def _zone_countries() -> dict[str, str]:
+    table = files("tzdata.zoneinfo").joinpath("zone.tab").read_text(encoding="utf-8")
+    rows = (line.split("\t") for line in table.splitlines() if line and not line.startswith("#"))
+    return {zone: country for country, _, zone, *_ in rows}
 
 
 def zone_key(zone: tzinfo) -> str | None:

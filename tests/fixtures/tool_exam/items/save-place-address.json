@@ -1,0 +1,80 @@
+{
+  "id": "save-place-address",
+  "tool": "save_place",
+  "said": "keep 675 Belleville Street as the museum",
+  "at": "2026-10-21T17:30:00-07:00",
+  "zone": "America/Vancouver",
+  "here": {
+    "lat": 48.4284,
+    "lng": -123.3656,
+    "age_s": 60
+  },
+  "state": null,
+  "args": {
+    "name": "the museum",
+    "where": "675 Belleville St, Victoria"
+  },
+  "recording": "save-place-address.recording.json",
+  "expect": {
+    "result": [
+      {
+        "path": "kept.name",
+        "op": "eq",
+        "value": "the museum"
+      },
+      {
+        "path": "kept.has_centre",
+        "op": "eq",
+        "value": true
+      },
+      {
+        "path": "unchanged",
+        "op": "eq",
+        "value": false
+      }
+    ],
+    "receipt": {
+      "status": "done",
+      "reads_only": false,
+      "line": "kept the museum"
+    },
+    "state_after": [
+      {
+        "db": "memory",
+        "sql": "SELECT name, lat, lng FROM places",
+        "answer": [
+          [
+            "the museum",
+            48.4196,
+            -123.3676
+          ]
+        ]
+      },
+      {
+        "db": "memory",
+        "sql": "SELECT op, origin FROM place_changes",
+        "answer": [
+          [
+            "save",
+            "model"
+          ]
+        ]
+      },
+      {
+        "db": "events",
+        "sql": "SELECT json_extract(payload_json, '$.receipt.undo') LIKE 'place-change:%' AND json_extract(payload_json, '$.receipt.object') LIKE 'place:%' FROM events WHERE type = 'action.result_observed'",
+        "answer": 1
+      },
+      {
+        "db": "events",
+        "sql": "SELECT json_extract(payload_json, '$.sku'), json_extract(payload_json, '$.requests') FROM events WHERE type = 'maps.spend_recorded' ORDER BY id",
+        "answer": [
+          [
+            "places.text_search.pro",
+            1
+          ]
+        ]
+      }
+    ]
+  }
+}

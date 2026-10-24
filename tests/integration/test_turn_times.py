@@ -14,7 +14,7 @@ Acceptance checks over a real event log:
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
@@ -100,6 +100,9 @@ def _card(conn: sqlite3.Connection, turn: str, leave_at: str, made_at: str) -> N
         "offer_id": "offer-9", "to": "University of Victoria", "made_at": made_at,
         "options": [
             {"index": 0, "route": "28", "board_stop": "Hillside", "leave_at": leave_at,
+             "leave_ms": _ms(
+                 datetime.combine(date(2026, 10, 10), time.fromisoformat(leave_at), tzinfo=ZONE),
+             ),
              "departs": "08:25", "arrive_at": "08:55", "to": "UVic"},
             {"index": 1, "route": "4", "board_stop": "Hillside", "leave_at": "09:10",
              "departs": "09:15", "arrive_at": "09:50", "to": "UVic"},

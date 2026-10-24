@@ -40,7 +40,7 @@ LOGGER = logging.getLogger(__name__)
 def _mail_reply(
     settings: MailReplySettings | None, clock: Clock, log: JevLog | None = None,
 ) -> MailReply | None:
-    """``home.mail_reply`` (ADR 0123): Jev's reply marks over the inbox, or None while off."""
+    """``home.mail_reply`` (ADR 0124): Jev's junk marks over the inbox, or None while off."""
     if settings is None:
         return None
     # min_confidence is the choice question's bar; this route asks none, so it stays unused.
@@ -48,9 +48,7 @@ def _mail_reply(
         model=settings.model, min_confidence=1.0, timeout_ms=settings.timeout_ms, clock=clock,
         log=log,
     )
-    return MailReply(
-        route, settings.yes_at, settings.fyi_at, settings.junk_at, importance=settings.importance,
-    )
+    return MailReply(route, settings.junk_at, importance=settings.importance)
 
 
 def _job_mail(  # noqa: PLR0913 - the settings, its collaborators, the clock and the moment

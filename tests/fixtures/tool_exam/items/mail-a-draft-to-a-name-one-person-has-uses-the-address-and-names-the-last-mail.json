@@ -1,0 +1,51 @@
+{
+  "id": "mail-a-draft-to-a-name-one-person-has-uses-the-address-and-names-the-last-mail",
+  "tool": "mail",
+  "said": "write Sam that Thursday works",
+  "at": "2026-10-21T11:00:00-07:00",
+  "zone": "America/Vancouver",
+  "state": null,
+  "args": {
+    "action": "draft",
+    "to": "Sam",
+    "subject": "Lunch",
+    "body": "Thursday works."
+  },
+  "recording": "mail-a-draft-to-a-name-one-person-has-uses-the-address-and-names-the-last-mail.recording.json",
+  "expect": {
+    "result": [
+      {
+        "path": "to.0",
+        "op": "eq",
+        "value": "Sam Lee <sam@example.com>"
+      },
+      {
+        "path": "undo",
+        "op": "exists"
+      }
+    ],
+    "summary_must": [
+      "Sam Lee <sam@example.com> was found in his mail",
+      "last mail with them: \"Hello\""
+    ],
+    "receipt": {
+      "status": "done",
+      "reads_only": false
+    },
+    "gmail": [
+      {
+        "tool": "gmail_createDraft",
+        "args": {
+          "to": "sam@example.com",
+          "subject": "Lunch",
+          "body": "Thursday works."
+        },
+        "count": 1
+      },
+      {
+        "tool": "gmail_sendDraft",
+        "count": 0
+      }
+    ]
+  }
+}

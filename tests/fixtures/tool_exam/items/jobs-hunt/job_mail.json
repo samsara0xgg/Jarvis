@@ -1,0 +1,109 @@
+{
+  "mails": [
+    {
+      "message_id": "m-helix-1",
+      "received_at": "2026-09-28T09:00:00-07:00",
+      "kind": "receipt",
+      "company": "Helix Health",
+      "role": "Backend Developer Intern",
+      "sender_name": "Jordan Wu",
+      "sender_domain": "helix-health.example.com",
+      "subject": "Thank you for applying to Helix Health"
+    },
+    {
+      "message_id": "m-helix-2",
+      "received_at": "2026-10-16T09:00:00-07:00",
+      "kind": "offer",
+      "company": "Helix Health",
+      "role": "Backend Developer Intern",
+      "sender_name": "Jordan Wu",
+      "sender_domain": "helix-health.example.com",
+      "subject": "Offer of employment"
+    },
+    {
+      "message_id": "m-orbit-1",
+      "received_at": "2026-10-01T09:00:00-07:00",
+      "kind": "receipt",
+      "company": "Orbit Labs",
+      "role": "Backend Intern",
+      "sender_name": "Sam Ortiz",
+      "sender_domain": "orbit-labs.example.com",
+      "subject": "Application received"
+    },
+    {
+      "message_id": "m-orbit-2",
+      "received_at": "2026-10-09T09:00:00-07:00",
+      "kind": "rejection",
+      "company": "Orbit Labs",
+      "role": "Backend Intern",
+      "sender_name": "Sam Ortiz",
+      "sender_domain": "orbit-labs.example.com",
+      "subject": "Update on your application"
+    },
+    {
+      "message_id": "m-maple-1",
+      "received_at": "2026-10-12T09:00:00-07:00",
+      "kind": "receipt",
+      "company": "Maple Works",
+      "role": "Data Co-op",
+      "sender_name": "Riley Chen",
+      "sender_domain": "maple-works.example.com",
+      "subject": "Thanks for applying to Maple Works"
+    },
+    {
+      "message_id": "m-delta-1",
+      "received_at": "2026-09-10T09:00:00-07:00",
+      "kind": "receipt",
+      "company": "Delta Corp",
+      "role": "Analyst",
+      "sender_name": "Kim Reyes",
+      "sender_domain": "delta-corp.example.com",
+      "subject": "We received your application"
+    },
+    {
+      "message_id": "m-nova-1",
+      "received_at": "2026-10-09T09:00:00-07:00",
+      "kind": "receipt",
+      "company": "Workable",
+      "role": "QA Co-op",
+      "sender_name": "Workable",
+      "sender_domain": "workable.example.com",
+      "subject": "Thank you for applying to Nova Foods!"
+    },
+    {
+      "message_id": "m-peak-1",
+      "received_at": "2026-10-06T09:00:00-07:00",
+      "kind": "receipt",
+      "company": "Peak Ltd",
+      "role": "Support Co-op",
+      "sender_name": "Alex Moore",
+      "sender_domain": "peak-ltd.example.com",
+      "subject": "Application received"
+    },
+    {
+      "message_id": "m-peak-2",
+      "received_at": "2026-10-13T09:00:00-07:00",
+      "kind": "interview",
+      "company": "Peak Ltd",
+      "role": "Support Co-op",
+      "sender_name": "Alex Moore",
+      "sender_domain": "peak-ltd.example.com",
+      "subject": "Interview invitation",
+      "event_at": "2026-10-22T13:00:00-07:00",
+      "event_text": "Thursday, October 22 at 1:00 pm"
+    }
+  ],
+  "applications": [
+    {
+      "company": "Garnet Co",
+      "role": "Data Co-op",
+      "applied_at": "2026-10-16",
+      "source": "said"
+    },
+    {
+      "company": "Quill Inc",
+      "applied_at": "2026-10-03",
+      "hidden": true
+    }
+  ]
+}

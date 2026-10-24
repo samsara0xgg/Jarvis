@@ -1,0 +1,39 @@
+{
+  "id": "mail-a-reply-draft-goes-to-the-reply-to-in-the-thread-with-a-re-subject",
+  "tool": "mail",
+  "said": "write back to Sam that Thursday works",
+  "at": "2026-10-21T11:00:00-07:00",
+  "zone": "America/Vancouver",
+  "state": null,
+  "args": {
+    "action": "draft",
+    "reply_to": "lunch1",
+    "body": "Thursday works."
+  },
+  "recording": "mail-a-reply-draft-goes-to-the-reply-to-in-the-thread-with-a-re-subject.recording.json",
+  "expect": {
+    "result": [
+      {
+        "path": "to.0",
+        "op": "eq",
+        "value": "Sam at Home <sam.home@example.org>"
+      },
+      {
+        "path": "subject",
+        "op": "eq",
+        "value": "Re: Lunch Thursday?"
+      }
+    ],
+    "gmail": [
+      {
+        "tool": "gmail_createDraft",
+        "args": {
+          "to": "sam.home@example.org",
+          "threadId": "T9",
+          "subject": "Re: Lunch Thursday?"
+        },
+        "count": 1
+      }
+    ]
+  }
+}

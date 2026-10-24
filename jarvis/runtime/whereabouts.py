@@ -111,8 +111,9 @@ class Whereabouts:
     def origin(self, conn: sqlite3.Connection, turn_id: str) -> str | None:
         """The device that opened ``turn_id``, as the channel line names it; ``None`` unknown.
 
-        ``his phone (iphone)``, ``macbook, a computer``, ``this Mac`` (a Mac running alone), or
-        a bare name. On a brain ``mac`` is the brain's own default row, not a device (ADR 0212).
+        ``his phone (iphone)``, ``his iPad (ipad)``, ``macbook, a computer``, ``this Mac`` (a Mac
+        running alone), or a bare name. On a brain ``mac`` is the brain's own default row, not a
+        device (ADR 0212).
         """
         device = turn_origin(conn, turn_id)[1]
         if device is None:
@@ -120,8 +121,8 @@ class Whereabouts:
         if device == MAC_NODE:
             return None if self._hub is not None else "this Mac"
         what = self._kind(self._terminals())(device)
-        if what == "his phone":
-            return f"his phone ({device})"
+        if what in {"his phone", "his iPad"}:
+            return f"{what} ({device})"
         return f"{device}, {what}" if what else device
 
     def _terminals(self) -> dict[str, tuple[bool, bool]]:
@@ -132,16 +133,19 @@ class Whereabouts:
     def _kind(self, terminals: dict[str, tuple[bool, bool]]) -> Callable[[str], str]:
         """Name a device's kind; nothing is claimed for an unknown one.
 
-        A computer is or was a terminal (connected, or declared tools); a phone registered push
-        or has its conversation open.
+        A computer is or was a terminal (connected, or declared tools); an iPad registered push
+        saying so (ADR 0401); a phone registered push otherwise, or has its conversation open.
         """
         computers = set(terminals) | terminal_tools.declaring(self._root)
-        phones = set(push_tokens.registrations(self._root))
+        registered = push_tokens.registrations(self._root)
+        pads = {name for name, one in registered.items() if one.idiom == "pad"}
 
         def kind(name: str) -> str:
             if name in computers:
                 return "a computer"
-            return "his phone" if name in phones or self.phone_open(name) else ""
+            if name in pads:
+                return "his iPad"
+            return "his phone" if name in registered or self.phone_open(name) else ""
 
         return kind
 

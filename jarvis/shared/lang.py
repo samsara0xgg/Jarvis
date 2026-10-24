@@ -28,7 +28,7 @@ import re
 from string import Formatter
 from typing import TYPE_CHECKING, Any, Final, Literal, get_args
 
-from jarvis.shared.text import is_english
+from jarvis.shared.text import is_english, split_person
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -131,7 +131,6 @@ SLOW_TOOLS: Final[dict[str, str]] = {
     "screen_look": "tool_status.screen",
     "refresh_work_state": "tool_status.work_state",
     "daily_work_report": "tool_status.report",
-    "write_mail_draft": "tool_status.draft",
 }
 
 
@@ -139,8 +138,6 @@ SLOW_TOOLS: Final[dict[str, str]] = {
 
 # (what the card and the ask call it, the line once it ran) per tool.
 _ACTIONS: Final[dict[str, dict[Language, tuple[str, str]]]] = {
-    "mcp__gmail__gmail_send": {"zh": ("发这封邮件", "已发送"), "en": ("send this email", "Sent")},
-    "mcp__gmail__gmail_sendDraft": {"zh": ("发出这封草稿", "已发送"), "en": ("send this draft", "Sent")},
     "mcp__gmail__gmail_modify": {
         "zh": ("改这封邮件的标签", "标签已改"),
         "en": ("change this email's labels", "Labels changed"),
@@ -152,6 +149,10 @@ _ACTIONS: Final[dict[str, dict[Language, tuple[str, str]]]] = {
     "mcp__gmail__gmail_modifyThread": {
         "zh": ("改这组邮件的标签", "标签已改"),
         "en": ("change this thread's labels", "Labels changed"),
+    },
+    "mail": {
+        "zh": ("发这封邮件", "邮件已发出"),
+        "en": ("send this email", "Email sent"),
     },
     "spawn_worker": {
         "zh": ("派这个后台任务", "已派出去"),
@@ -208,7 +209,7 @@ def ask_line(tool_name: str, arguments: Mapping[str, Any], lang: Language | None
     only names what it does.
     """
     lang = lang or _current
-    to = letter_to(dict(arguments))
+    to = letter_to(dict(arguments), lang)
     if to is not None:
         return t("confirm.ask_letter", lang=lang, to=to, subject=arguments["subject"])
     shown = {key: _in_words(value, lang) for key, value in arguments.items()}
@@ -226,10 +227,83 @@ def ask_line(tool_name: str, arguments: Mapping[str, Any], lang: Language | None
     return t("confirm.ask_args", lang=lang, action=named, args=("，" if lang == "zh" else ", ").join(cut))
 
 
-def letter_to(arguments: object) -> str | None:
-    """The recipients when a tool call's arguments are a letter (to, subject, body), else None."""
+def _letter_group(arguments: Mapping[str, Any], key: str) -> list[str]:
+    group = arguments.get(key)
+    return [one for one in group if isinstance(one, str)] if isinstance(group, list) else []
+
+
+def _completed_letter(arguments: object) -> dict[str, Any] | None:
+    """The arguments of a letter the mail tool completed (ADR 0361, 0366), else None.
+
+    Its recipients are ``Name <address>`` in a list and ``you`` holds his own addresses among
+    them; a letter given any other way is not read as this one.
+    """
     if not isinstance(arguments, dict):
         return None
+    to, you = arguments.get("to"), arguments.get("you")
+    if not (isinstance(to, list) and to and isinstance(you, list)):
+        return None
+    if not all(isinstance(one, str) for one in to):
+        return None
+    if not isinstance(arguments.get("subject"), str) or not isinstance(arguments.get("body"), str):
+        return None
+    return arguments
+
+
+def _own_mark(shown: str, arguments: Mapping[str, Any], lang: Language) -> str:
+    """The mark for himself when the address in ``shown`` is one of his, else nothing."""
+    mine = {str(one).lower() for one in arguments.get("you", []) if isinstance(one, str)}
+    return t("letter.you", lang=lang) if split_person(shown)[1].lower() in mine else ""
+
+
+def letter_card(arguments: Mapping[str, Any], lang: Language | None = None) -> dict[str, Any]:
+    """The arguments a confirmation card shows (ADR 0366); any call but a completed letter as is.
+
+    A completed letter lists every recipient by name and address, his own marked, then each
+    Cc and Bcc recipient labelled, and gives the subject, the whole body and the thread it
+    answers. The clients read ``to`` (a list), ``subject``, ``body`` and ``threadId``.
+    """
+    letter = _completed_letter(arguments)
+    if letter is None:
+        return dict(arguments)
+    lang = lang or _current
+    people = [one + _own_mark(one, letter, lang) for one in letter["to"]]
+    for key in ("cc", "bcc"):
+        people += [
+            t(f"letter.{key}", lang=lang, who=one + _own_mark(one, letter, lang))
+            for one in _letter_group(letter, key)
+        ]
+    card: dict[str, Any] = {"to": people, "subject": letter["subject"], "body": letter["body"]}
+    thread = letter.get("thread")
+    if isinstance(thread, str) and thread:
+        card["threadId"] = thread
+    return card
+
+
+def letter_to(arguments: object, lang: Language | None = None) -> str | None:
+    """The recipients when a tool call's arguments are a letter (to, subject, body), else None.
+
+    A letter the mail tool completed names each person as he would (the name, else the address),
+    his own marked, with the Cc and Bcc people after them.
+    """
+    if not isinstance(arguments, dict):
+        return None
+    lang = lang or _current
+    letter = _completed_letter(arguments)
+    if letter is not None:
+        joiner = "、" if lang == "zh" else ", "
+
+        def named(group: list[str]) -> str:
+            return joiner.join(
+                (split_person(one)[0] or split_person(one)[1]) + _own_mark(one, letter, lang)
+                for one in group
+            )
+
+        text = named(letter["to"])
+        for key in ("cc", "bcc"):
+            if group := _letter_group(letter, key):
+                text += t(f"letter.{key}_in", lang=lang, who=named(group))
+        return text
     to, subject, body = arguments.get("to"), arguments.get("subject"), arguments.get("body")
     if not isinstance(subject, str) or not isinstance(body, str):
         return None
@@ -324,6 +398,12 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
         "zh": "信写好了，发给 {to}，主题「{subject}」。要发吗？",
         "en": 'The email to {to} is ready, subject "{subject}". Send it?',
     },
+    # ADR 0366: the people of a letter on its card and in its question.
+    "letter.you": {"zh": "（你）", "en": " (you)"},
+    "letter.cc": {"zh": "抄送 {who}", "en": "Cc {who}"},
+    "letter.bcc": {"zh": "密送 {who}", "en": "Bcc {who}"},
+    "letter.cc_in": {"zh": "（抄送 {who}）", "en": " (Cc {who})"},
+    "letter.bcc_in": {"zh": "（密送 {who}）", "en": " (Bcc {who})"},
     "confirm.rejected": {"zh": "好，不{action}了。", "en": "OK, I won't {action}."},
     "confirm.rejected_all": {"zh": "好，这几件都不做了。", "en": "OK, I won't do any of these."},
     "confirm.tool_gone": {
@@ -1014,6 +1094,9 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
         "en": "I used up this turn's tool calls before I had an answer. Try asking a smaller"
         " part of the question.",
     },
+    # ADR 0359: the heading of the list of pages a deep search's answer rests on, which code writes
+    # under the written part of her answer.
+    "sources.heading": {"zh": "来源", "en": "Sources"},
     # What the companion shows under her while a tool is really running
     # (ADR 0115): one fixed line per kind of work, never a model's words.
     "tool_status.web": {"zh": "正在搜索网页…", "en": "Searching the web..."},
@@ -1021,7 +1104,6 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
     "tool_status.screen": {"zh": "正在看你的屏幕…", "en": "Looking at your screen..."},
     "tool_status.work_state": {"zh": "正在更新你的工作状态…", "en": "Updating your work state..."},
     "tool_status.report": {"zh": "正在写今天的工作报告…", "en": "Writing your daily report..."},
-    "tool_status.draft": {"zh": "正在写回信草稿…", "en": "Writing the draft..."},
     "tool_status.calendar": {"zh": "正在查看你的日程…", "en": "Checking your calendar..."},
     "tool_status.mail": {"zh": "正在查看你的邮件…", "en": "Checking your mail..."},
     "tool_status.notion": {"zh": "正在搜索 Notion…", "en": "Searching Notion..."},
@@ -1068,10 +1150,16 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
     "step.mail.done": {"zh": "查了邮件", "en": "checked your mail"},
     "step.mail_write": {"zh": "写邮件", "en": "Writing mail"},
     "step.mail_write.done": {"zh": "写了邮件", "en": "wrote mail"},
+    "step.mail_send": {"zh": "发邮件", "en": "Sending mail"},
+    "step.mail_send.done": {"zh": "发了邮件", "en": "sent mail"},
+    "step.mail_archive": {"zh": "归档邮件", "en": "Archiving mail"},
+    "step.mail_archive.done": {"zh": "归档了邮件", "en": "archived mail"},
     "step.notion": {"zh": "搜 Notion", "en": "Searching Notion"},
     "step.notion.done": {"zh": "搜了 Notion", "en": "searched Notion"},
     "step.day": {"zh": "查你的一天", "en": "Checking your day"},
     "step.day.done": {"zh": "查了你的一天", "en": "checked your day"},
+    "step.body": {"zh": "看身体数据", "en": "Checking your health data"},
+    "step.body.done": {"zh": "看了身体数据", "en": "checked your health data"},
     "step.work_state": {"zh": "更新工作状态", "en": "Updating your work state"},
     "step.work_state.done": {"zh": "更新了工作状态", "en": "updated your work state"},
     "step.report": {"zh": "写日报", "en": "Writing the daily report"},
@@ -1208,6 +1296,26 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
         "zh": "面试：{company} — {role}",
         "en": "Interview: {company} — {role}",
     },
+    # ADR 0379: a Pacific, Mountain or Central time that its US and its Canadian zone read
+    # differently, both readings with what the mail wrote and the two zones it can mean (only the
+    # zones when the kept sentence lost its label); and the note on the interview's thing that
+    # carries them.
+    "job.when.two": {
+        "zh": "{first} 或 {later}（邮件写的是 {said}，按{zones}算）",
+        "en": "{first} or {later} (the mail says {said}, {zones})",
+    },
+    "job.when.two_unsaid": {
+        "zh": "{first} 或 {later}（按{zones}算）",
+        "en": "{first} or {later} ({zones})",
+    },
+    "job.zones.pacific": {"zh": "卑诗或美国太平洋时间", "en": "BC or US Pacific"},
+    "job.zones.mountain": {"zh": "阿尔伯塔或美国山地时间", "en": "Alberta or US Mountain"},
+    "job.zones.central": {"zh": "曼尼托巴或美国中部时间", "en": "Manitoba or US Central"},
+    "job.zones.any": {"zh": "美国或加拿大时间", "en": "US or Canadian time"},
+    "job.thing.note": {
+        "zh": "可能是两个时间：{when}。提醒按较早的那个算。",
+        "en": "Two possible times: {when}. Reminders use the earlier one.",
+    },
     "job.part.role": {"zh": "（{role}）", "en": " ({role})"},
     "job.part.when": {"zh": "，{when}", "en": ", {when}"},
     "job.line.offer": {"zh": "{company}发来 offer{role}{when}。", "en": "{company} sent an offer{role}{when}."},
@@ -1257,6 +1365,22 @@ TEXT: Final[dict[str, dict[Language, str]]] = {
         "zh": "今天已花 ${spent}，上限 ${limit}。",
         "en": "${spent} spent today, limit ${limit}.",
     },
+    # ADR 0382: the card when a data source the Mac sends stops arriving while it should.
+    "source.silence.title": {
+        "zh": "{source}断了",
+        "en": "{source} stopped arriving",
+    },
+    "source.silence.line": {
+        "zh": "从 {since} 起没有新数据。",
+        "en": "No new data since {since}.",
+    },
+    "source.silence.line_long": {
+        "zh": "两天以上没有新数据。",
+        "en": "No new data for more than 2 days.",
+    },
+    "source.silence.timesink.spans": {"zh": "TimeSink 的活动记录", "en": "TimeSink activity"},
+    "source.silence.timesink.ocr": {"zh": "TimeSink 的屏幕文字", "en": "TimeSink screen text"},
+    "source.silence.mac.mic": {"zh": "Mac 的录音", "en": "The Mac's recording"},
 }
 
 # ADR 0304: what iOS calls its own apps, by bundle id. The Mac's shipper names the apps of his

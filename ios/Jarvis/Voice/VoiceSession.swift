@@ -122,6 +122,7 @@ final class VoiceSession {
         hop(UIApplication.willEnterForegroundNotification) { $0.foreground = true; $0.refreshArming(); $0.prewarm() }
         hop(UIApplication.didBecomeActiveNotification) { if TalkRequest.pending { $0.requestTalk() } }
         hop(TalkRequest.notification) { $0.requestTalk() }
+        hop(VoicePrefs.changed) { if $0.state == .thinking || $0.state == .speaking { $0.cancel() } }       // 她出不出声: the line is opened again under the new answer, so the turn in flight ends here
         audio.onMic = { [weak self, feed] buf, level in
             feed.feed(buf)
             Task { @MainActor in self?.rawLevel = level }

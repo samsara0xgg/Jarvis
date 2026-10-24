@@ -1,0 +1,18 @@
+{
+  "id": "weather-when-next-friday",
+  "tool": "weather",
+  "said": "what's the weather next Friday",
+  "at": "2026-10-21T09:30:30-07:00",
+  "zone": "America/Vancouver",
+  "state": null,
+  "args": {"when": "下周五"},
+  "recording": "weather-when-next-friday.recording.json",
+  "expect": {
+    "checker": "weather_days_labelled",
+    "result": [
+      {"path": "days", "op": "len", "value": 1},
+      {"path": "days.0.date", "op": "eq", "value": "2026-10-30"},
+      {"path": "days.0.day", "op": "eq", "value": "Fri Oct 30"}
+    ]
+  }
+}

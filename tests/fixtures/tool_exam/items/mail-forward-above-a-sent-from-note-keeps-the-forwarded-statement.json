@@ -1,0 +1,32 @@
+{
+  "id": "mail-forward-above-a-sent-from-note-keeps-the-forwarded-statement",
+  "tool": "mail",
+  "said": "what did Kim send me",
+  "at": "2026-10-21T11:00:00-07:00",
+  "zone": "America/Vancouver",
+  "state": null,
+  "args": {
+    "action": "read",
+    "message": "fwd1"
+  },
+  "recording": "mail-forward-above-a-sent-from-note-keeps-the-forwarded-statement.recording.json",
+  "expect": {
+    "result": [
+      {
+        "path": "text",
+        "op": "contains",
+        "value": "Forwarded message"
+      },
+      {
+        "path": "text",
+        "op": "contains",
+        "value": "statement balance is $412.30"
+      },
+      {
+        "path": "text",
+        "op": "contains",
+        "value": "Nov 3, 2026"
+      }
+    ]
+  }
+}

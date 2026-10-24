@@ -1,0 +1,16 @@
+{
+  "id": "weather-place-vancouver-bc",
+  "tool": "weather",
+  "said": "what's the weather in Vancouver, BC",
+  "at": "2026-10-21T09:30:30-07:00",
+  "zone": "America/Vancouver",
+  "state": null,
+  "args": {"place": "Vancouver, BC"},
+  "recording": "weather-place-vancouver-bc.recording.json",
+  "expect": {
+    "result": [
+      {"path": "place", "op": "eq", "value": "Vancouver, British Columbia, Canada"},
+      {"path": "$", "op": "not_mentions", "value": "Washington"}
+    ]
+  }
+}

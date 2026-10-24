@@ -1,6 +1,6 @@
 # ADR 0314 — Each stretch tells where his attention went, summed by code from what his screens had in front
 
-**Status:** Accepted
+**Status:** Superseded-by-0392
 **Date:** 2026-10-21
 **Supersedes:** none
 

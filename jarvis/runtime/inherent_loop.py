@@ -166,7 +166,6 @@ async def serve_inherent(
                 usage_observer=usage_observer,
                 codex_board=codex_board,
                 phone_hub=phone_hub,
-                spend=spend,
                 v2_token=v2_token,
                 port=port,
             ),

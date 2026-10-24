@@ -191,6 +191,19 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.yilunshi.jarvis.watchkitapp.widgets
         GENERATE_INFOPLIST_FILE: YES
         SKIP_INSTALL: YES
+  JarvisUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    deploymentTarget: "18.0"
+    sources:
+      - JarvisUITests
+    dependencies:
+      - target: Jarvis
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.yilunshi.jarvis.uitests
+        TEST_TARGET_NAME: Jarvis
   JarvisTests:
     type: bundle.unit-test
     platform: iOS

@@ -43,6 +43,7 @@ from jarvis.runtime.bootstrap.llm import (
 from jarvis.runtime.bootstrap.places import _start_locating_places
 from jarvis.runtime.decision_state import DecisionStateCache
 from jarvis.runtime.departures import Departures
+from jarvis.runtime.mail_page import MailPage
 from jarvis.runtime.now_block import calendar_line, doing_now_line, plan_line
 from jarvis.runtime.picture_files import PictureFiles
 from jarvis.runtime.picture_notes import PictureNotes
@@ -145,6 +146,10 @@ def _assemble(  # noqa: PLR0913 - one argument per stage; the runtime is every s
     attachments = Attachments(paths.artifacts_root / ATTACHMENTS_DIRNAME)
     picture_files = PictureFiles(attachments, memory_db=memory.db_path)
     voiceprint_gate = config.voiceprint_gate  # ADR 0286, read once at boot
+    mail_page = (  # ADR 0366: the draft under the page's open letter is a Gmail draft
+        None if features.mail_view is None or served.home is None
+        else MailPage(features.mail_view, served.home, paths.event_log, clock)
+    )
     runtime = JarvisRuntime(
         config=config,
         runtime_paths=paths,
@@ -194,12 +199,12 @@ def _assemble(  # noqa: PLR0913 - one argument per stage; the runtime is every s
         home=served.home,
         view=features.view,
         doing=features.doing,
-        mail_drafts=features.mail_drafts,
+        mail_page=mail_page,
         ambient=features.ambient,
         live_context=(
             features.rides.line,
             *(() if features.view is None else (features.view.line,)),
-            *(() if features.mail_drafts is None else (features.mail_drafts.line,)),
+            *(() if mail_page is None else (mail_page.line,)),
             features.voice_cues.line,
             *(() if features.ambient is None else (features.ambient.line,)),
             partial(_shares_line, paths.event_log),
@@ -234,7 +239,7 @@ def _assemble(  # noqa: PLR0913 - one argument per stage; the runtime is every s
         leg_planner=None if not features.maps_key else partial(
             build_leg_planner, features.maps_key, features.kept_places,
             kept=partial(place_state.read_kept, memory.db_path),
-            cap_usd=config.maps_monthly_usd,
+            cap_usd=config.maps_monthly_usd, bus_live=features.bus_live,
         ),
         voice_words=_voice_words(config.jev.voice_words, clock, features.jev_log),
         oneshot=_jev_oneshot(

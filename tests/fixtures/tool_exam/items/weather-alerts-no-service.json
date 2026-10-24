@@ -1,0 +1,13 @@
+{
+  "id": "weather-alerts-no-service",
+  "tool": "weather",
+  "said": "any storm warnings today",
+  "at": "2026-10-21T09:30:30-07:00",
+  "zone": "America/Vancouver",
+  "state": null,
+  "args": {},
+  "recording": "weather-alerts-no-service.recording.json",
+  "expect": {
+    "result": [{"path": "alerts", "op": "eq", "value": "no official warning service covers this place"}]
+  }
+}

@@ -1065,7 +1065,8 @@ def _render_log_report(report: LogReport) -> str:
             lines.append(f"          see: {one.ref}")
         for example in one.examples:
             note = f" ({example.note})" if example.note else ""
-            lines.append(f"          event {example.event_id} at {iso(example.ts_epoch_ms)}{note}")
+            row = "" if example.event_id is None else f"event {example.event_id} "
+            lines.append(f"          {row}at {iso(example.ts_epoch_ms)}{note}")
         if one.detail:
             lines.append(f"          {one.detail}")
     lines.append(

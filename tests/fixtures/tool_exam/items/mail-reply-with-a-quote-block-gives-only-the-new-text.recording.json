@@ -1,0 +1,14 @@
+{
+ "version": 1,
+ "mailbox": {
+  "messages": [
+   {
+    "id": "re1",
+    "subject": "Re: Lunch Thursday",
+    "sender": "Sam Lee <sam@example.com>",
+    "ago": 30,
+    "html": "<div>Thursday at noon works for me.</div><div class=\"gmail_quote\"><div class=\"gmail_attr\">On Tue, Oct 20, 2026 at 9:00 AM Allen &lt;allen@example.com&gt; wrote:<br></div><blockquote class=\"gmail_quote\" type=\"cite\"><div>Can we have lunch Thursday? Somewhere near the office.</div></blockquote></div>"
+   }
+  ]
+ }
+}

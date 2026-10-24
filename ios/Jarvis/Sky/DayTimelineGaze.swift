@@ -18,11 +18,11 @@ enum TLGaze {
     }
 
     /// where a finger at `x` on the bar is, in the chrome's design points
-    static func bar(x: Double) -> CGPoint { CGPoint(x: 30 + clamp(x, 0, TLLayout.barW), y: TLLayout.barY + TLLayout.barH / 2) }
+    static func bar(x: Double) -> CGPoint { CGPoint(x: TLLayout.Today.side + clamp(x, 0, TLLayout.Today.barW), y: TLLayout.Today.barY + TLLayout.Today.barH / 2) }
 
     /// where a row of the list is, for her eyes: the beginning of its words, half way down its line (`top` and `height` as the list lays it out, `scrolled` how far the list has gone up)
     static func row(top: Double, height: Double, scrolled y: Double) -> CGPoint {
-        CGPoint(x: 30 + TLColumns.text + 60, y: TLLayout.listTop + top + height / 2 - y)
+        CGPoint(x: TLLayout.Today.side + TLColumns.text + 60, y: TLLayout.Today.listTop + top + height / 2 - y)
     }
 }
 

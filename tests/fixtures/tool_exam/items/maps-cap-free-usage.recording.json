@@ -1,0 +1,7 @@
+{
+ "version": 1,
+ "settings": {"maps": {"monthly_usd": 7.7}},
+ "env": ["GOOGLE_MAPS_API_KEY"],
+ "http": [],
+ "mcp": []
+}

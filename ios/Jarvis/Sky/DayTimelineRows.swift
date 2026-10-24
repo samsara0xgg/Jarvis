@@ -211,7 +211,8 @@ extension DayTimelineModel {
             e.symbol = "message.fill"
             e.title = tlText(i.conversation) ?? tlText(i.app) ?? "消息"
             e.detail = "发 \(max(0, i.sent ?? 0)) · 收 \(max(0, i.received ?? 0))"
-            e.right = dur ?? ""
+            let n = max(0, i.sent ?? 0) + max(0, i.received ?? 0)
+            e.right = n > 0 ? "\(n) 条" : ""          // how many, not how long: the span of a burst is from its first message to its last, not time spent
             e.glance = e.title
         case "phone_call":
             e.kind = .phoneCall
@@ -276,10 +277,9 @@ extension DayTimelineModel {
             e.kind = .code
             e.symbol = "terminal.fill"
             let project = tlText(i.project), account = tlText(i.account)?.uppercased()
-            let s = TLSession(id: i.id, t0: t0, t1: max(t0, end ?? t0), time: e.time, title: tlText(i.title), project: project, account: account, right: dur ?? "", recap: tlText(i.detail))
+            let s = TLSession(id: i.id, t0: t0, t1: max(t0, end ?? t0), time: e.time, title: tlText(i.title), project: project, account: account, right: dur ?? "", recap: tlText(i.detail), prompts: i.prompts)
             e.title = s.name
-            e.detail = [project, account].compactMap { $0 }.joined(separator: " · ")
-            if e.detail?.isEmpty == true { e.detail = nil }
+            e.detail = account          // the session is named by its title; the repo it ran in is not said (a worktree's name is noise)
             e.right = dur ?? ""
             e.more = tlText(i.detail).map { [$0] } ?? []
             e.glance = s.told

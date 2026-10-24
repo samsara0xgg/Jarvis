@@ -53,7 +53,7 @@ enum TimelineFixture {
             (5, 1235.0, 1268.0, "论文第三章的数据", "论文", "b", "把三组实验的结果合成一张表，图还没画。"),
             (6, 1276.0, 1306.0, "给等你的卡片补测试", "Jarvis", "a", nil),
         ] as [(Int, Double, Double, String, String, String, String?)] {
-            var more: [String: Any] = ["id": "code-s\(n)", "title": title, "project": project, "account": account, "session_id": "s\(n)"]
+            var more: [String: Any] = ["id": "code-s\(n)", "title": title, "project": project, "account": account, "session_id": "s\(n)", "prompts": [1: 5, 2: 3, 3: 0, 4: 4, 5: 2, 6: 0][n] ?? 0]          // 0: it ran by itself
             if let recap { more["detail"] = recap }
             b.add("code", from, to, more)
         }
@@ -61,12 +61,15 @@ enum TimelineFixture {
         b.extra["missing"] = ["calendar"]
         b.extra["weather"] = ["condition": "mostly cloudy", "high": 14, "low": 8, "sunrise_ms": b.ms(454), "sunset_ms": b.ms(1091)]
         b.extra["summary"] = ["steps": 8240, "resting_hr": 58, "hrv": 42]
+        b.extra["highlights"] = [["id": "work-demo-2", "label": "做 Jarvis", "by": "him"], ["id": "picture-pic-demo-1", "label": "黑板上的积分", "by": "her"]]          // a star of his and one of hers on the bar
         if doing {
             // what his phone and the Mac brought that the rest of the day does not have: phone use, music, messages (one in the evening too) and a call on the phone
             b.add("screen", 850, 885, ["id": "screen-demo-1", "device": "iPhone", "active_s": 1500, "apps": [["name": "微信", "bundle": "com.tencent.xin", "minutes": 14, "category": "social"],
                                                                                                       ["name": "小红书", "bundle": "com.xingin.discover", "minutes": 8, "category": "social"], ["name": "Safari", "bundle": "com.apple.mobilesafari", "minutes": 3, "category": "browser"]]])
             b.add("media", 860, 890, ["id": "media-demo-1", "device": "iPhone", "app": "Music", "active_s": 1620, "titles": [["title": "Sunday Morning", "artist": "Maroon 5"]], "route": "AirPods"])
             b.add("messages", 855, 872, ["id": "messages-demo-1", "device": "iPhone", "app": "WeChat", "conversation": "Mia", "is_group": false, "sent": 4, "received": 6])
+            b.add("messages", 858, 860, ["id": "messages-demo-3", "device": "iPhone", "app": "小红书", "conversation": "穿搭", "is_group": true, "sent": 0, "received": 7])          // two bursts that only came in: one line
+            b.add("messages", 864, 865, ["id": "messages-demo-4", "device": "iPhone", "app": "小红书", "conversation": "旅行", "is_group": true, "sent": 0, "received": 5])
             b.add("messages", 1262, 1270, ["id": "messages-demo-2", "device": "iPhone", "app": "WeChat", "conversation": "论文小组", "is_group": true, "sent": 2, "received": 9])
             b.add("phone_call", 868, 876, ["id": "phone_call-demo-1", "device": "iPhone", "app": "Phone", "direction": "received", "person": "妈妈", "duration_s": 480])
             // What he was doing, as the brain's doing lane serves it, with the items under each stretch (ADR 0307: a lasting item in every stretch it overlaps, a point in the one it falls in)
@@ -81,7 +84,7 @@ enum TimelineFixture {
                                            rows: [(575, 640, "t-tl", 56, 6, 3), (640, 685, "t-cc", 38, 4, 2)], alongside: ["t-wx"]))
             b.doing(685, 795, "开车去 A&W", "commute", "inferred", items: ["move-3", "move-4"], clues: ["先开车，再走了十分钟"])
             b.doing(795, 835, "吃午饭", "meal", "stated", items: ["stay-5", "payment-demo-1"])
-            b.doing(835, 890, "歇一会儿", "rest", "inferred", confidence: "low", detail: "回到家，用了一会儿手机，听着歌", place: "p-home", items: ["move-6", "stay-7", "screen-demo-1", "messages-demo-1", "media-demo-1", "phone_call-demo-1"],
+            b.doing(835, 890, "歇一会儿", "rest", "inferred", confidence: "low", detail: "回到家，用了一会儿手机，听着歌", place: "p-home", items: ["move-6", "stay-7", "screen-demo-1", "messages-demo-1", "messages-demo-3", "messages-demo-4", "media-demo-1", "phone_call-demo-1"],
                     clues: ["手机上微信用得最多", "耳机里在放歌", "妈妈来了一个电话"], question: ("这段你在做什么？", ["休息", "刷手机", "等车"]),
                     attention: b.attention(threads: [("t-wx", "微信", "social", "iPhone", 14, ["Mia"]), ("t-xhs", "小红书", "social", "iPhone", 8, [])],
                                            rows: [(850, 868, "t-wx", 14, 2, 2), (876, 885, "t-xhs", 8, 1, 1)], alongside: []))
@@ -224,14 +227,51 @@ extension TLBrain {
     }
 }
 
+/// What the footprint pages give the scenes to move by themselves: the bar's scrub callback (the one a finger's drag calls), a curve's, and the two ▶ buttons.
+enum FootprintHooks {
+    static var scrub: ((Double?) -> Void)?
+    static var curve: ((Double?) -> Void)?
+    static var play: (() -> Void)?
+    static var outingPlay: (() -> Void)?
+}
+
+/// A hand that moves a finger along a path at the display's rate for a time, for the recordings: `step` gets how far along it is (0...1), then nil when it has lifted.
+final class FootprintScript: NSObject {
+    private var link: CADisplayLink?
+    private var start = 0.0
+    private let seconds: Double, step: (Double?) -> Void
+    private static var running: [FootprintScript] = []
+
+    init(seconds: Double, step: @escaping (Double?) -> Void) { self.seconds = seconds; self.step = step }
+
+    func run(after delay: Double) {
+        Self.running.append(self)
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [self] in
+            let l = CADisplayLink(target: self, selector: #selector(tick))
+            l.add(to: .main, forMode: .common)
+            link = l
+        }
+    }
+
+    @objc private func tick(_ l: CADisplayLink) {
+        if start == 0 { start = l.timestamp }
+        let f = (l.timestamp - start) / seconds
+        if f >= 1 { step(1); step(nil); l.invalidate(); Self.running.removeAll { $0 === self } } else { step(f) }
+    }
+}
+
 extension StarEngine {
     /// `-scene 足迹` opens the footprint's one-day screen on the made-up day (Sky/FootprintFixture.swift); the words after a colon go further: `:拖:1329` the bar held at that time (a fourth word after it lifts the finger again, and the map flies back to the day's whole), `:开:<outing id>`
-    /// (or its number in the day, from 0) that outing's page opened.
+    /// (or its number in the day, from 0) that outing's page opened. For the recordings: `:慢拖` a finger drags slowly along the whole held bar in 20 s, `:放` the day's ▶ replay plays, `:开:0:放` the outing's, `:开:0:曲线拖` a finger drags
+    /// along its speed curve in 15 s; a last word `:稀` takes the day with a fix every 30 s.
     func runFootprintScene(_ name: String) {
         RingScene.on = true                     // the made-up day stays: the brain is not asked and the world is not swapped back
         switchWorld(real: true)
-        let cal = Cal.cur, parts = name.split(separator: ":").map(String.init), mode = parts.count > 1 ? parts[1] : ""
-        let day = FootprintFixture.day(cal.cal), reply = FootprintFixture.footprint(cal.cal)
+        var parts = name.split(separator: ":").map(String.init)
+        let sparse = parts.last == "稀"
+        if sparse { parts.removeLast() }
+        let cal = Cal.cur, mode = parts.count > 1 ? parts[1] : ""
+        let day = FootprintFixture.day(cal.cal, sparse: sparse), reply = FootprintFixture.footprint(cal.cal, sparse: sparse)
         MainActor.assumeIsolated {
             ui.tl.fixture = .init(replies: [0: day], now: TimelineFixture.now)
             FootprintStore.shared.fixture = [cal.iso(ui.tl.today): reply]
@@ -246,10 +286,27 @@ extension StarEngine {
                 ui.footprint.list.hot = FootprintDayContent.hot(at: t, in: content.entries)
             }
             if parts.count > 3 { DispatchQueue.main.asyncAfter(deadline: .now() + 3.5) { [self] in ui.footprint.minute = nil; ui.footprint.list.hot = nil } }
+        case "慢拖":
+            FootprintScript(seconds: 20) { f in FootprintHooks.scrub?(f.map { $0 * TLLayout.barW }) }.run(after: 2)
+        case "放":
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { FootprintHooks.play?() }
+        case "来回": DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [self] in sceneRounds() }          // her card over his day on the map
+        case "今天开":                                                             // the footprint's day on 今天, its first trip opened where it stands (the trip's row opened, Sky/RowStage.swift)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [self] in
+                ui.footprintOpen = false
+                guard let r = ui.tl.reply else { return }
+                let m = ui.tl.model(r)
+                if let e = m.entries.first(where: { $0.kind == .trip }) { ui.tl.unfold(e, in: m, room: TLLayout.viewport) }
+            }
         case "开":
             let want = parts.count > 2 ? parts[2] : "0"
             let pick = reply.outings.first { $0.id == want } ?? Int(want).flatMap { reply.outings.indices.contains($0) ? reply.outings[$0] : nil }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [self] in ui.footprint.openOuting = pick?.id }
+            switch parts.count > 3 ? parts[3] : "" {
+            case "放": DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { FootprintHooks.outingPlay?() }
+            case "曲线拖": FootprintScript(seconds: 15) { f in FootprintHooks.curve?(f.map { $0 * FootprintCurves.width }) }.run(after: 2.5)
+            default: break
+            }
         default: break
         }
         wake()
@@ -282,7 +339,7 @@ extension StarEngine {
         // a row brought into view, or opened where it stands as a tap opens it
         func show(_ id: String, open: Bool) {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [self] in
-                if open, let e = model.entries.first(where: { $0.id == id }) { ui.tl.unfold(e, in: model, room: TLLayout.viewport); return }
+                if open, let e = model.entries.first(where: { $0.id == id || $0.title == id }) { ui.tl.unfold(e, in: model, room: TLLayout.viewport); return }          // by its id, or its title
                 if let y = model.top(of: id) { ui.tl.scroll(to: max(0, y - 90), animated: false) }
             }
         }
@@ -301,8 +358,23 @@ extension StarEngine {
         }
         case "她菜单": DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [self] in ui.tl.openArc(holding: false) }          // her cards out (`-scene 时间线:她菜单`)
         case "聊天":                                                               // the conversation's page of the bar at the foot, with a day and a half of talk on it (`:聊天:空` none)
-            if parts.count < 3 || parts[2] != "空" { talkPageRounds(cal) }
+            if parts.count < 3 || parts[2] != "空" { talkPageRounds(cal, long: parts.count > 2 && parts[2] == "长") }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [self] in showPage(.talk) }
+            if parts.count > 3, parts[3] == "中间" { DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) { [self] in ui.scrollTo = "c-3" } }          // `:聊天:长:中间` scrolled up to the middle of it
+            if parts.count > 2, parts[2] == "话题" {          // made-up topics in the search card (the brain does not serve them yet), for the card's look
+                ChatSearchModel.sceneTopics = [
+                    ChatTopic(id: "t1", name: "这周的安排", line: "二面明天下午三点", recap: "明天下午三点线上二面，两点半提醒你准备。小测周三十点在 ECS 123。还没定：周末爬山要看天气。",
+                              count: 2, lastMs: Int64(Date().timeIntervalSince1970 * 1000) - 600_000, places: [.init(recordId: "rec-3", seq: 3, lines: ["rec-3", "rec-4"]), .init(recordId: "rec-7", seq: 7, by: "him", lines: ["rec-7", "rec-8"])]),
+                    ChatTopic(id: "t2", name: "吃的", line: "学校附近三家", count: 1, lastMs: Int64(Date().timeIntervalSince1970 * 1000) - 7_200_000, places: [.init(recordId: "rec-5", seq: 5)]),
+                    ChatTopic(id: "t3", name: "出门提醒", done: true, line: "每天八点五十", count: 1, lastMs: Int64(Date().timeIntervalSince1970 * 1000) - 93_600_000, places: [.init(recordId: "rec-1", seq: 1)]),
+                ]
+            }
+            if parts.count > 2, parts[2] == "跟" {          // a topic followed to its last place: those turns lit, the bar over the field
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) { [self] in goTrail(ChatTrail(name: "这周的安排", places: [.init(recordId: "rec-3"), .init(recordId: "rec-7")], at: 1), to: 1) }
+            }
+        case "来回":                                                               // three rounds on one page: her card grows into a small dialog (`:来回:设置` on that page; the map's is `-scene 足迹:来回`)
+            if parts.count > 2 { DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [self] in showPage(.settings) } }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [self] in sceneRounds() }
         case "飘":          // her drift, without the wait for it
             if let k = Int(parts.count > 2 ? parts[2] : ""), TLSeat.perches.indices.contains(k) {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [self] in wander = (TLSeat.perches[k], nowMs() + 60_000) }
@@ -514,16 +586,40 @@ extension StarEngine {
     }
 
     /// A day and a half of talk as the conversation's page shows it: yesterday evening, this morning, lunch with a written answer, and a moment ago.
-    private func talkPageRounds(_ cal: Cal) {
+    /// three rounds of a spoken talk, her answers all there: her card as a small dialog
+    private func sceneRounds() {
+        beginTalk()
+        addTurn(his: true, "今天走了多少步", heard: true)
+        addTurn(his: false, "9,630 步，比平时多一点。晚上那段跑步占了一半。")
+        addTurn(his: true, "陶艺课是几点来着", heard: true)
+        addTurn(his: false, "今晚 22:00，Studio 4。邮件里让你回复确认，你还没回。")
+        addTurn(his: true, "那帮我回一下", heard: true)
+        addTurn(his: false, "好，回好了：确认今晚 22:00 到。")
+        tlUntil = nowMs() + TLTalk.stay; lingerUntil = tlUntil          // her answer is all there: it stays until he does something else
+    }
+
+    private func talkPageRounds(_ cal: Cal, long: Bool = false) {          // `long`: two days more before them, taller than the page
         let now = Date()
         func row(_ seq: Int, _ his: Bool, _ ago: Double, _ text: String) -> ConversationRow {
             let at = now.addingTimeInterval(-ago * 60)
-            return ConversationRow(seq: seq, source: his ? "allen" : "jarvis", ts: TalkStream.dayId(at, cal.cal) + "T" + TalkStream.clock(at, cal.cal) + ":00", text: text)
+            var r = ConversationRow(seq: seq, source: his ? "allen" : "jarvis", ts: TalkStream.dayId(at, cal.cal) + "T" + TalkStream.clock(at, cal.cal) + ":00", text: text)
+            r.id = "rec-\(seq)"
+            return r
         }
         // an answer as the brain writes one: said, and written out (a voice part alone is a line before the answer, with more to come)
         func said(_ s: String) -> String { "<voice>\(s)</voice><document>\(s)</document>" }
+        let before = long ? [
+            row(-7, true, 74 * 60, "周末天气怎么样"),
+            row(-6, false, 74 * 60, said("周六晴，最高十四度；周日下午有雨，出门带伞。")),
+            row(-5, true, 73 * 60, "帮我记一下，下周三交实验报告"),
+            row(-4, false, 73 * 60, said("记下了，下周三交实验报告。周二晚上我提醒你检查一遍。")),
+            row(-3, true, 50 * 60, "今天走了多少步"),
+            row(-2, false, 50 * 60, said("八千四百步，比这周平均多一千。大部分是下午去图书馆那趟。")),
+            row(-1, true, 49 * 60, "图书馆几点关门"),
+            row(0, false, 49 * 60, said("今天开到晚上十一点，周五只到六点。")),
+        ] : []
         MainActor.assumeIsolated {
-            Conversation.shared.debugSet([
+            Conversation.shared.debugSet(before + [
                 row(1, true, 26 * 60, "明天早上提醒我九点出门"),
                 row(2, false, 26 * 60, said("好，明早八点五十提醒你，路上大概二十分钟。")),
                 row(3, true, 4 * 60, "今天要带什么"),

@@ -50,6 +50,7 @@ from jarvis.state.locate_wait import Located, LocateWaits
 from jarvis.state.memory_db import open_memory_db
 from jarvis.state.phone_location import NoPhoneReport, latest_phone_fix
 from jarvis.surface.phone_events import PHONE_EVENTS_PATH
+from tests.support.bus_world import google_place, serve_text_search
 from tests.support.clock import FakeClock
 from tests.support.phone import GOOD, LOCATION, PNG, VISIT, event_frame, here_daemon
 from tests.support.runtime_config import boot_runtime
@@ -257,6 +258,14 @@ ANSWER = (48.70, -123.70)
 """Where a phone says it is when it is asked."""
 
 
+MALL = {
+    "Mayfair Mall": google_place(
+        "Mayfair Mall", "3147 Douglas St, Victoria, BC", 48.4400, -123.3600,
+        "ChIJmayfair0123456789ab",
+    ),
+}
+
+
 class Phones:
     """The phones a Locator can ask: records who was asked and answers for those that will.
 
@@ -296,6 +305,7 @@ class Rig:
         """Wire a registry whose tools read Here; ``mac`` gives the host a reader of its own."""
         self.clock = FakeClock(TRANSIT_NOW)
         self.seen = serve_routes(monkeypatch)
+        serve_text_search(monkeypatch, MALL)
         self.memory = root / "memory.db"
         open_memory_db(self.memory).close()
         waits = LocateWaits()
@@ -607,6 +617,7 @@ def test_a_booted_brain_reads_locate_phone_and_asks_past_locate_max_age_s(
 ) -> None:
     """The carried phone is the named one even when another is newer; past the limit it asks."""
     seen = serve_routes(monkeypatch)
+    serve_text_search(monkeypatch, MALL)
     brain = _brain(tmp_path, monkeypatch, "locate:\n  phone: iphone\n  max_age_s: 600\n")
     try:
         now = int(time.time() * 1000)

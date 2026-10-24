@@ -1,12 +1,10 @@
 import SwiftUI
 
-// What the day's header says besides her sentence and the bar: after the date the day's weather; on the row of the pills how many of the day's rows wait on him; after the day's numbers
-// what Health reported.
+// What the day's header says besides the bar: after the date the day's weather (the iPad's); after the day's numbers what Health reported.
 
 private let ink = SetColor.ink
 private let muted = SetColor.muted
 private let faint = SetColor.faint
-private let amber = Color(red: 1, green: 201 / 255, blue: 143 / 255)
 
 /// the way back: the warm dot of now and its words, in a capsule
 struct TLBackLabel: View {
@@ -91,31 +89,6 @@ struct TLSunLine: View {
     var body: some View {
         line.font(tlFigures(11.5)).foregroundStyle(muted).lineLimit(1).minimumScaleFactor(0.75)
             .accessibilityLabel(Words.Home.sun(rise: sun.rise.map { clock($0) }, set: sun.set.map { clock($0) }))
-    }
-}
-
-/// 等你, on the row of the pills: how many of the day's rows wait on him. A tap goes to the first and the number rolls down as they are answered; with none it is gone.
-struct TLWaitPill: View {
-    let count: Int
-    let go: () -> Void
-    @State private var last = 0                 // what it said before the last was answered, which it keeps while it fades out
-
-    var body: some View {
-        let on = count > 0
-        Button(action: go) {
-            HStack(spacing: 4) {
-                MarkShape(kd: .wait).frame(width: 16, height: 16)
-                Text(Words.Home.waiting(on ? count : last)).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(amber).monospacedDigit()
-                    .contentTransition(.numericText(countsDown: true))
-            }
-            .padding(.leading, 8).padding(.trailing, 12).frame(height: 26).background(amber.opacity(0.16), in: Capsule())
-            .contentShape(Rectangle().inset(by: -9))
-        }
-        .buttonStyle(PressScale())
-        .opacity(on ? 1 : 0).scaleEffect(on ? 1 : 0.92).allowsHitTesting(on).accessibilityHidden(!on)
-        .animation(.easeOut(duration: 0.25), value: count)
-        .onChange(of: count, initial: true) { _, c in if c > 0 { last = c } }
-        .accessibilityLabel(Words.Home.waitingSpoken(on ? count : last))
     }
 }
 

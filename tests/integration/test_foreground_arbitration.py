@@ -18,7 +18,7 @@ from jarvis.decision.response_run import decide_foreground
 from jarvis.shared.realtime_trace import realtime_trace_snapshot, reset_realtime_trace
 from jarvis.state.event_log import open_event_log
 from jarvis.state.lifecycle_terminal import terminalize_playback
-from jarvis.surface.voice_media import pipeline as media_pipeline
+from jarvis.surface.voice_media import journal as media_journal
 from jarvis.surface.voice_media.pipeline import StreamingTTSPipeline
 from tests.support.arbitration import emit_open_chunk, emit_terminal, emit_whole_response
 from tests.support.media import (
@@ -180,7 +180,7 @@ def test_draining_lane_is_granted_to_a_cross_group_winner_and_purged(
     reset_realtime_trace()
     try:
         with (
-            patch.object(media_pipeline, "terminalize_playback", side_effect=faulted),
+            patch.object(media_journal, "terminalize_playback", side_effect=faulted),
             CallbackPump(player),
         ):
             asyncio.run(submit_response(pipeline, emit_whole_response(
@@ -231,7 +231,7 @@ def test_draining_lane_still_declines_a_cross_group_loser(tmp_path: Path) -> Non
     reset_realtime_trace()
     try:
         with (
-            patch.object(media_pipeline, "terminalize_playback", side_effect=faulted),
+            patch.object(media_journal, "terminalize_playback", side_effect=faulted),
             CallbackPump(player),
         ):
             # The straggler opens FIRST (lower row id) and emits LAST.

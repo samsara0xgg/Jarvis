@@ -9,58 +9,62 @@ the letters).
 
 from __future__ import annotations
 
-import functools
 import html
 import json
 import logging
-import math
 import re
 import threading
 import time as _clock
-import urllib.request
 from contextlib import closing
 from datetime import UTC, date, datetime, time, timedelta, timezone
 from email.utils import parseaddr, parsedate_to_datetime
-from pathlib import Path
-from typing import TYPE_CHECKING, Any, Final, NamedTuple
-from urllib.parse import urlencode
-from zoneinfo import TZPATH, ZoneInfo
-
-from tzfpy import get_tz
+from typing import TYPE_CHECKING, Any, Final
+from zoneinfo import ZoneInfo
 
 from jarvis.decision.daily_report import brief_of
+from jarvis.execution import mail_lists
+from jarvis.execution.mail_gmail import Mailbox
+from jarvis.execution.speakable import resolve_when
 from jarvis.execution.tools import ToolError
-from jarvis.execution.weather_tool import DAYS_AHEAD, DAYS_BACK
+from jarvis.execution.weather_tool import DAYS_AHEAD, DAYS_BACK, HOURLY_MAX_DAYS
 from jarvis.runtime.daily_report import PLAN_SERVER
-from jarvis.runtime.weatherkit import NOT_SET_UP, home_line
+from jarvis.runtime.weather_day import fit, padded
+from jarvis.runtime.weather_held import Held
+from jarvis.runtime.weather_place import (
+    ALTERNATIVES,
+    Spot,
+    get_json,
+    locate,
+    spot_at,
+)
+from jarvis.runtime.weatherkit import NOT_SET_UP, Unavailable, day_rows, home_line, outing
+from jarvis.runtime.weatherkit import alerts as wk_alerts
 from jarvis.runtime.weatherkit import report as wk_report
 from jarvis.shared import lang
+from jarvis.shared.clock import zone_country
 from jarvis.state.daily_contract import DailyError
 from jarvis.state.daily_store import get_briefing
 from jarvis.state.event_log import open_runtime_event_log
 
 if TYPE_CHECKING:
     import sqlite3
-    from collections.abc import Callable, Mapping
+    from collections.abc import Callable, Mapping, Sequence
     from collections.abc import Set as AbstractSet
     from datetime import tzinfo
+    from pathlib import Path
 
     from jarvis.decision.mail_reply import MailReply
+    from jarvis.execution.mail_gmail import Head, Hit
     from jarvis.execution.mcp_tools import McpServers
     from jarvis.execution.weather_tool import WeatherRequest
+    from jarvis.runtime.config import MailToolsSettings
     from jarvis.runtime.dashboard import ViewState
     from jarvis.runtime.plugin_connections import PluginConnections
     from jarvis.runtime.weatherkit import WeatherKit
     from jarvis.runtime.work_state import LLMAnalyst
 
 LOGGER = logging.getLogger(__name__)
-_GEOCODE = "https://geocoding-api.open-meteo.com/v1/search"
 _AIR_QUALITY = "https://air-quality-api.open-meteo.com/v1/air-quality"
-_GEOCODE_MATCHES = 5
-_ALTERNATIVES = 2
-_LAT_LNG = re.compile(r"^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$")
-_WEATHER_TIMEOUT_S = 4.0
-_NEAR_HOME_KM = 100
 WEATHER_CARD_TTL_S: Final = 6 * 3600
 """How long the day line keeps a day's weather (ADR 0285): one WeatherKit read per day, a few
 times a day at most, however often a phone scrubs back and forth."""
@@ -71,6 +75,9 @@ _ID_SEP = "|"
 MAIL_SERVER = "gmail"
 """Google's Workspace MCP server with only Gmail switched on (ADR 0055)."""
 _MAIL_LIMIT = 20
+"""How many of the newest unread letters the home lists; its count is of all of them."""
+_PRIMARY_UNREAD: Final = "in:inbox category:primary is:unread"
+"""What the home lists: Gmail's own sort into Primary is the "from people" filter."""
 _INBOX = "INBOX"
 _LETTERS_KEPT = 50
 _MAIL_BODY_CHARS: Final = 4000
@@ -86,7 +93,6 @@ _HTML_LINK_RE: Final = re.compile(
 def _link_text(link: re.Match[str]) -> str:
     url, label = link.group(1), _HTML_TAG_RE.sub("", link.group(2)).strip()
     return url if not label or label == url else f"{label} ({url})"
-_NOT_A_PERSON = re.compile(r"no-?reply|notification|mailer-daemon|bounce", re.IGNORECASE)
 
 
 def mail_text(body: str, *, links: bool = False) -> str:
@@ -154,140 +160,24 @@ def mail_summarizer(
     return summarize
 
 
-def _get(url: str, query: Mapping[str, Any], what: str) -> dict[str, Any]:
-    """One JSON GET; a ToolError that names ``what`` when it cannot be read."""
-    try:
-        with urllib.request.urlopen(  # noqa: S310 — a fixed https URL.
-            f"{url}?{urlencode(query, safe=',')}", timeout=_WEATHER_TIMEOUT_S,
-        ) as reply:
-            body: dict[str, Any] = json.load(reply)
-    except Exception as exc:  # timeout, refusal, bad JSON: all one short reason.
-        msg = (
-            f"weather: {what} could not be read ({type(exc).__name__}); "
-            "use web_search, or tell him it is unavailable"
-        )
-        raise ToolError(msg, code="network_error") from exc
-    return body
-
-
-def _span(start: date | None, end: date | None) -> dict[str, Any]:
-    """Open-Meteo's days: the two from today, or ``start`` to ``end``."""
-    if start is None:
+def _span(span: tuple[date, date] | None) -> dict[str, Any]:
+    """Open-Meteo's days: the two from today, or ``first`` to ``last``."""
+    if span is None:
         return {"forecast_days": 2}
-    return {"start_date": start.isoformat(), "end_date": (end or start).isoformat()}
-
-
-def _label(found: Mapping[str, Any]) -> str:
-    """``Toronto, Ontario, Canada`` for a geocoding match."""
-    return ", ".join(dict.fromkeys(
-        str(one) for one in (found["name"], found.get("admin1"), found.get("country")) if one
-    ))
-
-
-class Spot(NamedTuple):
-    """Where a request is for: the point, its label, its time zone and country (None if unknown)."""
-
-    latitude: float
-    longitude: float
-    label: str
-    zone: str | None
-    country: str | None
-
-
-def _geocode(name: str) -> tuple[Spot, list[Spot]]:
-    """The best match for ``name`` and the other places called that (at most two).
-
-    Tries the name's own language, then English.
-
-    Raises:
-        ToolError: Open-Meteo did not answer, or knows no place of that name.
-    """
-    for language in dict.fromkeys((lang.text_language(name), "en")):
-        query = {"name": name, "count": _GEOCODE_MATCHES, "language": language, "format": "json"}
-        if found := _get(_GEOCODE, query, "the place lookup").get("results"):
-            break
-    else:
-        msg = f"weather: no place found named {name!r}; ask him which place he means"
-        raise ToolError(msg, code="not_found")
-
-    def spot(one: Mapping[str, Any]) -> Spot:
-        return Spot(
-            one["latitude"], one["longitude"], _label(one), one.get("timezone"),
-            one.get("country_code"),
-        )
-
-    first, *rest = found
-    others = {
-        _label(one): spot(one)
-        for one in rest if one["name"].casefold() == first["name"].casefold()
-    }
-    others.pop(_label(first), None)
-    return spot(first), list(others.values())[:_ALTERNATIVES]
-
-
-def _km(a: tuple[float, float], b: tuple[float, float]) -> float:
-    """Great-circle distance in km."""
-    lat1, lng1, lat2, lng2 = map(math.radians, (*a, *b))
-    chord = math.sin((lat2 - lat1) / 2) ** 2 + (
-        math.cos(lat1) * math.cos(lat2) * math.sin((lng2 - lng1) / 2) ** 2
-    )
-    return 2 * 6371 * math.asin(math.sqrt(chord))
-
-
-def _spot(
-    request: WeatherRequest, home: Spot, known: dict[tuple[float, float], Spot],
-) -> tuple[Spot, list[Spot]]:
-    """Where the request is for, and the same-name places a named one has.
-
-    A point (``here`` or ``lat,lng``) takes a listed alternative's zone, or the home's country
-    within :data:`_NEAR_HOME_KM` of it; else its zone comes from tzfpy's offline map.
-    """
-    if request.here is not None:
-        point, label = request.here[:2], request.here[2]
-    elif request.place is None:
-        return home, []
-    elif pair := _LAT_LNG.match(request.place):
-        point, label = (float(pair[1]), float(pair[2])), request.place
-    else:
-        chosen, others = _geocode(request.place)
-        # ponytail: grows by a few places per named lookup, until a restart.
-        known.update({(one.latitude, one.longitude): one for one in (chosen, *others)})
-        return chosen, others
-    if (match := known.get((point[0], point[1]))) is not None:
-        return match._replace(label=label), []
-    if _km(point, (home.latitude, home.longitude)) <= _NEAR_HOME_KM:
-        return Spot(*point, label, home.zone, home.country), []
-    zone = get_tz(point[1], point[0])
-    return Spot(*point, label, zone, _country(zone)), []
-
-
-@functools.cache
-def _zone_countries() -> dict[str, str]:
-    """Time zone -> ISO country code, from the system tz database's ``zone.tab``."""
-    for root in TZPATH:
-        if (table := Path(root) / "zone.tab").is_file():
-            lines = table.read_text().splitlines()
-            rows = (line.split("\t") for line in lines if line and not line.startswith("#"))
-            return {zone: country for country, _, zone, *_ in rows}
-    return {}
-
-
-def _country(zone: str | None) -> str | None:
-    """The country a time zone is in (``America/Vancouver`` -> ``CA``), for WeatherKit alerts."""
-    return _zone_countries().get(zone) if zone else None
+    return {"start_date": span[0].isoformat(), "end_date": span[1].isoformat()}
 
 
 def _worst(values: list[float | None]) -> float | None:
     return max((one for one in values if one is not None), default=None)
 
 
-def _air(latitude: float, longitude: float, request: WeatherRequest) -> dict[str, Any]:
-    """US AQI, PM2.5 and PM10 now and the worst of each day, for the days of the request."""
-    body = _get(
+def _air(latitude: float, longitude: float, span: tuple[date, date] | None) -> dict[str, Any]:
+    """US AQI, PM2.5 and PM10 now and the worst of each day, for ``span`` (None: two days)."""
+    body = get_json(
         _AIR_QUALITY,
         {
             "latitude": latitude, "longitude": longitude, "timezone": "auto",
-            "timeformat": "unixtime", **_span(request.start, request.end),
+            "timeformat": "unixtime", **_span(span),
             "current": "us_aqi,pm2_5,pm10", "hourly": "us_aqi,pm2_5,pm10",
         },
         "the air quality",
@@ -317,6 +207,51 @@ def _air(latitude: float, longitude: float, request: WeatherRequest) -> dict[str
     }
 
 
+def _days(request: WeatherRequest, label: str, today: date) -> tuple[date, date]:
+    """The first and last day ``request`` asks for, in the place's own calendar.
+
+    With no ``when`` it is today and tomorrow. His words are resolved as of ``today``.
+
+    Raises:
+        ToolError: His words are not a day or days, or the days are out of WeatherKit's range, or
+            are not ones that hourly rows exist for.
+    """
+    if request.when is None:
+        return today, today + timedelta(days=1)
+    first, last = resolve_when(request.when, today, back=False, tool="weather")
+    oldest, newest = today - timedelta(days=DAYS_BACK), today + timedelta(days=DAYS_AHEAD)
+    if first < oldest or last > newest:
+        msg = (
+            f"weather: {label}'s forecast runs from {DAYS_BACK} days back"
+            f" ({oldest.isoformat()}) to {DAYS_AHEAD} days ahead ({newest.isoformat()});"
+            " earlier or later days are not available (use web_search)"
+        )
+        raise ToolError(msg, code="invalid_arguments")
+    if request.hourly and first < today:
+        msg = (
+            f"weather: hour-by-hour rows exist from now on, not for {first.isoformat()};"
+            " ask for today or later, or drop hourly for the daily figures"
+        )
+        raise ToolError(msg, code="invalid_arguments")
+    if request.hourly and (last - first).days >= HOURLY_MAX_DAYS:
+        msg = f"weather: hourly rows are for at most {HOURLY_MAX_DAYS} days; ask for fewer days"
+        raise ToolError(msg, code="invalid_arguments")
+    return first, last
+
+
+def _elsewhere(others: list[Spot]) -> dict[str, Any]:
+    """The other places of the name, each with the ``place`` that reads it (ADR 0356)."""
+    out: dict[str, Any] = {
+        "same_name_elsewhere": [
+            {"place": one.label, "use_place": f"{one.latitude},{one.longitude}"}
+            for one in others[:ALTERNATIVES]
+        ],
+    }
+    if len(others) > ALTERNATIVES:
+        out["same_name_left_out"] = len(others) - ALTERNATIVES
+    return out
+
+
 def weather_lookup(
     place: Mapping[str, Any] | None, kit: WeatherKit | None, zone: str,
 ) -> Callable[[WeatherRequest], dict[str, Any]] | None:
@@ -326,59 +261,62 @@ def weather_lookup(
     ``country_code``) in the local time zone ``zone``, the answer when the request names no
     place; None when the home has no location, which leaves the tool unregistered. Without
     ``kit`` (no WeatherKit key) every call is an error that says the weather is not set up.
+    His words for the days (``request.when``) are resolved in the place's own zone by the client's
+    clock, the runtime's.
     """
     if place is None:
         return None
     home = Spot(
         float(place["latitude"]), float(place["longitude"]), str(place.get("name") or "home"),
-        zone, place.get("country_code") or _country(zone),
+        zone, place.get("country_code") or zone_country(zone),
     )
     known: dict[tuple[float, float], Spot] = {}
+    held = Held()
 
     def lookup(request: WeatherRequest) -> dict[str, Any]:
         if kit is None:
             raise ToolError(NOT_SET_UP, code="not_configured")
-        spot, others = _spot(request, home, known)
-        zone_name = spot.zone or home.zone
-        today = datetime.fromtimestamp(kit.clock(), ZoneInfo(str(zone_name))).date()
-        first = request.start or today
-        last = request.end or (first if request.start else today + timedelta(days=1))
-        oldest, newest = today - timedelta(days=DAYS_BACK), today + timedelta(days=DAYS_AHEAD)
-        if first < oldest or last > newest:
-            msg = (
-                f"weather: {spot.label}'s forecast runs from {DAYS_BACK} days back"
-                f" ({oldest.isoformat()}) to {DAYS_AHEAD} days ahead ({newest.isoformat()});"
-                " earlier or later days are not available (use web_search)"
-            )
-            raise ToolError(msg, code="invalid_arguments")
-        if request.hourly and first < today:
-            msg = (
-                f"weather: hour-by-hour rows exist from now on, not for {first.isoformat()};"
-                " ask for today or later, or drop hourly for the daily figures"
-            )
-            raise ToolError(msg, code="invalid_arguments")
-        body = kit.read(
-            spot.latitude, spot.longitude, zone=str(zone_name), country=spot.country,
-            first=first, last=last,
+        spot, others = locate(request, home, known)
+        zone_name = str(spot.zone or home.zone)
+        zone = ZoneInfo(zone_name)
+        today = datetime.fromtimestamp(kit.clock(), zone).date()
+        first, last = _days(request, spot.label, today)
+        asked = (
+            round(spot.latitude, 4), round(spot.longitude, 4), first, last, request.hourly,
+            request.air_quality, request.when is None,
         )
+        try:
+            body = kit.read(
+                spot.latitude, spot.longitude, zone=zone_name, country=spot.country,
+                first=first, last=last,
+            )
+        except Unavailable as exc:  # the last good read of this request, if there is one (ADR 0357)
+            last_good = held.last(asked, kit.clock(), zone_name, exc.why)
+            if last_good is None:
+                raise
+            return last_good
+        now = kit.clock()
         result = wk_report(
-            body, spot.label, str(zone_name), first=first, last=last,
-            whole=request.start is None, hourly=request.hourly, now=kit.clock(),
-            alerts_asked=spot.country is not None,
+            body, spot.label, zone_name, first=first, last=last,
+            whole=request.when is None, hourly=request.hourly, now=now,
+            alerts=None if last < today else wk_alerts(
+                kit, body, spot.latitude, spot.longitude, spot.country, zone, now,
+            ),
         )
         if others:
-            result["same_name_elsewhere"] = [
-                {"place": one.label, "use_place": f"{one.latitude},{one.longitude}"}
-                for one in others
-            ]
+            result |= _elsewhere(others)
         if request.air_quality:
             try:
-                result["air_quality"] = _air(spot.latitude, spot.longitude, request)
+                result["air_quality"] = _air(
+                    spot.latitude, spot.longitude, None if request.when is None else (first, last),
+                )
             except ToolError:  # the forecast stands without it
                 result["air_quality"] = {
                     "unavailable": "not read for these days; its forecast reaches only a few days",
                 }
-        return result
+        done = fit(result)
+        held.keep(asked, now, done)
+        return done
 
     return lookup
 
@@ -395,15 +333,19 @@ class Home:
         view: ViewState | None = None,
         summarizer: Callable[[str, str], str] | None = None,
         weatherkit: WeatherKit | None = None,
+        *,
+        mail_tools: MailToolsSettings | None = None,
     ) -> None:
         """Bind the live connections, the local zone (name, zone) and the forecast's place.
 
         ``weather_at`` holds ``latitude`` and ``longitude``; None leaves the weather out, as does
         a missing ``weatherkit`` (no key).
-        ``mail_reply`` marks letters that need a reply (ADR 0123); None leaves them all unmarked.
+        ``mail_reply`` flags junk letters and rates them (ADR 0124, 0141); None leaves them all
+        unflagged and unrated.
         ``view`` switches the Dashboard's mail page on (ADR 0147): its open letter may be read,
         archived and trashed, not only the junk offered. ``summarizer`` writes a letter's one-line
-        summary (ADR 0148); None leaves :meth:`summary` a 404.
+        summary (ADR 0148); None leaves :meth:`summary` a 404. ``mail_tools`` bounds how far a
+        list pages and how big a message is read raw (ADR 0363, 0364); None keeps the defaults.
         """
         self._connections = connections
         self._zone_name, self._zone = zone
@@ -413,6 +355,10 @@ class Home:
         self._view = view
         self._summarizer = summarizer
         self._summaries: dict[str, str] = {}
+        self.mailbox = Mailbox(self.gmail) if mail_tools is None else Mailbox(
+            self.gmail, cap=mail_tools.list_cap, raw_max_bytes=mail_tools.raw_max_bytes,
+        )
+        """His Gmail as the ``mail`` tool and the home's list read it (ADR 0362, 0364)."""
         # Gmail ids: what the last mail() listed, what it offered as junk, what Allen archived,
         # what he took back.
         self._listed: frozenset[str] = frozenset()
@@ -442,14 +388,81 @@ class Home:
         place, kit = self._weather_at, self._weatherkit
         body = kit.read(
             float(place["latitude"]), float(place["longitude"]), zone=self._zone_name,
-            country=place.get("country_code") or _country(self._zone_name), first=day, last=day,
+            country=place.get("country_code") or zone_country(self._zone_name), first=day, last=day,
         )
-        answer = wk_report(
-            body, str(place.get("name") or "home"), self._zone_name, first=day, last=day,
-            whole=False, hourly=False, now=kit.clock(), alerts_asked=False,
+        today = datetime.fromtimestamp(kit.clock(), self._zone).date()
+        return day_rows(body, ZoneInfo(self._zone_name), first=day, last=day, today=today)[0]
+
+    def _home_spot(self) -> Spot | None:
+        """The home as a weather spot; None without a place."""
+        place = self._weather_at
+        if place is None:
+            return None
+        return Spot(
+            float(place["latitude"]), float(place["longitude"]), str(place.get("name") or "home"),
+            self._zone_name, place.get("country_code") or zone_country(self._zone_name),
         )
-        row: dict[str, Any] = answer["days"][0]
-        return row
+
+    def plan_weather(self, day: date) -> dict[str, Any] | None:
+        """``day`` at home as a plan reads its weather (ADR 0355); None without a place or key.
+
+        Today comes in parts: ``now``, what fell since midnight, what is left of the day, tonight
+        and the whole day's row. Another day is its row alone. It reads the request the tool makes
+        with no days, so one answer serves the home, the model and the plan. Clocks are
+        ``HH:MM``, as a plan says them.
+
+        Raises:
+            ToolError: WeatherKit did not answer or holds no forecast for the day.
+        """
+        home, kit = self._home_spot(), self._weatherkit
+        if home is None or kit is None:
+            return None
+        now = kit.clock()
+        today = datetime.fromtimestamp(now, self._zone).date()
+        if day != today:
+            row = self.day_weather(day)
+            return None if row is None else {"at": home.label, "whole_day": row}
+        body = kit.read(
+            home.latitude, home.longitude, zone=self._zone_name, country=home.country,
+            first=today, last=today + timedelta(days=1),
+        )
+        full = wk_report(
+            body, home.label, self._zone_name, first=today, last=today, whole=False,
+            hourly=False, now=now, alerts=None,
+        )
+        parts = ("now", "earlier_today", "rest_of_today", "tonight", "whole_day")
+        said: dict[str, Any] = padded(
+            {"at": home.label, **{name: full[name] for name in parts if name in full}},
+        )
+        return said
+
+    def outing_weather(
+        self, point: tuple[float, float] | None, start: datetime, end: datetime,
+    ) -> dict[str, Any] | None:
+        """The weather of ``start`` to ``end`` at ``point`` (None: the home) as a plan reads it.
+
+        The hours of an outing at its own place (ADR 0355): the read of the day it begins and the
+        next, the days the tool reads with no days, so two outings at one place are one request and
+        an outing at home's position is the request of :meth:`plan_weather`. Clocks are ``HH:MM``
+        in the zone of ``start``. None without a place or key, or when WeatherKit's answer holds
+        none of those hours.
+
+        Raises:
+            ToolError: WeatherKit did not answer.
+        """
+        home, kit = self._home_spot(), self._weatherkit
+        if home is None or kit is None:
+            return None
+        spot = home if point is None else spot_at(point, f"{point[0]},{point[1]}", home)
+        zone_name = str(spot.zone or home.zone)
+        zone = ZoneInfo(zone_name)
+        first = start.astimezone(zone).date()
+        last = max(first + timedelta(days=1), (end - timedelta(seconds=1)).astimezone(zone).date())
+        body = kit.read(
+            spot.latitude, spot.longitude, zone=zone_name, country=spot.country,
+            first=first, last=last,
+        )
+        return outing(body, zone_name, start=start, end=end)
 
     def day_weather_card(self, day: date) -> dict[str, Any] | None:
         """The weather of ``day`` for the day line.
@@ -502,10 +515,10 @@ class Home:
             return None
         try:
             place, kit = self._weather_at, self._weatherkit
-            today = datetime.now(self._zone).date()
+            today = datetime.fromtimestamp(kit.clock(), self._zone).date()
             body = kit.read(  # the same request as the tool's default one, so one call serves both
                 float(place["latitude"]), float(place["longitude"]), zone=self._zone_name,
-                country=place.get("country_code") or _country(self._zone_name),
+                country=place.get("country_code") or zone_country(self._zone_name),
                 first=today, last=today + timedelta(days=1),
             )
             return home_line(body, self._zone_name, kit.clock())
@@ -530,41 +543,62 @@ class Home:
         )
 
     def mail(self) -> dict[str, Any]:
-        """Unread Primary mail in Gmail, newest first, without no-reply and notification senders.
+        """Unread Primary mail in Gmail: its exact count, and the newest 20 letters, newest first.
 
-        Two read-only tools of the ``gmail`` server: a search in Gmail's own terms,
-        then each hit's headers; nothing is marked read. Each letter's ``reply`` is "yes",
-        "fyi" or None (ADR 0123) and its ``junk`` a bool (ADR 0124); a rated letter also
-        carries ``importance`` (expected score 0-3, higher first) and ``category`` (ADR 0141);
-        the junk ids are remembered as the only ones :meth:`archive` accepts.
+        Gmail's search pages ids to ``tools.mail.list_cap``: ``count`` is how many it found and
+        ``more`` says there were more than that (ADR 0364). The headers of the newest letters are
+        read and nothing is marked read. A no-reply or notification sender is a letter like any
+        other. A letter's ``reply`` is "yes" when its conversation waits on him (someone else wrote
+        last, not bulk or automated, to him) and None otherwise; its ``junk`` is a bool (ADR 0124)
+        that a waiting letter never is; a rated letter also carries ``importance`` (expected score
+        0-3, higher first) and ``category`` (ADR 0141). The junk ids are remembered as the only
+        ones :meth:`archive` accepts.
         """
-        servers = self._servers(MAIL_SERVER)
-        # Gmail's own sort into Primary is the "from people" filter.
-        query = {"query": "in:inbox category:primary is:unread", "maxResults": _MAIL_LIMIT}
-        unread = [
-            _letter(_gmail(servers, "gmail_get", {"messageId": hit["id"], "format": "metadata"}))
-            for hit in _gmail(servers, "gmail_search", query).get("messages") or []
+        self._servers(MAIL_SERVER)  # not connected: a LookupError, the route's 404
+        found = self.mailbox.search(_PRIMARY_UNREAD)
+        heads = [
+            one for one in self.mailbox.heads([hit.id for hit in found.hits[:_MAIL_LIMIT]])
+            if one is not None
         ]
-        people = [one for one in unread if not _NOT_A_PERSON.search(one["address"])]
-        marks = {} if self._mail_reply is None else self._mail_reply.marks([
+        waiting = self._waiting(heads, found.hits)
+        unread = [_row(one) for one in heads]
+        flagged = {} if self._mail_reply is None else self._mail_reply.marks([
             # A sender with no display name shows its address; the address is never sent.
             (one["id"], "" if one["from"] == one["address"] else one["from"], one["subject"])
-            for one in people
+            for one in unread
         ])
         letters: list[dict[str, str | bool | float | None]] = []
-        for one in people:
-            reply, junk = marks.get(one["id"], (None, False))
+        for one in unread:
+            yes = one["thread_id"] in waiting
+            junk = flagged.get(one["id"], False) and not yes and one["id"] not in self._kept
             rated = None if self._mail_reply is None else self._mail_reply.rating(one["id"])
             # A letter not rated yet has no importance or category: the UI keeps its order.
             rating = {} if rated is None else {
                 "importance": rated["score"], "category": rated["category"],
             }
-            letters.append({
-                **one, "reply": reply, "junk": junk and one["id"] not in self._kept, **rating,
-            })
+            letters.append({**one, "reply": "yes" if yes else None, "junk": junk, **rating})
         self._listed = frozenset(str(one["id"]) for one in letters)
         self._junk = frozenset(str(one["id"]) for one in letters if one["junk"])
-        return {"unread": sorted(letters, key=lambda one: str(one["received"]), reverse=True)}
+        return {
+            "unread": sorted(letters, key=lambda one: str(one["received"]), reverse=True),
+            "count": len(found.hits),
+            "more": found.more,
+        }
+
+    def _waiting(self, heads: Sequence[Head], hits: Sequence[Hit]) -> set[str]:
+        """The conversations among ``heads`` that wait on him; none when that cannot be told now.
+
+        The rule is the mail tool's (``Last.waiting``, ADR 0364). A failure to read who wrote last
+        leaves every letter without the mark, as a mark that cannot be checked is not given.
+        """
+        try:
+            lasts = mail_lists.last_writers(
+                self.mailbox, heads, mail_lists.newest_by_thread(hits), datetime.now(UTC),
+            )
+        except ToolError as exc:
+            LOGGER.warning("home: who wrote last is unreadable: %s", exc)
+            return set()
+        return {thread for thread, last in lasts.items() if last.waiting}
 
     def gmail(self, tool: str, args: Mapping[str, Any]) -> dict[str, Any]:
         """One call to the ``gmail`` server answered as JSON (ADR 0242: the model's ``mail``).
@@ -724,6 +758,18 @@ def _gmail(servers: McpServers, tool: str, args: Mapping[str, Any]) -> dict[str,
         msg = f"{tool}: {body.get('error') if isinstance(body, dict) else body!r}"
         raise ToolError(msg, code="mcp_tool_error")
     return body
+
+
+def _row(head: Head) -> dict[str, str]:
+    """One unread letter as the home lists it: ids, sender, subject and when it came (UTC)."""
+    return {
+        "id": head.id,
+        "thread_id": head.thread,
+        "from": head.sender.shown,
+        "address": head.sender.address,
+        "subject": head.subject,
+        "received": head.at.astimezone(UTC).isoformat() if head.at else "",  # none: sorted last
+    }
 
 
 def _letter(message: Mapping[str, Any]) -> dict[str, str]:

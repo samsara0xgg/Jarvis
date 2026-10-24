@@ -7,8 +7,9 @@ import Foundation
 /// a walk home, and the evening at home at the timeline fixture's 21:50. Made-up data only: invented places on a plain far from his life, the route and the speeds generated here
 /// from fixed numbers, not recorded.
 enum FootprintFixture {
-    static func day(_ cal: Calendar) -> DayReply { decode(Plan(cal).day) }
-    static func footprint(_ cal: Calendar) -> FootprintReply { decode(Plan(cal).footprint) }
+    /// `sparse`: the fixes of a recording before the dense track (ADR 0312), one every 30 s instead of one a second (thinned to what the line needs within 5 m, as the brain does); the day is the same one
+    static func day(_ cal: Calendar, sparse: Bool = false) -> DayReply { decode(Plan(cal, sparse: sparse).day) }
+    static func footprint(_ cal: Calendar, sparse: Bool = false) -> FootprintReply { decode(Plan(cal, sparse: sparse).footprint) }
 
     private static func decode<T: Decodable>(_ o: [String: Any]) -> T { try! JSONDecoder().decode(T.self, from: try! JSONSerialization.data(withJSONObject: o)) }
 
@@ -35,7 +36,7 @@ enum FootprintFixture {
             }
         }
 
-        init(_ cal: Calendar) {
+        init(_ cal: Calendar, sparse: Bool) {
             let day0 = cal.startOfDay(for: Cal.now())
             let clock = TLClock(tz: cal.timeZone.identifier, startMs: Int64(day0.timeIntervalSince1970 * 1000))
             self.clock = clock
@@ -45,8 +46,9 @@ enum FootprintFixture {
             walkAt = clock.ms(minute: 17 * 60)
             drive = Route.drive()
             walk = Plan.walk(from: drive[Plan.driveSeconds])
-            driveFixes = Plan.fixes(drive, within: Plan.reach(drive, out: 500, short: 400), gap: Plan.gapSeconds)
-            walkFixes = Plan.fixes(walk, within: 0...walk.count - 1, gap: nil)
+            let every = sparse ? 30 : 1
+            driveFixes = Plan.fixes(drive, within: Plan.reach(drive, out: 500, short: 400), gap: Plan.gapSeconds, every: every)
+            walkFixes = Plan.fixes(walk, within: 0...walk.count - 1, gap: nil, every: every)
         }
 
         // MARK: the day
@@ -56,7 +58,7 @@ enum FootprintFixture {
         var walkEnd: Int64 { ms(walkAt, walk.count - 1) }
         var homeBack: [String: Any] { stay("stay-6", walkEnd, nil, walk[walk.count - 1], "示例路 12 号", home) }
         let home: [String: Any] = ["id": "p-home", "name": "家", "role": "home"]
-        let school: [String: Any] = ["id": "p-school", "name": "驾校", "role": "school"]
+        let school: [String: Any] = ["id": "p-school", "name": "UVic", "role": "school"]
 
         func ll(_ p: (x: Double, y: Double)) -> (lat: Double, lng: Double) {
             (Plan.origin.lat + p.y / 111_320, Plan.origin.lng + p.x / (111_320 * cos(Plan.origin.lat * .pi / 180)))
@@ -85,7 +87,7 @@ enum FootprintFixture {
             let moving = (seconds - Plan.stopMinutes.reduce(0) { $0 + Int(($1.1 - $1.0) * 60) }) * 1000
             return [
                 "date": date, "tz": clock.cal.timeZone.identifier, "start_ms": clock.ms(minute: 0), "end_ms": clock.ms(minute: 1440), "now_ms": clock.ms(minute: TimelineFixture.now),
-                "stays": [stay("stay-1", clock.ms(minute: -180), driveAt, drive[0], "示例路 12 号", home), stay("stay-5", driveEnd, walkAt, drive[Plan.driveSeconds], "驾校路 3 号", school), homeBack],
+                "stays": [stay("stay-1", clock.ms(minute: -180), driveAt, drive[0], "示例路 12 号", home), stay("stay-5", driveEnd, walkAt, drive[Plan.driveSeconds], "Finnerty Rd 3 号", school), homeBack],
                 "outings": [outing(driveAt, fixes, drive, "stay-1", "stay-5", "automotive", stops, gaps, heart, moving),
                             outing(walkAt, walkFixes, walk, "stay-5", "stay-6", "walking", [], [], NSNull(), (walk.count - 1) * 1000)],
             ]
@@ -109,7 +111,7 @@ enum FootprintFixture {
             items.append(stayItem(long[1]))
             items.append(item("move-5", "move", walkAt, walkEnd, ["activity": "walking"]))
             items.append(stayItem(long[2]))
-            items.append(item("event-1", "event", clock.ms(minute: 13 * 60), clock.ms(minute: 14 * 60 + 30), ["title": "练车"]))
+            items.append(item("event-1", "event", clock.ms(minute: 13 * 60), clock.ms(minute: 14 * 60 + 30), ["title": "上课"]))
             return ["date": date, "tz": clock.cal.timeZone.identifier, "start_ms": clock.ms(minute: 0), "end_ms": clock.ms(minute: 1440), "now_ms": clock.ms(minute: TimelineFixture.now), "items": items, "missing": [String]()]
         }
 
@@ -140,11 +142,11 @@ enum FootprintFixture {
             }
         }
 
-        /// the fixes of a track within some seconds of it, every 10 s, the inside of the gap left out, each side thinned to the points the line needs within 5 m
-        static func fixes(_ pos: Track, within r: ClosedRange<Int>, gap: (Int, Int)?) -> [Fix] {
+        /// the fixes of a track within some seconds of it, every `every` s, the inside of the gap left out, each side thinned to the points the line needs within 5 m
+        static func fixes(_ pos: Track, within r: ClosedRange<Int>, gap: (Int, Int)?, every: Int) -> [Fix] {
             let n = pos.count - 1
             func speed(_ s: Int) -> Double { let a = max(0, s - 5), b = min(n, s + 5); return hypot(pos[b].x - pos[a].x, pos[b].y - pos[a].y) / Double(b - a) }
-            var raw = stride(from: (r.lowerBound + 9) / 10 * 10, through: r.upperBound, by: 10).map { Fix(s: $0, x: pos[$0].x, y: pos[$0].y, v: speed($0)) }
+            var raw = stride(from: (r.lowerBound + every - 1) / every * every, through: r.upperBound, by: every).map { Fix(s: $0, x: pos[$0].x, y: pos[$0].y, v: speed($0)) }
             if raw.last!.s != r.upperBound { raw.append(Fix(s: r.upperBound, x: pos[r.upperBound].x, y: pos[r.upperBound].y, v: speed(r.upperBound))) }
             let sides = gap.map { g in [raw.filter { $0.s <= g.0 }, raw.filter { $0.s >= g.1 }] } ?? [raw]
             return sides.flatMap { f -> [Fix] in

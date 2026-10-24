@@ -1,0 +1,36 @@
+{
+  "id": "search-quick-empty-names-the-range",
+  "tool": "web_search",
+  "said": "今天BC有什么新闻",
+  "at": "2026-10-21T09:30:00-07:00",
+  "zone": "America/Vancouver",
+  "state": null,
+  "args": {
+    "query": "BC news today",
+    "depth": "quick",
+    "within": "day",
+    "news": true
+  },
+  "recording": "search-quick-empty-names-the-range.recording.json",
+  "expect": {
+    "summary_must": [
+      "BC news today",
+      "news search",
+      "past day",
+      "other words",
+      "a wider range",
+      "depth deep"
+    ],
+    "result": [
+      {
+        "path": "results",
+        "op": "len",
+        "value": 0
+      }
+    ],
+    "receipt": {
+      "status": "done",
+      "reads_only": true
+    }
+  }
+}

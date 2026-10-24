@@ -103,6 +103,9 @@ final class StarUI {
     var convDays: [TalkDay] = []        // the conversation of record, by day (Brain/TalkStream)
     var olderMore = false               // the brain has rows older than the first one listed
     var scrollTo: String?               // a row of the stream the panel is asked to show
+    var trail: ChatTrail?               // a hit or a topic followed through its places on 聊天 (Sky/ChatSearch.swift)
+    var lit: Set<String> = []           // the rows of the stream its place lights up
+    var following: ChatTopic?           // the topic he goes on with (接着聊): what he sends carries its id (`TopicFollow`)
     var tapback: TalkRow?               // the row whose reactions bar is up (Sky/StarTapback)
     var tapbackPicker = false           // the bar is asking for any emoji, with the system keyboard
     // talking
@@ -111,7 +114,6 @@ final class StarUI {
     var stepsOpen: Set<String> = []     // answers (row ids of the stream) whose steps he opened
     var about: About?                   // the item he has open, as the chip over the talk's first row says it; every turn carries it while it shows
     var typing = false
-    var composing = false               // on the timeline the field is out only to be typed in: he chose 打字 from her cards, or asked her about a row, and it goes when the keyboard does with nothing in it
     var kbLift = 0.0                    // how far the composer is raised over its rest place (restGap from the bottom): the keyboard's height less restGap - keyGap
     static let restGap = 34.0, keyGap = 8.0       // the composer's bottom from the screen's bottom at rest (the home indicator), and from the keyboard's top
     /// The keyboard's frame runs to the bottom of the screen, so its height already holds the home-indicator inset that restGap is: lifting the composer by the whole height
@@ -132,7 +134,7 @@ final class StarUI {
     let tl = TimelineState()
     var tlShow = HomeModule.shared.isTimeline       // the timeline is drawn: it is the middle of the screen, or the dial is still giving way to it
     var tlHome = HomeModule.shared.isTimeline       // she has come up to her place over the timeline (within 20 pt of it): her sentence and the bar are drawn only then, so she never glides over them
-    var footprintOpen = false           // the footprint's one-day screen is over the timeline, which and the top row give way to it (Sky/FootprintDayPage.swift)
+    var footprintOpen = false           // the footprint's one-day screen is over the timeline, which gives way to it (Sky/FootprintDayPage.swift)
     let footprint = FootprintDayState()
     var padHome = false                 // the iPad's own home is on screen, not the phone's: an iPad at regular width (Pad/PadHome.swift's `HomeChoice` sets it)
     /// the page of the home the glass bar at its foot is on (Sky/HomeBar.swift): the day, or over it the history, the footprint's page or settings (`StarEngine.showPage` changes it)
@@ -140,11 +142,11 @@ final class StarUI {
     /// the history is up on the phone's timeline: the conversation's page, the whole screen under her (Sky/StarPanel.swift's `TalkPage`); under the dial it is a panel over it, and on
     /// the iPad's own home a sheet over it (Pad/PadHome.swift)
     var talkPage: Bool { panelOpen && HomeModule.shared.isTimeline && !padHome }
+    var herCardFoot = 0.0               // how far down her card under her reaches, in design points; 0 while it is down (Sky/DayTimelineTalk.swift): what it covers of the day's top slides out
     var tlTalk = false                  // the timeline's place for a talk is on show: her sentence, the bar and the chips have given way to the latest round (Sky/DayTimelineTalk.swift)
 
-    /// The composer is out: always under the dial. On the timeline she is tapped to talk and the field is one of her cards: it is out while he types (he chose 打字, or asked her about a
-    /// row), while it holds his words or what he attached, and with the history open; at rest the day runs to the foot of the screen.
+    /// The composer is out: always under the dial. On the timeline the field is on 聊天 only (a hold on her, or 问她 on a row, goes there); the other pages run to the foot of the screen.
     var composerOut: Bool {
-        !HomeModule.shared.isTimeline || composing || typing || panelOpen || attach.hasItems || attach.isOpen || !text.isEmpty
+        !HomeModule.shared.isTimeline || panelOpen
     }
 }

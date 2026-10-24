@@ -1,0 +1,16 @@
+{
+  "id": "bus-board-route-both-ways",
+  "tool": "bus",
+  "said": "when does the 6 come",
+  "at": "2026-10-16T14:00:00-07:00",
+  "zone": "America/Vancouver",
+  "here": {"lat": 48.4284, "lng": -123.3656, "age_s": 30},
+  "state": null,
+  "args": {"route": "6"},
+  "recording": "bus-board-route-both-ways.recording.json",
+  "expect": {
+    "summary_must": ["toward Eastgate", "toward Westbrook"],
+    "receipt": {"status": "done", "reads_only": true},
+    "checker": "bus_board_both_ways"
+  }
+}

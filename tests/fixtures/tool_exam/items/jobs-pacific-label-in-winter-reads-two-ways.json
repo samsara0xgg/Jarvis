@@ -1,0 +1,52 @@
+{
+  "id": "jobs-pacific-label-in-winter-reads-two-ways",
+  "tool": "jobs",
+  "said": "what time is the Echo Systems interview",
+  "at": "2026-10-20T11:00:00-07:00",
+  "zone": "America/Vancouver",
+  "state": null,
+  "job_mail": {
+    "mails": [
+      {
+        "message_id": "m-echo-1",
+        "received_at": "2026-10-14T09:00:00-07:00",
+        "kind": "receipt",
+        "company": "Echo Systems",
+        "role": "Intern",
+        "sender_name": "Dana Fox",
+        "sender_domain": "echo-systems.example.com",
+        "subject": "Application received"
+      },
+      {
+        "message_id": "m-echo-2",
+        "received_at": "2026-10-15T09:00:00-07:00",
+        "kind": "interview",
+        "company": "Echo Systems",
+        "role": "Intern",
+        "sender_name": "Dana Fox",
+        "sender_domain": "echo-systems.example.com",
+        "subject": "Interview invitation",
+        "event_at": "2026-11-12T10:00:00-07:00",
+        "event_text": "Thursday, November 12 at 10 am PST",
+        "event_later_at": "2026-11-12T11:00:00-07:00"
+      }
+    ]
+  },
+  "args": {
+    "action": "find",
+    "company": "Echo Systems"
+  },
+  "recording": "jobs.recording.json",
+  "expect": {
+    "summary_must": [
+      "Interview Thu Nov 12, 10:00 or 11:00 \\(the mail says 10 am PST"
+    ],
+    "result": [
+      {
+        "path": "applications.0.interview",
+        "op": "contains",
+        "value": "10:00 or 11:00"
+      }
+    ]
+  }
+}

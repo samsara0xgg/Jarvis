@@ -22,6 +22,7 @@ prose line, which the decision layer writes once a night from these numbers, is 
 from __future__ import annotations
 
 import concurrent.futures
+import itertools
 import logging
 import re
 import sqlite3
@@ -37,9 +38,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, NamedTuple
 from urllib.parse import parse_qsl, urlsplit
 
+from jarvis.shared import zone_label
+from jarvis.shared.job_names import company_key, employer_of, is_platform
 from jarvis.state import device_reads, imports, phone_day, places, reminders, things, timesink
 from jarvis.state.daily_contract import DailyError
 from jarvis.state.event_log import iter_events_of_types, open_runtime_event_log
+from jarvis.state.job_ledger import list_applications
 from jarvis.state.things_late import due_is_day, late, when_ms
 
 if TYPE_CHECKING:
@@ -65,27 +69,11 @@ _CALL_FLOOR_S: Final[float] = 120.0
 # A commit may be seen long after it was made.
 _COMMIT_LOOKBACK: Final[timedelta] = timedelta(days=7)
 _SESSION_APPS: Final[frozenset[str]] = frozenset({"Claude", "Ghostty"})
-# Mail from these senders names the hiring platform, not the employer.
-_ATS: Final[frozenset[str]] = frozenset(
-    {
-        "workable", "myworkday", "workday", "greenhouse", "lever", "icims", "smartrecruiters",
-        "taleo", "ashby", "ashbyhq", "jobvite", "bamboohr", "clearco", "clearcompany", "njoyn",
-        "linkedin", "indeed", "slfworkdaynotifications",
-    },
-)
-_SUBJECT_COMPANY: Final[tuple[re.Pattern[str], ...]] = tuple(
-    re.compile(pattern, re.IGNORECASE)
-    for pattern in (
-        r"thanks for applying to (.+?)(?:[.!]|$)",
-        r"thank you for applying to (.+?)(?:[.!]|$)",
-        r"thank you for your interest in (.+?)(?:[.!]|$)",
-        r"applying at (.+?)(?:[.!]|$)",
-        r"your application to (.+?)(?:[.!]|$)",
-    )
-)
-_FILLER: Final[re.Pattern[str]] = re.compile(r"\b(the|inc|ltd|group|technologies|technology)\b")
 _CLOCK: Final[re.Pattern[str]] = re.compile(
     r"(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)?", re.IGNORECASE,
+)
+_RANGE_JOIN: Final[re.Pattern[str]] = re.compile(
+    r"\s*(?:-|\u2013|\u2014|to|until)\s*", re.IGNORECASE,
 )
 _SECTIONS: Final[dict[str, str]] = {  # the headings of a day summary, in the order they are shown
     "Topics": "Talked about",
@@ -321,6 +309,7 @@ class _Mail:
     event_text: str | None
     message_id: str
     via_ats: bool = False  # sent by an applicant-tracking system on the employer's behalf
+    event_later_at: str | None = None  # the later reading of a time its label reads two ways
 
     @property
     def cancelled(self) -> bool:
@@ -364,47 +353,27 @@ def _fmt_top(items: Sequence[tuple[str, float]]) -> str:
     return ", ".join(f"{key} {hm(value)}" for key, value in items) or "none"
 
 
-def _company_key(name: str) -> str:
-    cleaned = re.sub(r"[^a-z0-9 ]", " ", _FILLER.sub(" ", name.lower()))
-    return " ".join(cleaned.split())
+def _range_minutes(event_text: str | None) -> int | None:
+    """How long an invitation runs when its words give a range (``2:00 PM - 2:30 PM``), else None.
 
-
-def _real_company(company: str, subject: str, known: Mapping[str, str]) -> str:
-    """The employer a mail is about: an ATS sender names the platform, so read the subject."""
-    if company.lower() not in _ATS:
-        return company
-    for pattern in _SUBJECT_COMPANY:
-        found = pattern.search(subject)
-        if found:
-            name = found.group(1).strip(" .!")
-            return known.get(_company_key(name), name)
-    return ""
-
-
-def _start_from_text(event_text: str | None, event_at: str | None) -> str | None:
-    """An interview's wall-clock start. The mail's own words beat the parsed ``event_at``."""
-    if event_text:
-        found = [
-            (int(hour), int(minute or 0), (meridiem or "").lower()[:1])
-            for hour, minute, meridiem in _CLOCK.findall(event_text)
-            if 1 <= int(hour) <= 12 and (minute or meridiem)  # noqa: PLR2004 — 12-hour clock
-        ]
-        if found:
-            shared = next((x[2] for x in found if x[2]), "")
-            hour, minute, meridiem = found[0][0], found[0][1], found[0][2] or shared
-            if meridiem == "p" and hour != 12:  # noqa: PLR2004
-                hour += 12
-            if meridiem == "a" and hour == 12:  # noqa: PLR2004
-                hour = 0
-            end = ""
-            if len(found) > 1:
-                hour2, minute2, meridiem2 = found[1][0], found[1][1], found[1][2] or shared
-                if meridiem2 == "p" and hour2 != 12:  # noqa: PLR2004
-                    hour2 += 12
-                end = f"-{hour2:02d}:{minute2:02d}"
-            return f"{hour:02d}:{minute:02d}{end}"
-    if event_at:
-        return datetime.fromisoformat(event_at).strftime("%H:%M")
+    The same reading as ``decision.job_mail.event_minutes``, which this layer cannot import: the
+    two clocks must be joined by a dash, ``to`` or ``until``, so ``10:00 AM PST (1:00 PM EST)``
+    is one time said twice, not a range.
+    """
+    clocks = [
+        found for found in _CLOCK.finditer(event_text or "")
+        if 1 <= int(found[1]) <= 12 and (found[2] or found[3])  # noqa: PLR2004 — 12-hour clock
+    ]
+    for first, second in itertools.pairwise(clocks):
+        if not _RANGE_JOIN.fullmatch((event_text or "")[first.end() : second.start()]):
+            continue
+        shared = (first[3] or second[3] or "").lower()[:1]
+        start, end = (
+            (int(c[1]) % 12 + (12 if (c[3] or shared).lower()[:1] == "p" else 0)) * 60
+            + int(c[2] or 0)
+            for c in (first, second)
+        )
+        return end - start if 0 < end - start <= 12 * 60 else None
     return None
 
 
@@ -565,6 +534,11 @@ class _Data:
         return self._mail(self.src, self.as_of)
 
     @cached_property
+    def applications(self) -> list[dict[str, Any]]:
+        """The Jobs page's applications as of as_of (ADR 0367): his edits in, hidden out."""
+        return self._applications(self.src, self.as_of)
+
+    @cached_property
     def commits(self) -> list[tuple[datetime, str]]:
         return self._commits(self.src, self.lo, self.as_of)
 
@@ -654,9 +628,12 @@ class _Data:
     def _mail(src: LedgerSources, as_of: datetime) -> list[_Mail]:
         with closing(sqlite3.connect(f"file:{src.memory_db}?mode=ro", uri=True)) as conn:
             try:
+                # A store no writer has opened since the column was added has none to read.
+                columns = {col[1] for col in conn.execute("PRAGMA table_info(job_mail)")}
+                later = "event_later_at" if "event_later_at" in columns else "NULL"
                 rows = conn.execute(
-                    "SELECT received_at,sender_name,subject,kind,company,role,event_at,event_text,"
-                    "message_id,deleted FROM job_mail WHERE received_at IS NOT NULL "
+                    "SELECT received_at,sender_name,subject,kind,company,role,event_at,event_text,"  # noqa: S608 — fixed names
+                    f"message_id,deleted,{later} FROM job_mail WHERE received_at IS NOT NULL "
                     "ORDER BY received_at",
                 ).fetchall()
             except sqlite3.Error:
@@ -666,25 +643,37 @@ class _Data:
         ]
         known: dict[str, str] = {}
         for at, row in parsed:
-            if at <= as_of and row[4] and str(row[4]).lower() not in _ATS:
-                known.setdefault(_company_key(str(row[4])), str(row[4]))
+            if at <= as_of and row[4] and not is_platform(str(row[4])):
+                known.setdefault(company_key(str(row[4])), str(row[4]))
         out: list[_Mail] = []
         for at, row in parsed:
             if at > as_of or row[9]:
                 continue
             sender, subject, company = str(row[1] or ""), str(row[2] or ""), str(row[4] or "")
-            employer = _real_company(company, subject, known)
-            if sender.lower() in _ATS or _company_key(sender) == _company_key(employer):
+            employer = employer_of(company, subject, known)
+            if is_platform(sender) or company_key(sender) == company_key(employer):
                 sender = ""
             out.append(
                 _Mail(
                     at, sender, subject, str(row[3] or ""), employer, str(row[5] or ""),
                     None if row[6] is None else str(row[6]),
                     None if row[7] is None else str(row[7]), str(row[8]),
-                    company.lower() in _ATS,
+                    is_platform(company), None if row[10] is None else str(row[10]),
                 ),
             )
         return out
+
+    @staticmethod
+    def _applications(src: LedgerSources, as_of: datetime) -> list[dict[str, Any]]:
+        """None where job mail never made its tables: the read creates nothing."""
+        with closing(sqlite3.connect(f"file:{src.memory_db}?mode=ro", uri=True)) as conn:
+            try:
+                made = conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'job_application'",
+                ).fetchone()
+            except sqlite3.Error:
+                return []
+        return list_applications(src.memory_db, as_of, until=as_of) if made else []
 
     @staticmethod
     def _commits(src: LedgerSources, lo: datetime, as_of: datetime) -> list[tuple[datetime, str]]:
@@ -1134,26 +1123,26 @@ def _weeks(data: _Data) -> str:
     return "\n".join(out)
 
 
-def _by_company(mail: Sequence[_Mail]) -> dict[str, dict[str, list[_Mail]]]:
-    comp: dict[str, dict[str, list[_Mail]]] = defaultdict(
-        lambda: {"receipt": [], "rejection": [], "interview": [], "offer": []},
-    )
-    for m in mail:
-        if m.company:
-            kind = "rejection" if m.cancelled else m.kind
-            if kind in comp[m.company]:
-                comp[m.company][kind].append(m)
-    return comp
-
-
 def _invitation_line(mail: _Mail, as_of: datetime, zone: tzinfo, company: str | None = None) -> str:
+    """One interview mail's invitation: its time in ``zone`` from the stored readings (ADR 0379).
+
+    A time its label reads two ways (``10 am PST``, US or BC Pacific) shows both, with what the
+    mail said; a range keeps its end. It is upcoming while any reading is still ahead.
+    """
     assert mail.event_at is not None  # noqa: S101 — callers pass dated mail only
-    when = datetime.fromisoformat(mail.event_at).astimezone(zone)
-    start = _start_from_text(mail.event_text, mail.event_at)
-    state = "upcoming" if when > as_of else "past"
+    first = datetime.fromisoformat(mail.event_at).astimezone(zone)
+    later = (
+        datetime.fromisoformat(mail.event_later_at).astimezone(zone)
+        if mail.event_later_at else None
+    )
+    when = zone_label.when_text(
+        first, later, zone, sentence=mail.event_text or "",
+        minutes=_range_minutes(mail.event_text), language="en",
+    )
+    state = "upcoming" if (later or first) > as_of else "past"
     return (
         f"  {company or mail.company} ({mail.role or 'co-op'}): latest dated invitation "
-        f"{when:%a %Y-%m-%d} at {start} Pacific [{state}; from the mail, received "
+        f"{first:%a %Y-%m-%d} at {when} [{state}; local time; from the mail, received "
         f"{mail.at:%m-%d %H:%M}; the mail text says: {_trim(mail.event_text or '', 80)}]"
     )
 
@@ -1326,7 +1315,7 @@ def _receipts(mail: Sequence[_Mail]) -> list[_Sub]:
     for m in sorted((m for m in mail if m.kind == "receipt"), key=lambda m: m.at):
         if any(
             m.at - k.at <= _SAME_SUBMISSION and k.via_ats != m.via_ats
-            and _same_company(k.company, m.company)
+            and same_company(k.company, m.company)
             for k in kept
         ):
             continue
@@ -1339,8 +1328,11 @@ def _alnum(name: str) -> str:
     return "".join(ch for ch in name.casefold() if ch.isalnum())
 
 
-def _same_company(a: str, b: str) -> bool:
-    """Equal once only letters and digits are kept, or one holds the other's first four."""
+def same_company(a: str, b: str) -> bool:
+    """Whether two names are one company (ADR 0213, 0367): the one comparison the lists share.
+
+    Equal once only letters and digits are kept, or one holds the other's first four letters.
+    """
     ka, kb = _alnum(a), _alnum(b)
     if not ka or not kb:
         return False
@@ -1357,6 +1349,11 @@ class _Submitted(NamedTuple):
     def every(self) -> list[_Sub]:
         return [*self.mail, *self.screen, *self.told]
 
+    @property
+    def total(self) -> int:
+        """The number block D and the jobs tool both state as "at least N" submitted."""
+        return len(self.every)
+
 
 def _submitted(data: _Data) -> _Submitted:
     """Applications submitted, from the three sources, a submission counted once."""
@@ -1368,7 +1365,7 @@ def _submitted(data: _Data) -> _Submitted:
         near = [
             (abs(r.at - page.at), i) for i, r in enumerate(receipts)
             if i not in taken and abs(r.at - page.at) <= _SAME_SUBMISSION
-            and (_same_company(page.company, r.company)
+            and (same_company(page.company, r.company)
                  or (page.role and page.role.casefold() == r.role.casefold()))
         ]
         if near:
@@ -1379,7 +1376,7 @@ def _submitted(data: _Data) -> _Submitted:
     told = [
         own for own in _own_submissions(data.src, data.as_of)
         if not any(
-            _same_company(own.company, s.company)
+            same_company(own.company, s.company)
             and abs(own.at.date() - s.at.date()) <= timedelta(days=1)
             for s in seen
         )
@@ -1405,7 +1402,7 @@ def _submitted_line(data: _Data) -> str:
         f"{day:%a %m-%d} {days[day]}" for day in (today - timedelta(days=i) for i in range(_BY_DAY))
     )
     line = (
-        f"  Applications submitted: at least {len(found.every)} ({len(found.mail)} by confirmation "
+        f"  Applications submitted: at least {found.total} ({len(found.mail)} by confirmation "
         f"mail, {len(found.screen)} by a submission page seen on screen with no confirmation "
         f"mail, {len(found.told)} you told me or added). By day, last {_BY_DAY} days: {by_day}."
     )
@@ -1416,42 +1413,59 @@ def _submitted_line(data: _Data) -> str:
     return line
 
 
+# ADR 0367: block D's lists are the Jobs page's statuses, in this order, and the kind of mail whose
+# sender is the contact for each (a status he set by hand with no such mail names any sender).
+_HUNT_LISTS: Final[tuple[tuple[str, str, str], ...]] = (
+    ("applied", "Applied", "receipt"),
+    ("no_reply", "No reply", "receipt"),
+    ("interviewing", "Interviewing", "interview"),
+    ("offer", "Offer", "offer"),
+    ("rejected", "Rejected", "rejection"),
+)
+
+
+def _hunt_entry(app: Mapping[str, Any], mails: Sequence[_Mail], kind: str) -> str:
+    """One application as a list shows it: company, role and the contact who wrote to him."""
+    chosen = [m for m in mails if m.kind == kind and not m.cancelled] or list(mails)
+    contact = next((m.sender for m in chosen if m.sender), "")
+    role = _trim(str(app["role"]), _ROLE_CHARS)
+    name = f"{app['company']} - {role}" if role else str(app["company"])
+    return f"{name} ({contact})" if contact else name
+
+
 def _job_hunt(data: _Data) -> str:
-    comp = _by_company(data.mail)
-
-    def who(company: str, kind: str) -> str:
-        sender = next((m.sender for m in comp[company][kind] if m.sender), "")
-        return f"{company} ({sender})" if sender else company
-
-    applied = sorted(c for c, v in comp.items() if v["receipt"])
-    rejected = sorted(
-        c for c, v in comp.items()
-        if v["rejection"] and not any(m.cancelled for m in v["rejection"])
-    )
-    interview = sorted(c for c, v in comp.items() if v["interview"])
-    offers = sorted(c for c, v in comp.items() if v["offer"])
-    every = sorted(c for c, v in comp.items() if any(v.values()))
+    seen = {m.message_id: m for m in data.mail}
+    apps = sorted(data.applications, key=lambda a: str(a["company"]).casefold())
+    mails = {
+        a["id"]: sorted(
+            (seen[m["message_id"]] for m in a["mails"] if m["message_id"] in seen),
+            key=lambda m: m.at,
+        )
+        for a in apps
+    }
     out = [
-        "[Job hunt as of now · the lists below are from job mail (ATS senders mapped to the real "
-        "company, contact name in brackets); the submitted count also uses submission pages seen "
-        "in the browser and applications he told me or added, so a portal application with no "
-        f"mail and no such page is not visible unless he tells me] {len(every)} companies have "
-        "confirmation, rejection or interview mail.",
+        "[Job hunt as of now · the lists below are his applications by status, the same list the "
+        "Jobs page and the jobs tool show: job mail (a hiring platform's mail filed under its "
+        "employer, contact name in brackets), his own edits to a status, and applications he "
+        "told me or added; the submitted count also uses submission pages seen in the browser, so "
+        f"a portal application with no mail and no such page is not visible unless he tells me] "
+        f"{len(apps)} applications.",
         _submitted_line(data),
-        f"  Application confirmed ({len(applied)}): "
-        f"{', '.join(who(c, 'receipt') for c in applied) or 'none'}",
-        f"  Rejected ({len(rejected)}): "
-        f"{', '.join(who(c, 'rejection') for c in rejected) or 'none'}",
-        f"  Interview mail ({len(interview)}): "
-        f"{', '.join(who(c, 'interview') for c in interview) or 'none'}",
     ]
-    if offers:
-        out.append(f"  Offer mail ({len(offers)}): {', '.join(who(c, 'offer') for c in offers)}")
-    for company in interview:
-        dated = [m for m in comp[company]["interview"] if m.event_at]
+    for status, label, kind in _HUNT_LISTS:
+        held = [a for a in apps if a["status"] == status]
+        if held or status != "offer":
+            listed = "; ".join(_hunt_entry(a, mails[a["id"]], kind) for a in held) or "none"
+            out.append(f"  {label} ({len(held)}): {listed}")
+    for app in (a for a in apps if a["status"] == "interviewing"):
+        dated = [m for m in mails[app["id"]] if m.kind == "interview" and m.event_at
+                 and not m.cancelled]
         if dated:
-            out.append(_invitation_line(max(dated, key=lambda m: m.at), data.as_of, data.zone))
-        out += [_cancel_line(m) for m in data.mail if m.company == company and m.cancelled]
+            out.append(
+                _invitation_line(max(dated, key=lambda m: m.at), data.as_of, data.zone,
+                                 str(app["company"])),
+            )
+        out += [_cancel_line(m) for m in mails[app["id"]] if m.cancelled]
     return "\n".join(out)
 
 
@@ -1512,6 +1526,14 @@ def standing_text(  # noqa: PLR0913 — the window, the day counts and two cut-o
             _weeks(data),
         ),
     )
+
+
+def submitted_count(src: LedgerSources, as_of: datetime) -> int:
+    """How many applications he has submitted, at least, as of ``as_of`` (ADR 0213, 0367).
+
+    The number block D states in its submitted line, counted the same way.
+    """
+    return _submitted(_Data(src, as_of, as_of - timedelta(days=1), screen=False)).total
 
 
 def job_hunt_text(src: LedgerSources, now: datetime) -> str:

@@ -51,8 +51,8 @@ final class DayTimelineTests: XCTestCase {
         let m = build(TimelineFixture.today(cal))
         let stays = m.entries.filter { $0.kind == .stay }
         XCTAssertEqual(stays.map(\.title), ["家", "A&W", "家", "UVic", "家"], "the name he gave, else the first part of the phone's label")
-        XCTAssertEqual(stays[0].color, RGB(255, 168, 150), "home")
-        XCTAssertEqual(stays[3].color, RGB(100, 200, 255), "school")
+        XCTAssertEqual(stays[0].color, Look.home, "home")
+        XCTAssertEqual(stays[3].color, Look.school, "school")
         XCTAssertEqual(stays[1].color, RGB(196, 204, 238), "a place he does not keep is a neutral haze")
         XCTAssertTrue(stays[0].kept && stays[3].kept)
         XCTAssertFalse(stays[1].kept)
@@ -438,7 +438,7 @@ final class DayTimelineTests: XCTestCase {
         XCTAssertEqual(night.fill, .sleep)
         XCTAssertEqual([night.name, night.icon], [nil, "moon.fill"], "the moon alone: its length is in the readout")
         let home = try piece("stay-1")
-        XCTAssertEqual(home.fill, .place(RGB(255, 168, 150), kept: true))
+        XCTAssertEqual(home.fill, .place(Look.home, kept: true))
         XCTAssertEqual([home.name, home.icon], ["家", "house.fill"])
         XCTAssertEqual([try piece("stay-9").name, try piece("stay-9").icon], ["UVic", "graduationcap.fill"])
         XCTAssertEqual(try piece("stay-5").fill, .place(RGB(196, 204, 238), kept: false), "a place he does not keep")
@@ -850,19 +850,6 @@ final class DayTimelineTests: XCTestCase {
         XCTAssertNil(TimelineState.swipe(dx: 30, dy: 0, predicted: 100), "a slow one is not")
         XCTAssertNil(TimelineState.swipe(dx: 100, dy: 60), "not sideways enough")
         XCTAssertNil(TimelineState.swipe(dx: 10, dy: 200), "the list's own")
-    }
-
-    func testTheHomeScreenShowsTheTimelineUntilHeChoosesTheDialAndKeepsWhatHeChose() {
-        let name = "test.homeModule.\(UUID().uuidString)"
-        let d = UserDefaults(suiteName: name)!
-        defer { d.removePersistentDomain(forName: name) }
-        XCTAssertEqual(HomeModule(d).kind, .timeline)
-        let h = HomeModule(d)
-        h.kind = .stars
-        XCTAssertEqual(d.string(forKey: HomeModule.key), "stars")
-        XCTAssertEqual(HomeModule(d).kind, .stars)
-        d.set("something new", forKey: HomeModule.key)
-        XCTAssertEqual(HomeModule(d).kind, .timeline, "a word this build does not know is the default")
     }
 
     // MARK: what arrives

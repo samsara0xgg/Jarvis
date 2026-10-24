@@ -25,7 +25,7 @@ func xlang(_ dir: URL) {
     assert(t == 1234 && host > 0)
     guard case .error("bad_say", _) = text("error_bad_say"), case .error("bad_ping", _) = text("error_bad_ping"), case .error("retry", _) = text("error_retry") else { fatalError("error") }
     func put(_ n: String, _ d: Data) { try! d.write(to: dir.appendingPathComponent(n)) }
-    put("swift_hello.json", PhoneFrame.hello.json)
+    put("swift_hello.json", PhoneFrame.hello(voice: true).json)
     put("swift_say_spoken.json", PhoneFrame.say(utteranceId: "u1", text: "你好 Jarvis", language: "zh", confidence: 0.93, spoken: true).json)
     put("swift_say_typed.json", PhoneFrame.say(utteranceId: "u2", text: "hi", language: nil, confidence: nil, spoken: false).json)
     put("swift_ping.json", PhoneFrame.ping(tNs: 1_234_567_890_123).json)

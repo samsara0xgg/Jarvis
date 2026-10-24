@@ -22,7 +22,7 @@ import argparse
 import copy
 import json
 import tempfile
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -46,18 +46,13 @@ def _first(ok: list[str], bad: list[str], **more: Any) -> dict[str, Any]:  # noq
 
 
 def items(today: date) -> list[Item]:
-    """The questions, with the dates they mean worked out from ``today``."""
-    def d(n: int) -> str:
-        return (today + timedelta(days=n)).isoformat()
-
-    sat = (5 - today.weekday()) % 7 or 7
-    sun, wed = sat + 1, 9 - today.weekday()  # the Wednesday of next week
+    """The questions; ``when`` is his words, so any wording of the right days passes (ADR 0356)."""
     bad = ["web_search", "tool_search", "where_am_i"]
     one = {"max_calls": 1}
     home = {"weather": {"place": "*"}}
     fri = -3 - today.weekday()  # the Friday of last week: 3 to 9 days back
     past = (
-        _first(["weather"], bad, args_must={"weather": [{"start_date": d(fri)}]},
+        _first(["weather"], bad, args_must={"weather": [{"when": "*"}]},
                args_must_not=home, **one)
         if fri >= -DAYS_BACK  # on a Saturday or Sunday it is out of range: search instead
         else _first(["text", "web_search"], ["weather", "tool_search"])
@@ -79,16 +74,16 @@ def items(today: date) -> list[Item]:
          ]}, **one), ["weather", "place"]),
         ("wk-vancouver-sat-en", "What's the weather in Vancouver this Saturday?", [],
          _first(["weather"], bad, args_must={"weather": [
-             {"place": "Vancouver", "start_date": d(sat)},
-             {"place": "Vancouver, BC", "start_date": d(sat)},
+             {"place": "Vancouver", "when": "*"},
+             {"place": "Vancouver, BC", "when": "*"},
          ]}, **one), ["weather", "place", "day"]),
         ("wk-next-wed-zh", "下周三温哥华会下雨吗", [],
          _first(["weather"], bad, args_must={"weather": [
-             {"place": "温哥华", "start_date": d(wed)},
-             {"place": "Vancouver", "start_date": d(wed)},
+             {"place": "温哥华", "when": "*"},
+             {"place": "Vancouver", "when": "*"},
          ]}, **one), ["weather", "place", "day"]),
         ("wk-sunday-zh", "周日天气怎么样", [],
-         _first(["weather"], bad, args_must={"weather": [{"start_date": d(sun)}]},
+         _first(["weather"], bad, args_must={"weather": [{"when": "*"}]},
                 args_must_not=home, **one), ["weather", "day"]),
         ("wk-hourly-en", "Hour by hour, what's the weather this afternoon?", [],
          _first(["weather"], bad, args_must={"weather": [{"hourly": True}]}, **one),
@@ -114,7 +109,7 @@ def items(today: date) -> list[Item]:
         ("wk-far-zh", "三个星期以后的天气怎么样", [],
          _first(["text", "web_search"], ["weather", "tool_search"]), ["weather", "range"]),
         ("wk-yesterday-zh", "昨天下过雨吗", [],
-         _first(["weather"], bad, args_must={"weather": [{"start_date": d(-1)}]},
+         _first(["weather"], bad, args_must={"weather": [{"when": "*"}]},
                 args_must_not=home, **one), ["weather", "past"]),
         ("wk-last-friday-zh", "上周五多冷", [], past, ["weather", "past"]),
         ("wk-news-zh", "最近有什么新闻", [],
@@ -125,7 +120,7 @@ def items(today: date) -> list[Item]:
 def _result() -> str:
     """The faked WeatherKit result of ``weather`` with no arguments, built by the tool itself."""
     with pytest.MonkeyPatch.context() as mp, tempfile.TemporaryDirectory() as tmp:
-        Net(mp)
+        Net(mp, warned=1)  # a warning in force, for "are there storm warnings"
         kit = kit_for(make_key(Path(tmp))[0])
         registry = build_default_registry(weather_lookup=weather_lookup(HOME, kit, ZONE))
         (tool,) = (t for t in registry.get_definitions() if t.name == "weather")

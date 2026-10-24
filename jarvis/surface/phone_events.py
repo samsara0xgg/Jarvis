@@ -91,8 +91,9 @@ SIGNAL_VALUES: Final[Mapping[str, tuple[str, ...]]] = {
     "headphones": ("connected", "disconnected"),
     "call": ("started", "ended"),
 }
-BATTERY_SIGNAL: Final = "battery"
-"""The one signal whose ``value`` is not an enum: the charge as a whole percent, in text."""
+CHARGE_SIGNALS: Final = ("battery", "watch_battery")
+"""The signals whose ``value`` is not an enum: the charge as a whole percent, in text, of the
+phone (ADR 0292) and of the watch, which tells the phone (ADR 0377)."""
 BATTERY_DETAILS: Final = ("charging", "full", "unplugged")
 
 _FUTURE_MS: Final = 5 * 60 * 1000
@@ -269,7 +270,7 @@ _CHECKS: Final[Mapping[str, Mapping[str, Check]]] = {
     },
     TRACK_EVENT: {"started_at_ms": _time, "ended_at_ms": _time, "fixes": _fixes},
     STATE_EVENT: {
-        "signal": _one_of((*SIGNAL_VALUES, BATTERY_SIGNAL)),
+        "signal": _one_of((*SIGNAL_VALUES, *CHARGE_SIGNALS)),
         "value": _DETAIL,  # which texts fit which signal is checked in payload_valid
         "detail": _DETAIL,
     },
@@ -329,7 +330,7 @@ def _measure_valid(payload: Mapping[str, object]) -> bool:
 def _state_valid(payload: Mapping[str, object]) -> bool:
     """Whether ``value`` (and ``detail``) is what ``signal`` carries."""
     signal, value, detail = str(payload["signal"]), payload["value"], payload.get("detail")
-    if signal == BATTERY_SIGNAL:
+    if signal in CHARGE_SIGNALS:
         return (
             isinstance(value, str)
             and value.isascii()

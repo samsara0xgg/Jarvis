@@ -7,24 +7,45 @@ enum SetColor {
     private static func rgb(_ r: Double, _ g: Double, _ b: Double, _ a: Double = 1) -> Color {
         Color(red: r / 255, green: g / 255, blue: b / 255, opacity: a)
     }
-    static let ink = rgb(238, 240, 251)
-    static let muted = rgb(196, 204, 238, 0.62)
-    static let faint = rgb(196, 204, 238, 0.34)
-    static let line = rgb(157, 180, 255, 0.14)
+    static let ink = Look.ink
+    static let muted = Look.ink2
+    static let faint = Look.ink3
+    static let line = Look.line
     static let bg = rgb(14, 15, 30)
     static let cell = rgb(28, 30, 50)
     static let hi = Color.white.opacity(0.07)
     static let link = rgb(201, 214, 255)
-    static let red = rgb(255, 107, 107)
+    static let red = Look.red
     static let on = rgb(48, 209, 88)
     static let mint = rgb(139, 230, 194)
-    static let glow = rgb(157, 180, 255)
+    static let glow = Look.glow
     static func color(_ r: Double, _ g: Double, _ b: Double, _ a: Double = 1) -> Color { rgb(r, g, b, a) }
 }
 
 enum SetMotion {
     /// The prototype's `--ease-out`, cubic-bezier(.16, 1, .3, 1).
     static func easeOut(_ duration: Double) -> Animation { .timingCurve(0.16, 1, 0.3, 1, duration: duration) }
+}
+
+/// 设置's line under her (跨端UI标准 §2): a dot and where the link to the brain stands. The dot is green while the brain answers, amber while the phone is not paired or pairing, red when a
+/// paired brain does not answer.
+struct BrainStatusLine: View {
+    private var link: BrainLink { BrainLink.shared }
+
+    var body: some View {
+        let w = Words.PhoneFrame.self
+        let (words, dot): (String, Color) = switch link.state {
+        case .paired: (w.brainConnected(latency: link.latencyMs.map { "\($0) ms" }), SetColor.mint)
+        case .pairing: (w.brainPairing, SetColor.color(240, 176, 79))
+        case .unpaired: (w.brainUnpaired, SetColor.color(240, 176, 79))
+        case .error: link.hasToken ? (w.brainOffline, SetColor.red) : (w.brainUnpaired, SetColor.color(240, 176, 79))
+        }
+        HStack(spacing: 6) {
+            Circle().fill(dot).frame(width: 6, height: 6)
+            Text(words).font(.system(size: Look.note)).foregroundStyle(Look.ink2).lineLimit(1)
+        }
+        .accessibilityElement(children: .combine)
+    }
 }
 
 /// A stroked polyline in a `box`-sized coordinate space (the prototype's small SVG icons).

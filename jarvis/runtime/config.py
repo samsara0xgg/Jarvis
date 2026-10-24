@@ -40,6 +40,7 @@ from jarvis.deployment.models import (
     default_voiceprint_model_path,
 )
 from jarvis.execution import maps_spend
+from jarvis.execution.mail_gmail import DEFAULT_LIST_CAP, DEFAULT_RAW_MAX_BYTES
 from jarvis.execution.tools import (
     DEFAULT_SCREEN_MAX_WIDTH_PX,
     DEFAULT_WEB_FETCH_MAX_BYTES,
@@ -292,6 +293,18 @@ class WebToolsSettings:
 
 
 @dataclass(frozen=True)
+class MailToolsSettings:
+    """``tools.mail`` (ADR 0363, 0364): the bounds the `mail` tool and the home's list keep.
+
+    ``list_cap`` is how many matches a list pages through before it says "more than";
+    ``raw_max_bytes`` the size past which a message is read in the server's text form, not raw.
+    """
+
+    list_cap: int
+    raw_max_bytes: int
+
+
+@dataclass(frozen=True)
 class WorkersSettings:
     """``tools.workers`` (ADR 0019): Codex workers, off unless enabled.
 
@@ -314,6 +327,7 @@ class ToolsSettings:
 
     obsidian_vault_root: Path | None
     web: WebToolsSettings
+    mail: MailToolsSettings
     vision_preset: str
     screen_max_width_px: int
     workers: WorkersSettings
@@ -388,12 +402,10 @@ class JevSettings:
 
 @dataclass(frozen=True)
 class MailReplySettings:
-    """``home.mail_reply`` (ADR 0123, 0141): Jev's marks on the inbox, and whether it rates."""
+    """``home.mail_reply`` (ADR 0124, 0141): Jev's junk mark on the inbox, and whether it rates."""
 
     model: str
     timeout_ms: int
-    yes_at: float
-    fyi_at: float
     junk_at: float
     importance: bool
 
@@ -926,6 +938,22 @@ def _web_tools(tools: Mapping[str, Any]) -> WebToolsSettings:
     )
 
 
+def _mail_tools(tools: Mapping[str, Any]) -> MailToolsSettings:
+    """``tools.mail.*``: UX knobs, so a malformed value is the shipped default, not a refusal."""
+    block = _block(tools, "mail")
+
+    def count(key: str, fallback: int) -> int:
+        value = block.get(key)
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            return value
+        return fallback
+
+    return MailToolsSettings(
+        list_cap=count("list_cap", DEFAULT_LIST_CAP),
+        raw_max_bytes=count("raw_max_bytes", DEFAULT_RAW_MAX_BYTES),
+    )
+
+
 def _workers(tools: Mapping[str, Any]) -> WorkersSettings:
     """``tools.workers.enabled`` (exactly ``true``) and ``tools.workers.roots``."""
     block = _block(tools, "workers")
@@ -947,6 +975,7 @@ def _tools(raw: Mapping[str, Any]) -> ToolsSettings:
         obsidian_vault_root=Path(vault).expanduser() if isinstance(vault, str) and vault.strip()
         else None,
         web=_web_tools(tools),
+        mail=_mail_tools(tools),
         vision_preset=preset if isinstance(preset, str) and preset.strip()
         else _FALLBACK_VISION_PRESET,
         screen_max_width_px=width if isinstance(width, int) and not isinstance(width, bool)
@@ -1226,31 +1255,28 @@ def _jev(raw: Mapping[str, Any], config_path: Path) -> JevSettings:
 
 
 def _mail_reply(raw: Mapping[str, Any], config_path: Path) -> MailReplySettings | None:
-    """``home.mail_reply`` (ADR 0123): off unless enabled; bad values stop the load."""
+    """``home.mail_reply`` (ADR 0124): off unless enabled; bad values stop the load.
+
+    ADR 0364 dropped the reply question: a ``yes_at`` or ``fyi_at`` still written is not read.
+    """
     home = raw.get("home")
     block = home.get("mail_reply") if isinstance(home, Mapping) else None
     if not isinstance(block, Mapping) or block.get("enabled") is not True:
         return None
-    model, timeout = block.get("model"), block.get("timeout_ms")
-    bars = [  # fyi_at, yes_at, junk_at
-        v for v in (block.get("fyi_at"), block.get("yes_at"), block.get("junk_at"))
-        if isinstance(v, int | float) and not isinstance(v, bool)
-    ]
+    model, timeout, junk = block.get("model"), block.get("timeout_ms"), block.get("junk_at")
     if (
         not isinstance(model, str) or not model.strip()
         or isinstance(timeout, bool) or not isinstance(timeout, int) or timeout <= 0
-        or len(bars) != 3 or not 0 <= bars[0] < bars[1] <= 1  # noqa: PLR2004 — fyi_at, yes_at
-        or not 0 < bars[2] <= 1
+        or isinstance(junk, bool) or not isinstance(junk, int | float) or not 0 < junk <= 1
     ):
         msg = (
             f"runtime: {config_path} home.mail_reply needs model (text), timeout_ms (positive"
-            " int), fyi_at < yes_at, both in [0, 1], and junk_at in (0, 1]"
+            " int) and junk_at in (0, 1]"
         )
         raise RuntimeBootstrapError(msg)
     rating = block.get("importance")  # ADR 0141
     return MailReplySettings(
-        model=model.strip(), timeout_ms=timeout, yes_at=float(bars[1]), fyi_at=float(bars[0]),
-        junk_at=float(bars[2]),
+        model=model.strip(), timeout_ms=timeout, junk_at=float(junk),
         importance=isinstance(rating, Mapping) and rating.get("enabled") is True,
     )
 

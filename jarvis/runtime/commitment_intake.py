@@ -26,7 +26,9 @@ from typing import TYPE_CHECKING, Any, Final
 from zoneinfo import ZoneInfo
 
 from jarvis.decision import commitment_mail as triage
+from jarvis.execution.mail_gmail import Mailbox
 from jarvis.execution.tools import ToolError
+from jarvis.runtime import commitment_bills
 from jarvis.runtime.home import MAIL_SERVER, _letter, mail_body
 from jarvis.runtime.interview_reminders import REF_PREFIX, local_zone
 from jarvis.runtime.job_mail import gmail_read
@@ -35,6 +37,7 @@ from jarvis.state import commitments, things
 from jarvis.state import job_ledger as ledger
 from jarvis.state.event_log import open_runtime_event_log
 from jarvis.state.import_parsers import is_daily_subject
+from jarvis.state.mail_bill import Seen, worth_reading
 
 if TYPE_CHECKING:
     import sqlite3
@@ -192,6 +195,8 @@ class CommitmentIntake:
         if rule == "never":
             return "filtered", "", ""
         body = ledger.body_excerpt(self._db, message_id) or self._full_body(servers, message_id)
+        box = Mailbox(lambda tool, args: gmail_read(servers, tool, args))
+        bill = self._bill_seen(conn, box, message_id, head["subject"], body, now)
         if not triage.may_hold_time(head["subject"], body):
             return "filtered", "", ""
         received = head["received"] or now.isoformat()
@@ -222,7 +227,41 @@ class CommitmentIntake:
             said, {k.commitment_id for k in shown}, zone=zone, today=today,
         )
         applied = self._apply(conn, actions, held, mail, message_id, always=rule == "always")
+        if bill is not None and applied:
+            self._settle(conn, box, bill, message_id, now)
         return ("noted" if applied else "none"), json.dumps({"user": user}), said
+
+    def _bill_seen(  # noqa: PLR0913 - the mail, what is known of it and the clock
+        self, conn: sqlite3.Connection, box: Mailbox, message_id: str, subject: str, body: str,
+        now: datetime,
+    ) -> Seen | None:
+        """What the mail states of a bill or a payment (ADR 0365); a receipt pays things at once.
+
+        Only a mail that mentions a bill or a payment is fetched whole. Nothing here may stop the
+        letter's own reading, so a failure is logged and the mail goes on.
+        """
+        if not worth_reading(subject, body):
+            return None
+        try:
+            seen = commitment_bills.stated(box, message_id)
+            if seen is not None:
+                commitment_bills.pay_open_things(
+                    conn, box, seen, message_id, subject, ZoneInfo(self.zone), now,
+                )
+        except Exception:  # noqa: BLE001 - the bill step is an extra, the letter is read anyway
+            LOGGER.warning("commitments: the bill step failed for %s", message_id, exc_info=True)
+            return None
+        return seen
+
+    def _settle(
+        self, conn: sqlite3.Connection, box: Mailbox, bill: Seen,
+        message_id: str, now: datetime,
+    ) -> None:
+        """A bill that just made a thing: pay it when its receipt came before it was read."""
+        try:
+            commitment_bills.settle_bill(conn, box, bill, message_id, ZoneInfo(self.zone), now)
+        except Exception:  # noqa: BLE001 - as above
+            LOGGER.warning("commitments: no receipt search for %s", message_id, exc_info=True)
 
     @staticmethod
     def _full_body(servers: McpServers, message_id: str) -> str:

@@ -307,7 +307,7 @@ def test_without_a_key_or_when_apple_fails_the_card_is_none_and_a_failure_is_not
     assert home.day_weather_card(day) is None
     assert len(net.asked) == 1
     assert [r.getMessage() for r in caplog.records if "day weather" in r.getMessage()] == [
-        f"day weather: {day} not read (ToolError)",
+        f"day weather: {day} not read (Unavailable)",
     ]
 
     later = time.time() + home_module.WEATHER_CARD_RETRY_S + 1

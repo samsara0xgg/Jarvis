@@ -1,0 +1,53 @@
+{
+  "id": "jobs-list-his-edit-and-hidden-row",
+  "tool": "jobs",
+  "said": "how is the job hunt going",
+  "at": "2026-10-20T11:00:00-07:00",
+  "zone": "America/Vancouver",
+  "state": "jobs-hunt",
+  "setup": [
+    {
+      "tool": "jobs",
+      "args": {
+        "action": "update",
+        "application": "Maple Works",
+        "status": "interviewing"
+      }
+    },
+    {
+      "tool": "jobs",
+      "args": {
+        "action": "update",
+        "application": "Delta Corp",
+        "hidden": true
+      }
+    }
+  ],
+  "args": {},
+  "recording": "jobs.recording.json",
+  "expect": {
+    "summary_must": [
+      "^6 applications: 1 offer, 2 interviewing, 2 applied, 1 rejected"
+    ],
+    "result": [
+      {
+        "path": "applications",
+        "op": "len",
+        "value": 6
+      },
+      {
+        "path": "applications[?company=Maple Works].status",
+        "op": "eq",
+        "value": "interviewing"
+      },
+      {
+        "path": "applications[?company=Delta Corp]",
+        "op": "absent"
+      }
+    ],
+    "result_must_not_mention": [
+      "Delta Corp",
+      "Quill"
+    ]
+  }
+}

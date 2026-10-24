@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "settings": {},
+  "env": [
+    "TAVILY_API_KEY"
+  ],
+  "http": [
+    {
+      "method": "POST",
+      "url": "https://api.tavily.com/search",
+      "request": "{\"query\": \"BC news today\", \"max_results\": 5, \"topic\": \"news\", \"time_range\": \"day\"}",
+      "status": 200,
+      "content_type": "application/json",
+      "body": "{\"query\": \"BC news today\", \"results\": [], \"response_time\": 0.4}"
+    }
+  ],
+  "mcp": []
+}

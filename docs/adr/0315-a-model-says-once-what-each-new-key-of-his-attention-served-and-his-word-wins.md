@@ -1,6 +1,6 @@
 # ADR 0315 — A model says once what each new key of his attention served, and his word wins
 
-**Status:** Accepted
+**Status:** Superseded-by-0393
 **Date:** 2026-10-21
 **Supersedes:** none
 

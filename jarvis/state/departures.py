@@ -47,6 +47,8 @@ class Trip:
     alight_stop: str | None = None
     alight_lat: float | None = None
     alight_lng: float | None = None
+    # The BC Transit trip the first bus was matched to (ADR 0342); the refresh follows it.
+    bus_trip_id: str | None = None
 
     @property
     def first_route(self) -> str:
@@ -100,6 +102,7 @@ def _trip(raw: dict[str, Any], tid: str) -> Trip:
         raw.get("alight_stop"),
         raw.get("alight_lat"),
         raw.get("alight_lng"),
+        raw.get("bus_trip_id"),
     )
 
 
@@ -144,6 +147,7 @@ def current(conn: sqlite3.Connection, *, until_ms: int | None = None) -> Departu
             one.leave_at_ms = int(payload["leave_at_ms"])
             one.departs_at_ms = int(payload["departs_at_ms"])
             one.arrive_at = str(payload["arrive_at"])
+            one.bus_trip_id = payload.get("bus_trip_id", one.bus_trip_id)
     return found
 
 
@@ -162,10 +166,13 @@ def pin(  # noqa: PLR0913 — one keyword per payload field.
     offer_id: str | None,
     action_id: str,
     source_event_id: str | None = None,
-) -> str:
-    """Append ``departure.pinned``: a new set that replaces the older. Returns the new pin id."""
+) -> tuple[str, str]:
+    """Append ``departure.pinned``: a new set that replaces the older.
+
+    Returns the new pin id and the event's id (what an undo reverses).
+    """
     pin_id = ID_PREFIX + uuid.uuid4().hex[:8]
-    emit_event(
+    event = emit_event(
         conn,
         type="departure.pinned",
         payload={
@@ -179,7 +186,7 @@ def pin(  # noqa: PLR0913 — one keyword per payload field.
         source_event_id=source_event_id,
         correlation={"action_id": action_id},
     )
-    return pin_id
+    return pin_id, event.event_uid
 
 
 def add(conn: sqlite3.Connection, pin_id: str, trip: Trip, *, reminder_id: str, ring: str) -> None:
@@ -203,7 +210,12 @@ def remove(conn: sqlite3.Connection, pin_id: str, tid: str, *, reminder_id: str,
 def update(
     conn: sqlite3.Connection, pin_id: str, trip: Trip, *, reminder_id: str, ring: str,
 ) -> None:
-    """Append ``departure.updated``: this trip's live times, and the ring now."""
+    """Append ``departure.updated``: this trip's times and the BC Transit trip it follows now.
+
+    The ring is the one now. ``bus_trip_id`` is always written, ``None`` included: moving the trip
+    to a bus the timetable did not match must not leave the earlier bus's id behind. An event
+    from before that omits it, and the fold keeps the id the trip had.
+    """
     emit_event(
         conn,
         type="departure.updated",
@@ -215,6 +227,7 @@ def update(
             "leave_at_ms": trip.leave_at_ms,
             "departs_at_ms": trip.departs_at_ms,
             "arrive_at": trip.arrive_at,
+            "bus_trip_id": trip.bus_trip_id,
         },
     )
 

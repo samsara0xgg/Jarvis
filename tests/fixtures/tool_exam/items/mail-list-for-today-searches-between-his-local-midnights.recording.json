@@ -1,0 +1,46 @@
+{
+ "version": 1,
+ "mailbox": {
+  "messages": [
+   {
+    "id": "t1",
+    "subject": "Morning note",
+    "plain": "Good morning.",
+    "sender": "Sam Lee <sam@example.com>",
+    "at": "2026-10-21T09:30:00-07:00",
+    "labels": [
+     "INBOX",
+     "UNREAD",
+     "CATEGORY_PERSONAL"
+    ]
+   },
+   {
+    "id": "t2",
+    "subject": "Sale today",
+    "plain": "Everything is cheaper.",
+    "sender": "Shop <deals@example.com>",
+    "at": "2026-10-21T13:00:00-07:00",
+    "labels": [
+     "INBOX",
+     "UNREAD",
+     "CATEGORY_PROMOTIONS"
+    ],
+    "headers": {
+     "List-Unsubscribe": "<mailto:stop@example.com>"
+    }
+   },
+   {
+    "id": "y1",
+    "subject": "Yesterday's note",
+    "plain": "Old.",
+    "sender": "Kim Ray <kim@example.com>",
+    "at": "2026-10-20T22:00:00-07:00",
+    "labels": [
+     "INBOX",
+     "UNREAD",
+     "CATEGORY_PERSONAL"
+    ]
+   }
+  ]
+ }
+}

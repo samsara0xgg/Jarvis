@@ -21,13 +21,14 @@ from jarvis.runtime.bootstrap.places import _here_location, _locator
 from jarvis.runtime.bootstrap.vision import _build_vision_client
 from jarvis.runtime.bus_live import BusLive
 from jarvis.runtime.daily_report import DailyReportService
-from jarvis.runtime.dashboard import MailDrafts, ViewState
+from jarvis.runtime.dashboard import ViewState
 from jarvis.runtime.deep_search import build_deep_search
 from jarvis.runtime.locate import HerePolicy
 from jarvis.runtime.moment import Moment
 from jarvis.runtime.night_run import NightRun
 from jarvis.runtime.projects import ProjectsService
 from jarvis.runtime.rides import Rides
+from jarvis.runtime.search_location import HomePlace
 from jarvis.runtime.weatherkit import WeatherKit
 from jarvis.runtime.work_state import WorkStateService, build_analyst
 from jarvis.state import places as place_state
@@ -41,7 +42,8 @@ if TYPE_CHECKING:
 
     from jarvis.decision.surrogate_route import JevLog
     from jarvis.deployment import RuntimePaths
-    from jarvis.execution.tools import DeepSearch, VisionClient
+    from jarvis.execution.tools import VisionClient
+    from jarvis.execution.web_search_tool import DeepSearch
     from jarvis.runtime.bootstrap.core import Core
     from jarvis.runtime.config import DashboardSettings, RuntimeConfig
     from jarvis.runtime.doing_run import DoingSchedule
@@ -66,7 +68,6 @@ class Features:
     voice_settings: VoiceSettings
     view: ViewState | None
     mail_view: ViewState | None
-    mail_drafts: MailDrafts | None
     voice_cues: VoiceCues
     ambient: AmbientSounds | None
     bus_live: BusLive
@@ -84,15 +85,15 @@ class Features:
 
 def _dashboard_state(
     settings: DashboardSettings,
-) -> tuple[ViewState | None, ViewState | None, MailDrafts | None]:
-    """The Dashboard's view, the view the mail page reads, and the mail drafts (None = off).
+) -> tuple[ViewState | None, ViewState | None]:
+    """The Dashboard's view and the view the mail page reads (None = off).
 
     The mail page needs the view (ADR 0176: its open letter is the view's open item); with
     ``dashboard.mail.enabled`` alone it stays off.
     """
     view = ViewState() if settings.view else None
     mail_view = view if settings.mail else None
-    return view, mail_view, None if mail_view is None else MailDrafts(mail_view)
+    return view, mail_view
 
 
 def build_features(config: RuntimeConfig, paths: RuntimePaths, core: Core) -> Features:
@@ -167,7 +168,7 @@ def build_features(config: RuntimeConfig, paths: RuntimePaths, core: Core) -> Fe
         )
     )
     voice_settings = VoiceSettings(paths.root / "voice-settings.json")
-    view, mail_view, mail_drafts = _dashboard_state(config.dashboard)
+    view, mail_view = _dashboard_state(config.dashboard)
     voice_cues = VoiceCues()
     ambient = (
         AmbientSounds(log_path=logs_dir(paths.root) / "ambient-sounds.jsonl")
@@ -186,8 +187,11 @@ def build_features(config: RuntimeConfig, paths: RuntimePaths, core: Core) -> Fe
         event_log_path=paths.event_log,
         pricing_path=config.pricing_path,
         account_cost=True,
+        home=None if config.home_weather is None else HomePlace.from_weather(
+            config.home_weather, config.zone_name,
+        ),
     )
-    rides = Rides(paths.event_log, bus_live, places=kept_places, offers=transit_offers)  # ADR 0224
+    rides = Rides(paths.event_log, bus_live, offers=transit_offers)  # ADR 0224
     locator = (  # ADR 0281: only where a phone's answer can arrive
         None if core.phone_events is None
         else _locator(config.locate, core.locate_waits, clock)
@@ -195,8 +199,12 @@ def build_features(config: RuntimeConfig, paths: RuntimePaths, core: Core) -> Fe
     here = HerePolicy(  # ADR 0322: the one Here every tool call reads where he is from
         paths.event_log, clock, locator=locator, mac=_here_location(config.role),
         memory_db=memory.db_path, phone=config.locate.phone, max_age_s=config.locate.max_age_s,
+        home=None if config.home_weather is None else (
+            float(config.home_weather["latitude"]), float(config.home_weather["longitude"]),
+        ),
     )
-    weatherkit = WeatherKit.from_settings(config.weatherkit)  # ADR 0285: logs which source is used
+    # ADR 0285: logs which source is used; its days are cut by the one clock (ADR 0322).
+    weatherkit = WeatherKit.from_settings(config.weatherkit, clock.time)
     surroundings = Surroundings(  # ADR 0284: held by position; the tool and the state line share it
         maps_key, config.maps_monthly_usd, memory.db_path, config.zone,
     )
@@ -211,7 +219,6 @@ def build_features(config: RuntimeConfig, paths: RuntimePaths, core: Core) -> Fe
         voice_settings=voice_settings,
         view=view,
         mail_view=mail_view,
-        mail_drafts=mail_drafts,
         voice_cues=voice_cues,
         ambient=ambient,
         bus_live=bus_live,

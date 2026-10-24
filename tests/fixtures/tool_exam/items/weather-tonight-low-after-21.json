@@ -1,0 +1,20 @@
+{
+  "id": "weather-tonight-low-after-21",
+  "tool": "weather",
+  "said": "is it going to be cold tonight",
+  "at": "2026-10-21T09:30:00-07:00",
+  "zone": "America/Vancouver",
+  "state": null,
+  "args": {},
+  "recording": "weather-tonight-low-after-21.recording.json",
+  "expect": {
+    "summary_must": ["2° at 3:00"],
+    "result": [
+      {"path": "tonight.low_c", "op": "eq", "value": 2.4},
+      {"path": "tonight.low_at", "op": "eq", "value": "3:00"},
+      {"path": "tonight.from", "op": "eq", "value": "19:00"},
+      {"path": "tonight.to", "op": "eq", "value": "7:00"}
+    ],
+    "checker": "weather_today_in_parts"
+  }
+}

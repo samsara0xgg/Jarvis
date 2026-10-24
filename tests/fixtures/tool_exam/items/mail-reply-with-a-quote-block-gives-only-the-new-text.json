@@ -1,0 +1,37 @@
+{
+  "id": "mail-reply-with-a-quote-block-gives-only-the-new-text",
+  "tool": "mail",
+  "said": "what did Sam answer",
+  "at": "2026-10-21T11:00:00-07:00",
+  "zone": "America/Vancouver",
+  "state": null,
+  "args": {
+    "action": "read",
+    "message": "re1"
+  },
+  "recording": "mail-reply-with-a-quote-block-gives-only-the-new-text.recording.json",
+  "expect": {
+    "result": [
+      {
+        "path": "text",
+        "op": "contains",
+        "value": "Thursday at noon works for me."
+      },
+      {
+        "path": "text",
+        "op": "not_contains",
+        "value": "Somewhere near the office"
+      },
+      {
+        "path": "text",
+        "op": "not_contains",
+        "value": "wrote:"
+      },
+      {
+        "path": "left_out.0",
+        "op": "contains",
+        "value": "older message"
+      }
+    ]
+  }
+}

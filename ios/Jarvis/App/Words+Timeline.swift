@@ -35,6 +35,10 @@ extension Words {
         static func onDevice(_ device: String, _ name: String) -> String { pick(zh: "\(device) 上的 \(name)", en: "\(name) on \(device)") }
         /// the rows of a long stretch past the first few, in one line
         static func moreRuns(_ n: Int) -> String { pick(zh: "还有 \(n) 段", en: "\(n) more") }
+        /// the Claude Code sessions that ran by themselves, he typed nothing in them, in one line
+        static func backgroundSessions(_ n: Int) -> String { pick(zh: "另有 \(n) 个后台会话", en: "\(n) more running on their own") }
+        /// messages that only came in, of one app at about the same time, in one line
+        static func received(_ app: String, people: Int, count: Int) -> String { pick(zh: "\(app) · \(people) 人 · 收到 \(count) 条", en: "\(app) · \(people) people · \(count) received") }
         /// how she knows what he was doing: shown when he asks
         static var why: String { pick(zh: "依据", en: "Why") }
     }

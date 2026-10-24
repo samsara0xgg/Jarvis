@@ -1,0 +1,45 @@
+{
+  "id": "fetch-looking-for-reads-the-middle-paragraph",
+  "tool": "web_fetch",
+  "said": "这篇里关于码头停车费那段说什么 https://news.example.com/s/ferries",
+  "at": "2026-10-21T09:30:00-07:00",
+  "zone": "America/Vancouver",
+  "state": null,
+  "args": {
+    "url": "https://news.example.com/s/ferries",
+    "looking_for": "parking fee at the terminal"
+  },
+  "recording": "fetch-looking-for-reads-the-middle-paragraph.recording.json",
+  "expect": {
+    "summary_must": [
+      "the opening and \\d+ paragraphs that best match 'parking fee at the terminal', \\d+ of 25 paragraphs left out"
+    ],
+    "result": [
+      {
+        "path": "content",
+        "op": "contains",
+        "value": "Parking at the Quay terminal"
+      },
+      {
+        "path": "content",
+        "op": "not_contains",
+        "value": "Imogen Hale"
+      },
+      {
+        "path": "read_by",
+        "op": "eq",
+        "value": "direct"
+      }
+    ],
+    "requests": [
+      {
+        "url": "api.tavily.com/extract",
+        "count": 0
+      }
+    ],
+    "receipt": {
+      "status": "done",
+      "reads_only": true
+    }
+  }
+}

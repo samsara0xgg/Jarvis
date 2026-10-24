@@ -1,0 +1,52 @@
+{
+  "id": "fetch-refused-then-teaser-is-walled",
+  "tool": "web_fetch",
+  "said": "帮我读一下这篇 https://news.example.com/s/ferries",
+  "at": "2026-10-21T09:30:00-07:00",
+  "zone": "America/Vancouver",
+  "state": null,
+  "args": {
+    "url": "https://news.example.com/s/ferries"
+  },
+  "recording": "fetch-refused-then-teaser-is-walled.recording.json",
+  "expect": {
+    "error_kind": "impossible",
+    "summary_must": [
+      "is behind a paywall: only a teaser is shown; tell him"
+    ],
+    "result": [
+      {
+        "path": "code",
+        "op": "eq",
+        "value": "page_walled"
+      }
+    ],
+    "requests": [
+      {
+        "url": "news.example.com/s/ferries",
+        "count": 1
+      },
+      {
+        "url": "api.tavily.com/extract",
+        "count": 1,
+        "body": [
+          {
+            "path": "urls.0",
+            "op": "eq",
+            "value": "https://news.example.com/s/ferries"
+          },
+          {
+            "path": "extract_depth",
+            "op": "eq",
+            "value": "basic"
+          }
+        ]
+      }
+    ],
+    "receipt": {
+      "status": "failed",
+      "reads_only": true,
+      "failure": "impossible"
+    }
+  }
+}

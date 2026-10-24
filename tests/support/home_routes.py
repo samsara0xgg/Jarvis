@@ -5,6 +5,8 @@ from __future__ import annotations
 import contextlib
 import json
 import threading
+from datetime import timedelta
+from email.utils import parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
@@ -15,7 +17,9 @@ from jarvis.decision.mail_reply import MailReply
 from jarvis.decision.surrogate_route import JevLog, SurrogateRoute
 from jarvis.execution.tools import ToolError
 from jarvis.runtime.home import Home
+from tests.support import gmail_fake
 from tests.support.clock import FakeClock
+from tests.support.gmail_fake import PRIMARY, SENT
 from tests.support.net import reply_stays_alive, start_http_server, stop_http_server
 
 if TYPE_CHECKING:
@@ -44,13 +48,13 @@ TASKS = [
 ]
 
 
-# gmail_get's metadata answers; gmail_search lists them in this order, which is not
-# newest first, so the route's own sort by Date shows.
+# His unread Primary mail, as Gmail's metadata answers carry it; gmail_search lists them in this
+# order, which is not newest first, so the route's own sort by Date shows. ``headers`` are the
+# ones that mark a message bulk or automated (ADR 0364); the others are a person's letters.
 LETTERS: list[dict[str, Any]] = [
     {
         "id": "199a1c0d4101",
         "threadId": "199a1c0d4101",
-        "labelIds": ["UNREAD", "INBOX"],
         "subject": "Office hours move to Thursday",
         "from": '"Prof. Lee" <lee@uvic.ca>',
         "to": "allen@example.com",
@@ -60,16 +64,15 @@ LETTERS: list[dict[str, Any]] = [
     {
         "id": "199a1c0d4102",
         "threadId": "199a1c0d4102",
-        "labelIds": ["UNREAD", "INBOX"],
         "subject": "Your weekly digest",
         "from": "GitHub <noreply@github.com>",
         "to": "allen@example.com",
         "date": "Thu, 25 Sep 2026 13:00:00 -0700",
+        "headers": {"Auto-Submitted": "auto-generated"},
     },
     {
         "id": "199a1c0d4103",
         "threadId": "199a1c0d4103",
-        "labelIds": ["UNREAD", "INBOX"],
         "subject": "今晚还来吗？",  # noqa: RUF001 — her words.
         "from": "妈妈 <mom@example.com>",
         "to": "allen@example.com",
@@ -78,40 +81,45 @@ LETTERS: list[dict[str, Any]] = [
     {
         "id": "199a1c0d4104",
         "threadId": "199a1c0d4104",
-        "labelIds": ["UNREAD", "INBOX"],
         "subject": "Your receipt",
         "from": "billing@shop.example",  # no display name
         "to": "allen@example.com",
         "date": "Thu, 25 Sep 2026 12:00:00 -0700",
+        "headers": {"Precedence": "bulk"},
     },
     {
         "id": "199a1c0d4105",
         "threadId": "199a1c0d4105",
-        "labelIds": ["UNREAD", "INBOX"],
         "subject": "50% off everything this weekend",
         "from": "Shop Deals <deals@shop.example>",
         "to": "allen@example.com",
         "date": "Thu, 25 Sep 2026 11:00:00 -0700",
+        "headers": {"List-Unsubscribe": "<mailto:stop@shop.example>"},
     },
     {
         "id": "199a1c0d4106",
         "threadId": "199a1c0d4106",
-        "labelIds": ["UNREAD", "INBOX"],
         "subject": "Our weekly newsletter",
         "from": "Weekly Brew <hello@brew.example>",
         "to": "allen@example.com",
         "date": "Thu, 25 Sep 2026 10:00:00 -0700",
+        "headers": {"List-Id": "<news.brew.example>"},
     },
     {
         "id": "199a1c0d4107",
         "threadId": "199a1c0d4107",
-        "labelIds": ["UNREAD", "INBOX"],
         "subject": "Quick question about your listing",
         "from": "Sam <sam@example.com>",
         "to": "allen@example.com",
         "date": "Thu, 25 Sep 2026 09:00:00 -0700",
     },
 ]
+
+ME = "Allen <allen@example.com>"
+ANSWERED = "199a1c0d4103"
+"""The letter whose conversation he answered last: his reply is in his Sent mail."""
+READ = "199a1c0d9999"
+"""A letter in the inbox he has read: it is not listed, but a tap may act on it once it is open."""
 
 
 # The calendar is empty on the real account: the mirror reads no event, so Today's events are
@@ -134,29 +142,29 @@ class Microsoft:
         return {"text": json.dumps({"value": ANSWERS.get(tool, [])})}
 
 
-class Gmail:
-    """The connected Workspace server: JSON in a text block, a failure as {"error": ...}."""
+class Gmail(gmail_fake.Gmail):
+    """The connected Workspace server over his invented mailbox (``tests.support.gmail_fake``).
+
+    It holds the unread Primary :data:`LETTERS`, his reply to the one named by :data:`ANSWERED`
+    (so he wrote last there) and one read letter in the inbox. A failure answers as
+    ``{"error": ...}``.
+    """
 
     def __init__(self, error: str | None = None) -> None:
-        self.error = error
-        self.calls: list[tuple[str, dict[str, Any]]] = []
-
-    def call(self, server: str, tool: str, args: Mapping[str, Any]) -> dict[str, Any]:
-        assert server == "gmail"
-        self.calls.append((tool, dict(args)))
-        if self.error:
-            return {"text": json.dumps({"error": self.error})}
-        if tool == "gmail_search":
-            hits = [{"id": one["id"], "threadId": one["threadId"]} for one in LETTERS]
-            return {"text": json.dumps({"messages": hits, "resultSizeEstimate": len(hits)})}
-        if tool == "gmail_batchModify":
-            body = {"modifiedCount": len(args["messageIds"]), "status": "success"}
-            return {"text": json.dumps(body)}
-        letter = next((one for one in LETTERS if one["id"] == args["messageId"]), None)
-        if letter is None:
-            return {"text": json.dumps({"error": "Requested entity was not found."})}
-        body = letter.get("body", "")
-        return {"text": json.dumps({**letter, "snippet": "", "body": body, "attachments": []})}
+        super().__init__(error=error)
+        for one in LETTERS:
+            self.add(
+                one["id"], one["subject"], sender=one["from"], to=one["to"],
+                at=parsedate_to_datetime(one["date"]), thread=one["threadId"], labels=PRIMARY,
+                html=one.get("body"), headers=one.get("headers"),
+            )
+        answered = self.messages[ANSWERED]
+        self.add(
+            "199a1c0d4110", f"Re: {answered.message()['Subject']}", sender=ME,
+            to=str(answered.message()["From"]), at=answered.at + timedelta(minutes=30),
+            thread=answered.thread, labels=SENT,
+        )
+        self.add(READ, "Lunch", sender="Sam Lee <sam@example.com>", to=ME, labels=("INBOX",))
 
 
 class Connections:
@@ -188,7 +196,7 @@ def make_home(
 
 
 class HomeJev:
-    """A fake decisions endpoint (ADR 0123): answers P(needs a reply) by the subject line.
+    """A fake decisions endpoint (ADR 0124): answers P(junk) by the subject line.
 
     It keeps its time on :attr:`clock`, which the routes it builds take. ``hold`` keeps every
     answer back until ``release`` is set, so a test can let a deadline pass on the clock while
@@ -199,14 +207,15 @@ class HomeJev:
         self.requests: list[dict[str, Any]] = []
         self._arrived = threading.Condition()
         self.clock = FakeClock()
-        # subject -> (P(needs a reply), P(junk))
+        # subject -> P(junk)
         self.odds = {
-            "Office hours move to Thursday": (0.97, 0.02),
-            "今晚还来吗？": (0.04, 0.01),  # noqa: RUF001 — her words.
-            "Your receipt": (0.5, 0.5),
-            "50% off everything this weekend": (0.03, 0.95),
-            "Our weekly newsletter": (0.05, 0.89),  # just under the junk bar
-            "Quick question about your listing": (0.95, 0.99),  # junk-looking, but may need a reply
+            "Office hours move to Thursday": 0.02,
+            "Your weekly digest": 0.4,
+            "今晚还来吗？": 0.01,  # noqa: RUF001 — her words.
+            "Your receipt": 0.5,
+            "50% off everything this weekend": 0.95,
+            "Our weekly newsletter": 0.89,  # just under the junk bar
+            "Quick question about your listing": 0.99,  # junk-looking, but it waits on him
         }
         # subject -> probabilities of the importance choice; unlisted subjects are "normal"
         self.importance = {
@@ -240,8 +249,7 @@ class HomeJev:
                     with reply_stays_alive(self, outer.status):
                         outer.release.wait(_GUARD_S)
                 subject = request["state"].split("Subject: ", 1)[1]
-                reply, junk = outer.odds[subject]
-                answers: dict[str, Any] = {"reply": {"noul": reply}, "junk": {"noul": junk}}
+                answers: dict[str, Any] = {"junk": {"noul": outer.odds[subject]}}
                 if "importance" in request["questions"]:
                     answers["importance"] = {
                         "type": "choice",
@@ -286,7 +294,7 @@ class HomeJev:
             url=f"http://127.0.0.1:{self.server.server_address[1]}/decisions",
             log=log,
         )
-        return MailReply(route, 0.9, 0.1, 0.9, importance=importance)
+        return MailReply(route, 0.9, importance=importance)
 
     def arrived(self, count: int, timeout_s: float = 5.0) -> list[dict[str, Any]]:
         """The requests once ``count`` have arrived: a caller that gave up can be back first."""

@@ -117,6 +117,8 @@ def _pi(tmp_path: Path, *, lock_moves: bool = False) -> Pi:
         "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid",
         "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.invalid",
         "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull,
+        # The script's `date` must name the same local day the plan below is written for.
+        **({"TZ": os.environ["TZ"]} if "TZ" in os.environ else {}),
     }
     origin, seed, repo = tmp_path / "origin.git", tmp_path / "seed", home / "jarvis-brain"
     _git(env, tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))

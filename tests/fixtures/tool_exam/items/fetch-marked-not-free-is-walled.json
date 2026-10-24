@@ -1,0 +1,36 @@
+{
+  "id": "fetch-marked-not-free-is-walled",
+  "tool": "web_fetch",
+  "said": "读一下 https://news.example.com/s/ferries",
+  "at": "2026-10-21T09:30:00-07:00",
+  "zone": "America/Vancouver",
+  "state": null,
+  "args": {
+    "url": "https://news.example.com/s/ferries"
+  },
+  "recording": "fetch-marked-not-free-is-walled.recording.json",
+  "expect": {
+    "error_kind": "impossible",
+    "summary_must": [
+      "is behind a paywall: the page marks its text as not free to read"
+    ],
+    "result": [
+      {
+        "path": "code",
+        "op": "eq",
+        "value": "page_walled"
+      }
+    ],
+    "requests": [
+      {
+        "url": "api.tavily.com/extract",
+        "count": 0
+      }
+    ],
+    "receipt": {
+      "status": "failed",
+      "reads_only": true,
+      "failure": "impossible"
+    }
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "id": "mail-list-of-thirty-seven-unread-counts-the-rest-by-category",
+  "tool": "mail",
+  "said": "any new mail",
+  "at": "2026-10-21T11:00:00-07:00",
+  "zone": "America/Vancouver",
+  "state": null,
+  "args": {},
+  "recording": "mail-list-of-thirty-seven-unread-counts-the-rest-by-category.recording.json",
+  "expect": {
+    "summary_must": [
+      "^37 unread in his inbox",
+      "Not shown: 29",
+      "Promotions 15"
+    ],
+    "result": [
+      {
+        "path": "rows",
+        "op": "len",
+        "value": 8
+      },
+      {
+        "path": "rows[*].from",
+        "op": "eq",
+        "value": "Orders"
+      }
+    ],
+    "gmail": [
+      {
+        "tool": "gmail_search",
+        "query": "^in:inbox is:unread$",
+        "count": 1
+      }
+    ],
+    "receipt": {
+      "status": "done",
+      "reads_only": true
+    },
+    "checker": "mail_unread_counted_by_category"
+  }
+}

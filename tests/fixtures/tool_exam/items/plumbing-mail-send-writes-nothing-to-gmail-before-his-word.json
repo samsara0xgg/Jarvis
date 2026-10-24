@@ -1,0 +1,54 @@
+{
+  "id": "plumbing-mail-send-writes-nothing-to-gmail-before-his-word",
+  "layer": "plumbing",
+  "at": "2026-10-21T11:00:00-07:00",
+  "zone": "America/Vancouver",
+  "state": null,
+  "said": "tell Sam yes",
+  "script": [
+    {
+      "tool_calls": [
+        {
+          "name": "mail",
+          "arguments": {
+            "action": "send",
+            "to": "sam@example.com",
+            "subject": "Re: Plan",
+            "body": "Yes."
+          }
+        }
+      ]
+    },
+    {
+      "text": "I could not send it."
+    }
+  ],
+  "recording": "plumbing-mail-send-writes-nothing-to-gmail-before-his-word.recording.json",
+  "expect": {
+    "events_after": {
+      "must": [],
+      "must_not": [
+        "confirmation.accepted",
+        "action.running"
+      ]
+    },
+    "gmail": [
+      {
+        "tool": "gmail_send",
+        "count": 0
+      },
+      {
+        "tool": "gmail_sendDraft",
+        "count": 0
+      },
+      {
+        "tool": "gmail_createDraft",
+        "count": 0
+      },
+      {
+        "tool": "gmail_batchModify",
+        "count": 0
+      }
+    ]
+  }
+}

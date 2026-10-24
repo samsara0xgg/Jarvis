@@ -27,6 +27,7 @@ from jarvis.decision.surrogate_route import JevLog, SurrogateRoute
 from jarvis.runtime.core_memory import CoreMemorySettings, run_core_memory
 from jarvis.runtime.ledger import DayDrafts, LedgerContext, ProseSettings, run_day_prose
 from jarvis.runtime.session_compaction import build_compact_client
+from jarvis.state.cost_accounting import call_recorded_since
 from jarvis.state.event_log import open_runtime_event_log
 from jarvis.state.memory_db import (
     ALLEN_REACTION_SOURCE,
@@ -247,12 +248,7 @@ class DaySummarySchedule:
     def _tried_since(self, moment: datetime) -> bool:
         """Whether the log holds a summary call recorded at or after ``moment``."""
         with closing(open_runtime_event_log(self._event_log_path)) as conn:
-            row = conn.execute(
-                "SELECT 1 FROM events WHERE type = 'cost.recorded' AND ts_epoch_ms >= ? "
-                "AND json_extract(payload_json, '$.kind') = ? LIMIT 1",
-                (int(moment.timestamp() * 1000), KIND),
-            ).fetchone()
-        return row is not None
+            return call_recorded_since(conn, kind=KIND, since_ms=int(moment.timestamp() * 1000))
 
     def write(self, today: date) -> dict[str, str]:
         """One attempt per local date: a day that fails waits for tomorrow's run."""

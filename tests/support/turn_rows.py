@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from jarvis.state.event_log import emit_event, open_event_log
+from jarvis.state.event_log import MAC_NODE, emit_event, open_event_log
 
 if TYPE_CHECKING:
     import sqlite3
@@ -24,7 +24,7 @@ class TurnLog:
         """Open a fresh log under ``root``."""
         self.conn: sqlite3.Connection = open_event_log(root / "events.db")
 
-    def put(
+    def put(  # noqa: PLR0913 - one keyword per column a test sets
         self,
         event_type: str,
         payload: dict[str, Any],
@@ -32,8 +32,9 @@ class TurnLog:
         turn_id: str | None = None,
         at: int | None = None,
         source: Event | None = None,
+        node: str = MAC_NODE,
     ) -> Event:
-        """Append one row, correlated to ``turn_id`` when there is one."""
+        """Append one row, correlated to ``turn_id`` when there is one, written under ``node``."""
         return emit_event(
             self.conn,
             type=event_type,
@@ -41,6 +42,7 @@ class TurnLog:
             correlation=None if turn_id is None else {"turn_id": turn_id},
             ts_epoch_ms=at,
             source_event_id=None if source is None else source.event_uid,
+            ingestion_node=node,
         )
 
     def heard(
@@ -49,14 +51,16 @@ class TurnLog:
         words: str = "hello",
         *,
         at: int | None = None,
+        node: str = MAC_NODE,
         **more: Any,  # noqa: ANN401 - payload fields
     ) -> Event:
-        """His voice sentence: an ``utterance.received``."""
+        """His voice sentence on the device ``node``: an ``utterance.received``."""
         return self.put(
             "utterance.received",
             {"transcript": words, "turn_id": turn_id, **more},
             turn_id=turn_id,
             at=at,
+            node=node,
         )
 
     def typed(self, turn_id: str, channel: str, *, at: int | None = None) -> Event:

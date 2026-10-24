@@ -65,20 +65,154 @@ struct FootprintDayLine: View {
     }
 }
 
-/// The map under the line, fading into the sky at its top and its foot. The shape of the day is the content's; the dot of the held minute is the one thing that moves, and while it is held the camera follows it.
+/// The line under her on the phone's map page (跨端UI标准 §2): the day and the page's name, and under it her sentence of the day on a small dark glass plate, so that it reads over the map; while the bar is
+/// held the timeline's readout of that minute (where he was, how fast and his heart under it) takes the sentence's place, and they cross, blurred.
+struct FootprintDayStrip: View {
+    let ui: StarUI
+    let summary: String
+    let bar: DayTimelineModel?
+    let model: FootprintModel?
+    @State private var last = 0.0               // where his finger was last: what the readout shows while it fades out
+    @Environment(\.accessibilityReduceMotion) private var reduce
+
+    var body: some View {
+        let held = ui.footprint.minute, holding = held != nil
+        VStack(spacing: 4) {
+            Text(Words.PhoneMap.title(date: ui.dateText)).font(.system(size: Look.note)).foregroundStyle(Look.ink2).lineLimit(1)
+            ZStack(alignment: .top) {
+                if !summary.isEmpty {
+                    Text(summary).font(.system(size: Look.body)).lineSpacing(3).foregroundStyle(Look.ink).multilineTextAlignment(.center).lineLimit(2)
+                        .padding(.horizontal, 14).padding(.vertical, 7).plate()
+                        .fadeThrough(on: !holding, reduce: reduce)
+                }
+                if let bar {
+                    let t = held ?? last, r = bar.readout(at: t), head = model.map { FootprintDayContent.heldReadout($0, minute: t, r) } ?? r
+                    TLReadoutLines(r: head, second: model.map { FootprintDayContent.heldLine($0, minute: t, elsewhere: r.second) } ?? r.second)
+                        .environment(\.tlBarWidth, W - 2 * HomeTop.side - 28)
+                        .padding(.horizontal, 14).padding(.vertical, 7).plate()
+                        .fadeThrough(on: holding, reduce: reduce).accessibilityHidden(!holding)
+                }
+            }
+        }
+        .frame(width: W - 2 * HomeTop.side, alignment: .top)
+        .allowsHitTesting(false)
+        .onChange(of: held) { _, t in if let t { last = t } }
+    }
+}
+
+private extension View {
+    /// a small dark glass plate: the words over the map's colours stay readable
+    func plate() -> some View {
+        let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
+        return background(Color.black.opacity(0.5), in: shape).glass(shape)
+    }
+}
+
+/// The map under the line, fading into the sky at its top and its foot. The shape of the day is the content's; the dot of the held moment is the one thing that moves, and while it is held (by a finger or the replay)
+/// the camera follows it.
 struct FootprintDayMap: View {
     let ui: StarUI
     let content: FootprintDayContent
     let model: FootprintModel?
     let fitKey: String
+    var ground = false                  // the phone: the map is the ground and runs to the top edge, under the strip and her; the iPad's sheet keeps it under its head
 
     var body: some View {
-        let dot = ui.footprint.minute.flatMap { t in model.flatMap { FootprintDayContent.dot($0, minute: t) } }
-        FootprintMapView(routes: content.routes, places: content.places, tokens: content.tokens, now: content.now, dot: dot, follow: dot.flatMap { model?.follow(atMs: $0.ms) },
-                         fitPadding: UIEdgeInsets(top: 60, left: 24, bottom: 36, right: 110), fitKey: fitKey, legalInset: 44)          // MapKit's legal label stands above the fade
-            .mask(LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black, location: 70 / FootprintDayPage.Y.mapH),
-                                         .init(color: .black, location: 1 - 36 / FootprintDayPage.Y.mapH), .init(color: .clear, location: 1)],
+        let state = ui.footprint, moment = state.moment
+        let dot = moment.map { m in model.flatMap { FootprintDayContent.dot($0, moment: m) } } ?? state.minute.flatMap { t in model.flatMap { FootprintDayContent.dot($0, minute: t) } }
+        let h = ground ? FootprintDayPage.Y.groundH : FootprintDayPage.Y.mapH
+        let clear = ground ? FootprintDayPage.Y.clear : 60          // from the top of the map to where the route may stand: under the strip and her sentence
+        FootprintMapView(routes: content.routes, places: content.places, tokens: content.tokens, now: content.now, dot: dot, follow: moment?.follow,
+                         fitPadding: UIEdgeInsets(top: clear, left: 24, bottom: 36, right: 110), fitKey: fitKey, locateTick: state.locateTick, legalInset: 44, touched: { state.player.touch() })          // MapKit's legal label stands above the fade
+            .mask(LinearGradient(stops: [.init(color: ground ? .black : .clear, location: 0), .init(color: .black, location: ground ? 0 : 70 / h),
+                                         .init(color: .black, location: 1 - 36 / h), .init(color: .clear, location: 1)],
                                  startPoint: .top, endPoint: .bottom))
+    }
+}
+
+/// The ▶ button at the map's lower right, clear of its fade and of MapKit's legal label, and the caption of a beat of the replay over the map.
+struct FootprintDayReplay: View {
+    let ui: StarUI
+    let model: FootprintModel
+    let entries: [TLEntry]
+
+    var body: some View {
+        let state = ui.footprint
+        ZStack(alignment: .topLeading) {
+            if model.replay(.day) != nil {
+                FootprintReplayButton(player: state.player, play: play).offset(x: W - 30 - 36, y: FootprintDayPage.Y.map + 264)
+            }
+            FootprintBeatCaption(beat: state.moment?.beat, model: model, day: true).frame(width: W).offset(y: FootprintDayPage.Y.map + 222)
+        }
+        .frame(width: W, height: H, alignment: .topLeading)
+        .onAppear {
+            #if DEBUG
+            FootprintHooks.play = play
+            #endif
+        }
+    }
+
+    private func play() {
+        guard let replay = model.replay(.day) else { return }
+        Self.connect(ui.footprint, model: model, entries: entries)
+        ui.footprint.player.play(replay)
+    }
+
+    /// what the player's frames do on this page, played or under a finger: the moment held, and at the end the day's whole again
+    static func connect(_ state: FootprintDayState, model: FootprintModel, entries: [TLEntry]) {
+        state.player.emit = { f, r, playing in
+            state.hold(playing ? FootprintMoment(f, height: r.height) : FootprintMoment(finger: f, model: model), model: model, entries: entries)
+        }
+        state.player.ended = { withAnimation(.easeOut(duration: 0.2)) { state.release() } }
+    }
+}
+
+/// ▶ while it is at rest or paused, ⏸ while it plays: a 36 pt glass circle as the page's other buttons
+struct FootprintReplayButton: View {
+    let player: FootprintPlayer
+    let play: () -> Void
+
+    var body: some View {
+        let playing = player.phase == .playing
+        Button { Haptic.selection(); if playing { player.touch() } else { play() } } label: {
+            Image(systemName: playing ? "pause.fill" : "play.fill").font(.system(size: 14, weight: .regular)).foregroundStyle(TLPaint.icon.color(0.8))
+                .frame(width: 36, height: 36).glass(Circle())
+        }
+        .buttonStyle(PressScale())
+        .accessibilityLabel(playing ? Words.Footprint.replayPause : Words.Footprint.replay)
+    }
+}
+
+/// What a beat of the replay says, for about a second, in a capsule over the map: a long stay's place and length; a stop's on the day page the same when its place is known
+/// ("Bankside · 6 分钟"), on the outing page (`day` false) "停 N 分".
+struct FootprintBeatCaption: View {
+    let beat: FootprintReplay.Beat?
+    let model: FootprintModel
+    var day = false
+
+    private var text: String? {
+        switch beat {
+        case let .stay(id, minutes)?:
+            let name = model.reply.stays.first { $0.id == id }.flatMap(FootprintDayContent.name) ?? Words.FootprintDay.unnamedPlace
+            return Words.Footprint.replayStay(place: name, duration: tlDur(minutes))
+        case let .stop(id, _, minutes)?:
+            let name = day ? model.reply.outings.lazy.flatMap(\.stops).first { $0.id == id }.flatMap(FootprintDayContent.stopName) : nil
+            return name.map { Words.Footprint.replayStay(place: $0, duration: tlDur(minutes)) } ?? Words.Footprint.stopFor(tlDur(minutes))
+        case nil: return nil
+        }
+    }
+
+    var body: some View {
+        ZStack {
+            if let text {
+                Text(text).font(.system(size: 13, weight: .semibold)).foregroundStyle(TLPaint.ink.color).lineLimit(1).padding(.horizontal, 12).frame(height: 28)
+                    .background(Capsule().fill(FootprintPaint.capsule.color))
+                    .overlay(Capsule().stroke(Color.white.opacity(0.14), lineWidth: 0.5))
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeOut(duration: 0.15), value: text)
+        .allowsHitTesting(false)
     }
 }
 
@@ -96,10 +230,12 @@ struct FootprintDayLegend: View {
     }
 }
 
-/// The day's bar as home draws it, with a finger on it that holds a minute for the line, the map and the list, and under it the same numbers and the two of this page.
+/// The day's bar as home draws it, and while a finger holds it (or the replay plays) the same bar as its trips (Sky/FootprintTripBar.swift); a finger on it holds a moment for the line, the map and the list,
+/// and under it are the same numbers and the two of this page.
 struct FootprintDayBar: View {
     let ui: StarUI
     let built: TLBuilt
+    let model: FootprintModel?
     let extra: [TLPlainChip]
     let lead: [TLPlainChip]
     let tripSymbol: String?
@@ -107,12 +243,23 @@ struct FootprintDayBar: View {
     @Environment(\.accessibilityReduceMotion) private var reduce
 
     var body: some View {
-        let m = built.model, state = ui.footprint
+        let m = built.model, state = ui.footprint, held = state.holding
         let lens = state.lens.flatMap { l in m.chips.contains { $0.lens == l } ? l : nil }
+        let trips = model.flatMap { $0.barLayout.hasSegments ? $0 : nil }
         ZStack(alignment: .topLeading) {
-            TLBarView(scene: built.scene, scrub: state.minute, lens: lens != nil, lensColor: (lens ?? .trip).color, lensMarks: m.marks(of: lens ?? .trip), reduce: reduce)
-                .modifier(TLBarScrub(span: m.span, changed: { t, _ in held(t, m) }, ended: lifted))
-                .offset(x: 30, y: FootprintDayPage.Y.bar)
+            ZStack(alignment: .topLeading) {
+                TLBarView(scene: built.scene, scrub: held && trips != nil ? nil : state.minute, lens: lens != nil, lensColor: (lens ?? .trip).color, lensMarks: m.marks(of: lens ?? .trip), reduce: reduce)
+                    .opacity(held && trips != nil ? 0 : 1)
+                if let trips {
+                    FootprintTripBar(art: trips.tripArt(span: m.span), k: held ? 1 : 0)
+                    FootprintPlayhead(ui: ui).opacity(held ? 1 : 0)
+                }
+            }
+            .animation(TLMotion.tripMorph(reduce: reduce), value: held)
+            .frame(width: TLLayout.barW, height: TLLayout.barH, alignment: .topLeading)
+            .contentShape(Rectangle().inset(by: -10))
+            .modifier(TLBarScrub(span: m.span, changed: { t, x in scrubbed(t, x, m) }, ended: lifted))
+            .offset(x: 30, y: FootprintDayPage.Y.bar)
             if !m.chips.isEmpty || !m.body.isEmpty || !extra.isEmpty || !lead.isEmpty {
                 TLChips(chips: m.chips.map { c in var c = c; if c.lens == .trip { c.symbol = tripSymbol }; return c }, health: m.body, active: lens, extra: extra, lead: lead) { l in
                     Haptic.selection()
@@ -122,27 +269,43 @@ struct FootprintDayBar: View {
                 .offset(y: FootprintDayPage.Y.chips - (TLLayout.chipsHit - TLLayout.chipsH) / 2)
             }
         }
+        .onAppear {
+            #if DEBUG
+            FootprintHooks.scrub = { x in if let x { scrubbed(TLBarScrub.minute(x: x, span: m.span), x, m) } else { lifted() } }
+            #endif
+        }
     }
 
-    /// a finger on the bar at minute `t`: the row there is lit and the list goes to it, with a tick for each stretch of the bar it crosses
-    private func held(_ t: Double, _ bar: DayTimelineModel) {
+    /// a finger on the bar at `x` (`t` is the minute at that x on the bar at rest): the moment of the trip layout there is held, the row of it is lit and the list goes to it, with a tick for each stretch of
+    /// the bar it crosses; a day with no line is held in time as before
+    private func scrubbed(_ t: Double, _ x: Double, _ bar: DayTimelineModel) {
         let state = ui.footprint
-        state.minute = t
-        let id = FootprintDayContent.hot(at: t, in: entries)
-        if id != state.list.hot {
-            state.list.hot = id
-            if let id, let i = entries.firstIndex(where: { $0.id == id }) {
-                state.list.scroll(to: max(0, entries[..<i].reduce(0) { $0 + $1.height } - 12), animated: false, glide: true)
+        state.player.touch()          // a finger on the bar pauses the replay
+        guard let model, model.barLayout.hasSegments, let replay = model.replay(.day) else {
+            state.minute = t
+            let id = FootprintDayContent.hot(at: t, in: entries)
+            if id != state.list.hot {
+                state.list.hot = id
+                if let id, let i = entries.firstIndex(where: { $0.id == id }) {
+                    state.list.scroll(to: max(0, entries[..<i].reduce(0) { $0 + $1.height } - 12), animated: false, glide: true)
+                }
             }
+            let s = bar.stretch(at: t)
+            if state.lastStretch != s { state.lastStretch = s; Haptic.selection() }
+            return
         }
-        let s = bar.stretch(at: t)
+        FootprintDayReplay.connect(state, model: model, entries: entries)
+        state.player.point(at: replay.seconds(atX: x), of: replay)          // the moment comes from the player, eased; ▶ goes on from where it stands
+        let s = model.barLayout.stretch(atX: x)
         if state.lastStretch != s { state.lastStretch = s; Haptic.selection() }
     }
 
+    /// the finger lifted: the bar turns back and the camera goes back to the day's whole, unless a replay stands paused, which keeps its playhead
     private func lifted() {
-        let state = ui.footprint
+        let state = ui.footprint, rest = state.player.phase == .rest
         state.lastStretch = nil
-        withAnimation(.easeOut(duration: 0.2)) { state.minute = nil; state.list.hot = nil }
+        state.player.lift()
+        if rest { withAnimation(.easeOut(duration: 0.2)) { state.release() } }
     }
 }
 
@@ -186,11 +349,11 @@ struct FootprintDayList: View {
         .onChange(of: tl.request) { _, r in
             if r.glide && !reduce { withAnimation(TLMotion.follow) { pos.scrollTo(y: r.y) } } else { pos.scrollTo(y: r.y) }
         }
-        .frame(width: W, height: FootprintDayPage.Y.viewport + TLLayout.fade, alignment: .top)
+        .frame(width: W, height: FootprintDayPage.Y.viewport + TLLayout.fade + TLLayout.under, alignment: .top)          // to the screen's foot, under the bar
         .mask(alignment: .top) {
             VStack(spacing: 0) {
                 LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom).frame(height: TLLayout.fadeTop)
-                Color.black.frame(height: FootprintDayPage.Y.viewport - TLLayout.fadeTop)
+                Color.black.frame(height: FootprintDayPage.Y.viewport + TLLayout.under - TLLayout.fadeTop)
                 LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom).frame(height: TLLayout.fade)
             }
         }

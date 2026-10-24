@@ -1,0 +1,46 @@
+{
+  "id": "map-search-in-area",
+  "tool": "map_search",
+  "said": "coffee in Fairfield",
+  "at": "2026-10-21T17:30:00-07:00",
+  "zone": "America/Vancouver",
+  "here": {
+    "lat": 48.4284,
+    "lng": -123.3656,
+    "age_s": 60
+  },
+  "state": null,
+  "args": {
+    "query": "coffee",
+    "area": "Fairfield, Victoria"
+  },
+  "recording": "map-search-in-area.recording.json",
+  "expect": {
+    "summary_must": [
+      "^2 places for 'coffee' in Fairfield, Victoria \\(distances from Fairfield\\): Moss Street Coffee, 339 m north-east"
+    ],
+    "result": [
+      {
+        "path": "places[*].walk_min",
+        "op": "absent"
+      }
+    ],
+    "state_after": [
+      {
+        "db": "events",
+        "sql": "SELECT json_extract(payload_json, '$.sku'), json_extract(payload_json, '$.requests') FROM events WHERE type = 'maps.spend_recorded' ORDER BY id",
+        "answer": [
+          [
+            "places.text_search.pro",
+            1
+          ],
+          [
+            "places.text_search.enterprise",
+            1
+          ]
+        ]
+      }
+    ],
+    "checker": "map_search_in_area"
+  }
+}

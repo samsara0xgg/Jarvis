@@ -1,0 +1,36 @@
+{
+  "id": "mail-a-twelve-thousand-character-body-is-read-in-four-parts",
+  "tool": "mail",
+  "said": "read the annual report mail",
+  "at": "2026-10-21T11:00:00-07:00",
+  "zone": "America/Vancouver",
+  "state": null,
+  "args": {
+    "action": "read",
+    "message": "long1"
+  },
+  "recording": "mail-a-twelve-thousand-character-body-is-read-in-four-parts.recording.json",
+  "expect": {
+    "result": [
+      {
+        "path": "part",
+        "op": "matches",
+        "value": "part 1 of 4"
+      },
+      {
+        "path": "text",
+        "op": "contains",
+        "value": "Section 1."
+      },
+      {
+        "path": "text",
+        "op": "not_contains",
+        "value": "Section 24."
+      }
+    ],
+    "receipt": {
+      "status": "done",
+      "reads_only": true
+    }
+  }
+}

@@ -71,9 +71,14 @@ _MATCHERS: Final[dict[str, frozenset[str]]] = {
         {"_ZH_DIGITS", "_ZH_WEEKDAY", "_REL", "_ZH_REL", "_SPAN_SPLIT", "_ZH_TODAY", "_zh_number",
          "_one", "_back_only", "resolve_when"}
     ),
+    # `body` (ADR 0388) reads his words for last night, which are the sleep he woke from today.
+    "jarvis/execution/body_tool.py": frozenset({"_LAST_NIGHT", "_ENDS"}),
     # The browser guard (ADR 0059) reads a page's own labels, Chinese sites included.
     "jarvis/execution/browser_guard.py": frozenset({"_MONEY", "_CARD", "_SECRET"}),
     "jarvis/execution/path_resolver.py": frozenset({"_TRAILING_NOUN_RE", "_CONNECTIVE_CHAR"}),
+    # `web_fetch` (ADR 0360) tells a bot check, a consent page and a subscribe teaser from an
+    # article by the page's own words, Chinese sites included.
+    "jarvis/execution/web_fetch_tool.py": frozenset({"_CHALLENGE", "_CONSENT", "_SUBSCRIBE"}),
     # The ask card (ADR 0066) refuses fields whose model-written labels ask for a secret.
     "jarvis/execution/tools.py": frozenset({"_ASK_SECRET_RE"}),
     # `save_place`'s description (ADR 0234) names a Chinese sentence as an example of what Allen
@@ -112,6 +117,21 @@ _MATCHERS: Final[dict[str, frozenset[str]]] = {
          "_BOC_PAGE_WORDS", "_BOC_CURRENCY", "_boc_cells"}
     ),
     "jarvis/state/work_state.py": frozenset({"_STOP_WORDS", "_TERM", "_CJK_RUN"}),
+    # A conversation is found by its subject without the reply and forward prefixes Chinese mail
+    # programs put in front of it (ADR 0362).
+    "jarvis/execution/mail_reads.py": frozenset({"_PREFIX"}),
+    # A mail is read for the words mail programs write into it in Chinese: a forward's header and
+    # subject prefix, and the line that says who wrote the lines quoted below it (ADR 0363).
+    "jarvis/state/mail_text.py": frozenset({"_FORWARD_WORDS", "_FORWARD_SUBJECT", "_ATTRIBUTION"}),
+    # A bill or a receipt is read by the words Chinese services write around its figures: the
+    # amount and its currency, the number, the dates and the status (ADR 0365).
+    "jarvis/state/mail_bill.py": frozenset(
+        {"_AFTER", "_ASKS", "_BEFORE", "_BODY_CUES", "_DATES", "_DUE_WORDS", "_NEUTRAL",
+         "_NUMBER_WORDS", "_PAID", "_REFUND", "_SUBJECT_CUES", "_SYMBOLS", "_WEAK_ASKS", "_rank"}
+    ),
+    # A recipient who means himself is read by the Chinese words for it, and the commas of either
+    # language separate recipients (ADR 0366).
+    "jarvis/execution/mail_people.py": frozenset({"_ME", "_SEPARATORS"}),
     # A call is read from the front window; Tencent Meeting titles its lobby 腾讯会议 (ADR 0161).
     "jarvis/state/timesink_moment.py": frozenset({"call_app"}),
     "jarvis/surface/sentence_splitter.py": frozenset({"_DELIMITERS"}),

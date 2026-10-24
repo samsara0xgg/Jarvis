@@ -1,0 +1,23 @@
+{
+ "version": 1,
+ "mailbox": {
+  "messages": [
+   {
+    "id": "scan1",
+    "subject": "Scanned bill",
+    "plain": "See the scan.",
+    "sender": "Landlord <office@example.com>",
+    "ago": 90,
+    "attachments": [
+     {
+      "name": "bill.pdf",
+      "type": "application/pdf",
+      "pdf": [
+       []
+      ]
+     }
+    ]
+   }
+  ]
+ }
+}

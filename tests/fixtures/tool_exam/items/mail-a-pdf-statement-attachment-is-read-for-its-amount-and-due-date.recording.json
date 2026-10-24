@@ -1,0 +1,27 @@
+{
+ "version": 1,
+ "mailbox": {
+  "messages": [
+   {
+    "id": "stmt1",
+    "subject": "Your October statement",
+    "plain": "Statement attached.",
+    "sender": "Bank <statements@example.com>",
+    "ago": 90,
+    "attachments": [
+     {
+      "name": "statement.pdf",
+      "type": "application/pdf",
+      "pdf": [
+       [
+        "Account statement October 2026",
+        "Amount due: $1,284.55",
+        "Payment due: Nov 14, 2026"
+       ]
+      ]
+     }
+    ]
+   }
+  ]
+ }
+}

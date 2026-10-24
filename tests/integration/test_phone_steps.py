@@ -19,6 +19,7 @@ that ran none; an answer that copies the line has it cut from the history and th
 
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 import time
@@ -432,7 +433,8 @@ def test_the_conversation_row_of_her_answer_carries_the_places_it_showed(tmp_pat
         ("bus", {}, "Checking transit", "查公交"),
         ("bus", {"pin": [1]}, "Following the bus", "跟进公交"),
         ("bus", {"ride": "start", "route": "28"}, "Following the bus", "跟进公交"),
-        ("bus", {"get_off": "Fir Lane"}, "Following the bus", "跟进公交"),
+        ("bus", {"ride": "get_off", "stop": "Fir Lane"}, "Following the bus", "跟进公交"),
+        ("bus", {"stop": "Fir Lane"}, "Checking transit", "查公交"),
         (
             "mcp__microsoft__get-calendar-view",
             {
@@ -495,6 +497,44 @@ def test_every_kind_has_both_wordings() -> None:
         for language in ("en", "zh"):
             assert lang.t(f"step.{kind}", lang=language)
             assert lang.t(f"step.{kind}.done", lang=language)
+
+
+def test_an_archive_is_its_own_step_and_every_other_call_of_the_mail_tool_checks_the_mail() -> None:
+    """(d) ADR 0362: one tool, two steps; only the call that changes his inbox says so."""
+    for arguments in (
+        None, {}, {"action": "list"}, {"action": "read", "message": "2"}, '{"action": "search"}',
+    ):
+        assert steps.kind("mail", arguments) == "mail"
+    archive = {"action": "archive", "message": "1-3"}
+    assert steps.kind("mail", archive) == steps.kind("mail", json.dumps(archive)) == "mail_archive"
+    assert steps.label("mail") == "Checking your mail"
+    assert steps.label("mail", archive) == "Archiving mail"  # the rows he named stay unsaid
+    assert steps.phrase("mail", archive) == "archived mail"
+    assert steps.phrase("mail", {"action": "read"}) == "checked your mail"
+    lang.set_language("zh")
+    assert steps.label("mail", archive) == "归档邮件"
+    assert steps.phrase("mail", archive) == "归档了邮件"
+
+
+def test_writing_a_letter_and_sending_one_are_their_own_steps_whatever_the_tool_was() -> None:
+    """ADR 0366: a draft of the ``mail`` tool says what the old draft tool said; a send sends."""
+    draft = {"action": "draft", "to": "Sam", "body": "Yes"}
+    send = {"action": "send", "draft": "a1b2c3d4"}
+    for call in (draft, send):
+        assert steps.kind("mail", json.dumps(call)) == steps.kind("mail", call)
+    assert steps.kind("mail", draft) == "mail_write"
+    assert (steps.label("mail", draft), steps.phrase("mail", draft)) == (
+        "Writing mail", "wrote mail",
+    )
+    assert steps.kind("mail", send) == "mail_send"
+    assert (steps.label("mail", send), steps.phrase("mail", send)) == (
+        "Sending mail", "sent mail",
+    )
+    assert steps.kind("write_mail_draft") == "generic"  # the old tool is gone
+    lang.set_language("zh")
+    assert steps.label("mail", draft) == "写邮件"
+    assert steps.label("mail", send) == "发邮件"
+    assert steps.phrase("mail", send) == "发了邮件"
 
 
 def test_the_history_follows_an_answer_whose_turn_ran_tools_with_its_receipts(

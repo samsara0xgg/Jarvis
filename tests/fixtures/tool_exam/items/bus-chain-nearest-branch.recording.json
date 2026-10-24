@@ -1,0 +1,49 @@
+{
+ "version": 1,
+ "settings": {},
+ "env": [
+  "GOOGLE_MAPS_API_KEY"
+ ],
+ "http": [
+  {
+   "method": "POST",
+   "url": "https://places.googleapis.com/v1/places:searchText",
+   "request": "{\"textQuery\": \"Bluebird Coffee\", \"maxResultCount\": 1, \"languageCode\": \"en\", \"rankPreference\": \"DISTANCE\", \"locationBias\": {\"circle\": {\"center\": {\"latitude\": 48.4284, \"longitude\": -123.3656}, \"radius\": 50000.0}}}",
+   "status": 200,
+   "content_type": "application/json",
+   "body": "{\"places\": [{\"id\": \"ChIJexamBluebirdWrenAve01\", \"displayName\": {\"text\": \"Bluebird Coffee\", \"languageCode\": \"en\"}, \"formattedAddress\": \"2201 Wren Ave, Victoria, BC V8R 1A1\", \"location\": {\"latitude\": 48.43, \"longitude\": -123.35}}]}"
+  },
+  {
+   "method": "POST",
+   "url": "https://routes.googleapis.com/directions/v2:computeRoutes",
+   "request": "{\"origin\": {\"location\": {\"latLng\": {\"latitude\": 48.4284, \"longitude\": -123.3656}}}, \"destination\": {\"location\": {\"latLng\": {\"latitude\": 48.43, \"longitude\": -123.35}}}, \"travelMode\": \"TRANSIT\", \"computeAlternativeRoutes\": true, \"departureTime\": \"2026-10-17T17:50:00Z\"}",
+   "status": 200,
+   "content_type": "application/json",
+   "body": "{\"routes\": [{\"legs\": [{\"steps\": [{\"travelMode\": \"WALK\", \"staticDuration\": \"120s\"}, {\"travelMode\": \"TRANSIT\", \"staticDuration\": \"900s\", \"transitDetails\": {\"stopDetails\": {\"departureStop\": {\"name\": \"Larch St at Wren Ave\"}, \"arrivalStop\": {\"name\": \"Wren Ave at Fern St\"}, \"departureTime\": \"2026-10-17T18:08:00Z\", \"arrivalTime\": \"2026-10-17T18:15:00Z\"}, \"headsign\": \"Wrenfield\", \"transitLine\": {\"nameShort\": \"11\", \"name\": \"Wrenfield\"}}}, {\"travelMode\": \"WALK\", \"staticDuration\": \"60s\"}], \"endLocation\": {\"location\": {\"latLng\": {\"latitude\": 48.43, \"longitude\": -123.35}}}}]}]}"
+  },
+  {
+   "method": "POST",
+   "url": "https://routes.googleapis.com/directions/v2:computeRoutes",
+   "request": "{\"origin\": {\"location\": {\"latLng\": {\"latitude\": 48.4284, \"longitude\": -123.3656}}}, \"destination\": {\"location\": {\"latLng\": {\"latitude\": 48.43, \"longitude\": -123.35}}}, \"travelMode\": \"DRIVE\"}",
+   "status": 200,
+   "content_type": "application/json",
+   "body": "{\"routes\": [{\"duration\": \"300s\", \"distanceMeters\": 6100}]}"
+  },
+  {
+   "method": "POST",
+   "url": "https://routes.googleapis.com/directions/v2:computeRoutes",
+   "request": "{\"origin\": {\"location\": {\"latLng\": {\"latitude\": 48.4284, \"longitude\": -123.3656}}}, \"destination\": {\"location\": {\"latLng\": {\"latitude\": 48.43, \"longitude\": -123.35}}}, \"travelMode\": \"WALK\"}",
+   "status": 200,
+   "content_type": "application/json",
+   "body": "{\"routes\": [{\"duration\": \"1200s\", \"distanceMeters\": 5800}]}"
+  },
+  {
+   "method": "GET",
+   "url": "https://bct.tmix.se/gtfs-realtime/tripupdates.pb?operatorIds=48",
+   "status": 200,
+   "content_type": "application/x-protobuf",
+   "body_b64": "CgUKAzIuMA=="
+  }
+ ],
+ "mcp": []
+}

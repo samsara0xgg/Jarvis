@@ -11,7 +11,7 @@ enum AT {
     static let icon = Color(red: 214 / 255, green: 220 / 255, blue: 246 / 255).opacity(0.82)
     static let panelW = W - 40                                                          // as wide as the composer
     static func mono(_ size: CGFloat) -> Font {
-        UIFont(name: "IBM Plex Mono", size: size) != nil ? .custom("IBM Plex Mono", size: size).weight(.medium) : .system(size: size, weight: .medium, design: .monospaced)
+        Look.figures(size, weight: .medium)
     }
     static func openSettings() {
         if let u = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(u) }

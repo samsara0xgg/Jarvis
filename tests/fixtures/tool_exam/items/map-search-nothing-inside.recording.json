@@ -1,0 +1,26 @@
+{
+ "version": 1,
+ "settings": {},
+ "env": [
+  "GOOGLE_MAPS_API_KEY"
+ ],
+ "http": [
+  {
+   "method": "POST",
+   "url": "https://places.googleapis.com/v1/places:searchText",
+   "request": "{\"textQuery\": \"ice rink\", \"maxResultCount\": 20, \"languageCode\": \"en\", \"locationRestriction\": {\"rectangle\": {\"low\": {\"latitude\": 48.38348444125045, \"longitude\": -123.4332892301487}, \"high\": {\"latitude\": 48.473315558749555, \"longitude\": -123.2979107698513}}}}",
+   "status": 200,
+   "content_type": "application/json",
+   "body": "{\"places\": [{\"id\": \"ChIJexamCornerArena0005\", \"displayName\": {\"text\": \"Gordon Head Arena\", \"languageCode\": \"en\"}, \"formattedAddress\": \"4100 Corner Rd, Victoria, BC V8N 3Z3, Canada\", \"location\": {\"latitude\": 48.4684, \"longitude\": -123.3056}, \"googleMapsUri\": \"https://maps.google.com/?cid=0005\", \"currentOpeningHours\": {\"openNow\": true, \"nextCloseTime\": \"2026-10-22T06:00:00Z\"}, \"businessStatus\": \"OPERATIONAL\", \"rating\": 4.4, \"userRatingCount\": 210}]}"
+  },
+  {
+   "method": "POST",
+   "url": "https://places.googleapis.com/v1/places:searchText",
+   "request": "{\"textQuery\": \"ice rink\", \"maxResultCount\": 3, \"languageCode\": \"en\", \"rankPreference\": \"DISTANCE\", \"locationBias\": {\"circle\": {\"center\": {\"latitude\": 48.4284, \"longitude\": -123.3656}, \"radius\": 50000.0}}}",
+   "status": 200,
+   "content_type": "application/json",
+   "body": "{\"places\": [{\"id\": \"ChIJexamColwoodIce00006\", \"displayName\": {\"text\": \"Colwood Ice Centre\", \"languageCode\": \"en\"}, \"formattedAddress\": \"1767 Island Hwy, Victoria, BC V9B 1J1, Canada\", \"location\": {\"latitude\": 48.4584, \"longitude\": -123.4756}, \"googleMapsUri\": \"https://maps.google.com/?cid=0006\", \"currentOpeningHours\": {\"openNow\": true, \"nextCloseTime\": \"2026-10-22T06:00:00Z\"}, \"businessStatus\": \"OPERATIONAL\", \"rating\": 4.4, \"userRatingCount\": 210}, {\"id\": \"ChIJexamFarRink00000007\", \"displayName\": {\"text\": \"Langford Rink\", \"languageCode\": \"en\"}, \"formattedAddress\": \"3000 Far Rd, Langford, BC V9B 0A1, Canada\", \"location\": {\"latitude\": 48.4884, \"longitude\": -123.5656}, \"googleMapsUri\": \"https://maps.google.com/?cid=0007\", \"currentOpeningHours\": {\"openNow\": true, \"nextCloseTime\": \"2026-10-22T05:00:00Z\"}, \"businessStatus\": \"OPERATIONAL\", \"rating\": 4.4, \"userRatingCount\": 210}]}"
+  }
+ ],
+ "mcp": []
+}

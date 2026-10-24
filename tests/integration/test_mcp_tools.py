@@ -97,6 +97,22 @@ def test_listed_tools_dispatch_through_the_real_log(tmp_path: Path, servers: Mcp
         fx.close()
 
 
+def test_a_gmail_servers_send_and_draft_tools_are_listed_as_the_server_gives_them(
+    servers: McpServers,
+) -> None:
+    """Mail is the ``mail`` tool's (ADR 0366): no reply thread added, no draft tool left off."""
+    gmail = {"gmail": {"command": sys.executable, "args": [str(SERVERS / "mcp_gmail_server.py")]}}
+    by_name = {t.name: t for t in servers.connect(gmail)}
+    assert set(by_name) == {
+        "mcp__gmail__gmail_search", "mcp__gmail__gmail_send",
+        "mcp__gmail__gmail_createDraft", "mcp__gmail__gmail_sendDraft",
+    }
+    send = by_name["mcp__gmail__gmail_send"]
+    assert send.description == "Send a letter."
+    assert set(send.input_schema["properties"]) == {"to", "subject", "body"}
+    assert (send.risk_level, send.requires_confirmation) == ("L3", True)
+
+
 def test_always_loaded_names_stay_off_tool_search() -> None:
     """ADR 0127: only the named tool leaves the deferred set; the rest wait behind tool_search."""
     mcp = McpServers(timeout_s=20, always_loaded=["mcp__echo__echo", "mcp__nobody__nothing"])

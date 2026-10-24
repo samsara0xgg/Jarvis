@@ -248,6 +248,47 @@ class CostRecorder:
         )
         return result
 
+    def record_stream(  # noqa: PLR0913 — the outcome plus what it is billed as and who asked
+        self, result: StreamDisposition, *, provider: str, model: str, kind: str,
+        turn_id: str | None, run_id: str | None = None, sent_tier: str | None = None,
+    ) -> CostAccountingOutcome:
+        """Record one streamed request's outcome idempotently.
+
+        A caller that reads a stream itself (a deep search's raw message, ADR 0359) records each
+        request the same way a typed stream does. The tier is billed as the provider reports it,
+        else as sent.
+        """
+        return self._commit(
+            self._stream_disposition(
+                result, provider=provider, model=model, kind=kind, sent_tier=sent_tier,
+            ),
+            turn_id=turn_id, run_id=run_id,
+        )
+
+    def _stream_disposition(
+        self, result: StreamDisposition, *, provider: str, model: str, kind: str,
+        sent_tier: str | None,
+    ) -> CostAccountingDisposition:
+        """What one streamed request cost, as the accounting row records it."""
+        usage = result.usage
+        tier = usage.service_tier or sent_tier
+        return CostAccountingDisposition(
+            llm_request_id=result.llm_request_id, kind=kind,
+            provider=provider, model=model, outcome=result.outcome,
+            provider_response_id=result.provider_response_id,
+            usage_status=usage.usage_status, input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens, cache_read_tokens=usage.cache_read_tokens,
+            cache_write_tokens=usage.cache_write_tokens,
+            cost_usd=self._known_cost(
+                model=model, input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+                cache_read_tokens=usage.cache_read_tokens,
+                cache_write_tokens=usage.cache_write_tokens,
+                service_tier=tier,
+            ),
+            error_code=result.error_code, service_tier=tier,
+        )
+
     def stream_events(  # noqa: PLR0913 — request plus audit correlation
         self, client: LLMClient, *, messages: list[dict[str, Any]], system: str,
         tools: list[dict[str, Any]] | None = None, kind: str, turn_id: str | None,
@@ -263,24 +304,9 @@ class CostRecorder:
         sent_tier = client.request_tier(service_tier) if service_tier else None
 
         def settled(result: StreamDisposition) -> CostAccountingOutcome:
-            usage = result.usage
-            tier = usage.service_tier or sent_tier
             return self._commit(
-                CostAccountingDisposition(
-                    llm_request_id=result.llm_request_id, kind=kind,
-                    provider=provider, model=model, outcome=result.outcome,
-                    provider_response_id=result.provider_response_id,
-                    usage_status=usage.usage_status, input_tokens=usage.input_tokens,
-                    output_tokens=usage.output_tokens, cache_read_tokens=usage.cache_read_tokens,
-                    cache_write_tokens=usage.cache_write_tokens,
-                    cost_usd=self._known_cost(
-                        model=model, input_tokens=usage.input_tokens,
-                        output_tokens=usage.output_tokens,
-                        cache_read_tokens=usage.cache_read_tokens,
-                        cache_write_tokens=usage.cache_write_tokens,
-                        service_tier=tier,
-                    ),
-                    error_code=result.error_code, service_tier=tier,
+                self._stream_disposition(
+                    result, provider=provider, model=model, kind=kind, sent_tier=sent_tier,
                 ),
                 turn_id=turn_id, run_id=run_id,
             )

@@ -22,8 +22,8 @@ enum PlaceTint {
     /// and a stay in no place he keeps is a neutral haze.
     static func line(role: String?, id: String) -> RGB {
         switch role {
-        case "home": return RGB(255, 168, 150)
-        case "school": return RGB(100, 200, 255)
+        case "home": return Look.home
+        case "school": return Look.school
         default: return lineOthers[Int(fnv(id) % UInt32(lineOthers.count))]
         }
     }

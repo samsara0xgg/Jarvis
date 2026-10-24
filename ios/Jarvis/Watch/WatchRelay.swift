@@ -7,7 +7,7 @@ import os
 
 // The phone's end of the link to the watch. The watch reaches the brain only through this phone (watchOS has no VPN, the brain answers only on the tailnet): the phone keeps the
 // watch's day up to date with `updateApplicationContext`, answers what is answered on the wrist through its own paths, and turns a talk from the wrist into a turn on the brain.
-// The wrist reports nothing of its own, and her answers go back as text only: nothing here plays a sound or opens the phone's microphone.
+// The wrist reports nothing of its own but its charge (ADR 0377), and her answers go back as text only: nothing here plays a sound or opens the phone's microphone.
 
 @MainActor
 final class WatchRelay: NSObject, WCSessionDelegate {
@@ -130,6 +130,9 @@ final class WatchRelay: NSObject, WCSessionDelegate {
         case .talkStart(let id): startTalk(id)
         case .talkEnd(let id): finishTalk(id)
         case .talkCancel(let id): cancelTalk(id)
+        case .charge(let percent, let state, let at):          // as the phone's own charge (PowerCollector): under the same switch
+            guard DeviceRole.senses, ReportMemory.isOn(.focusAlarm) else { return }
+            Reporter.shared.emit([.state(.watchBattery(percent: percent), at: at, detail: state)])
         }
     }
 
@@ -230,7 +233,7 @@ final class WatchRelay: NSObject, WCSessionDelegate {
         #if DEBUG
         if Self.stub { return [.reply(talk: id, spoken: "Made-up answer to: " + said, written: "", card: nil)] }
         #endif
-        guard let body = AskReply.body(said) else { return [.failed(talk: id, reason: Words.Relay.tooLong)] }
+        guard let body = AskReply.body(said, via: "watch") else { return [.failed(talk: id, reason: Words.Relay.tooLong)] }
         let before = Set(Waiting.shared.cards.map(\.id))
         do {
             switch try await BrainLink.shared.call({ try await BrainClient.ask(body, bases: $0, token: $1) }) {

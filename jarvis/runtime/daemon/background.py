@@ -34,7 +34,7 @@ from jarvis.runtime.daemon.retention import (
     media_dirs,
     release_uploaded_pictures,
 )
-from jarvis.runtime.daemon.routes import her_state
+from jarvis.runtime.daemon.routes import her_state, open_lifelog
 from jarvis.runtime.daemon.sweep import start_sweep_control_plane
 from jarvis.runtime.daemon.voice_power import (
     VoicePowerCoordinator,
@@ -46,6 +46,7 @@ from jarvis.runtime.day_summary import DaySummarySchedule, DaySummarySettings
 from jarvis.runtime.night_watch import NightWatch
 from jarvis.runtime.plan_run import build_watch, leg_session, make_route_legs
 from jarvis.runtime.session_compaction import CompactionSweep, preset_context_length
+from jarvis.runtime.source_silence import SourceSilenceWatch
 from jarvis.runtime.spend_cap import SpendCap
 from jarvis.runtime.work_state import auto_refresh
 from jarvis.shared.pricing import load_pricing_table
@@ -234,6 +235,17 @@ async def _start_sweep(
     )
 
 
+def _start_source_silence(runtime: JarvisRuntime, watchers: list[asyncio.Task[None]]) -> None:
+    """ADR 0382: a card when a source the Mac sends stops arriving; served with the alert rows."""
+    if runtime.memory is None:
+        return
+    watch = SourceSilenceWatch(
+        runtime.runtime_paths.root, open_lifelog(runtime).directory,
+        runtime.memory.db_path, runtime.config.zone,
+    )
+    watchers.append(asyncio.create_task(watch.run(), name="source_silence"))
+
+
 def _start_feeds(
     runtime: JarvisRuntime,
     watchers: list[asyncio.Task[None]],
@@ -269,6 +281,7 @@ def _start_feeds(
             SpendCap(spend, runtime.runtime_paths.event_log, runtime.memory.db_path).run(),
             name="spend_cap",
         ))
+    _start_source_silence(runtime, watchers)
     if runtime.work_state_auto and runtime.work_state and runtime.moment:
         # ADR 0180: a changed front app or site re-analyses the work state, silently.
         watchers.append(asyncio.create_task(
@@ -403,7 +416,8 @@ def _start_day_schedules(
                 None if runtime.attachments is None
                 else runtime.attachments.directory,
             ),
-            weather=None if home is None else home.day_weather,
+            weather=None if home is None else home.plan_weather,
+            outing_weather=None if home is None else home.outing_weather,
         )
         open_leg = (
             None if runtime.leg_planner is None else leg_session(

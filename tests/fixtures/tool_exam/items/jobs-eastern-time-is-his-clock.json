@@ -1,0 +1,54 @@
+{
+  "id": "jobs-eastern-time-is-his-clock",
+  "tool": "jobs",
+  "said": "what time is the Foxtrot Mills interview",
+  "at": "2026-10-20T11:00:00-07:00",
+  "zone": "America/Vancouver",
+  "state": null,
+  "job_mail": {
+    "mails": [
+      {
+        "message_id": "m-fox-1",
+        "received_at": "2026-10-14T09:00:00-07:00",
+        "kind": "receipt",
+        "company": "Foxtrot Mills",
+        "role": "Operations Intern",
+        "sender_name": "Dana Fox",
+        "sender_domain": "foxtrot-mills.example.com",
+        "subject": "We received your application"
+      },
+      {
+        "message_id": "m-fox-2",
+        "received_at": "2026-10-15T09:00:00-07:00",
+        "kind": "interview",
+        "company": "Foxtrot Mills",
+        "role": "Operations Intern",
+        "sender_name": "Dana Fox",
+        "sender_domain": "foxtrot-mills.example.com",
+        "subject": "Interview with Foxtrot Mills",
+        "event_at": "2026-10-28T11:00:00-07:00",
+        "event_text": "Wednesday, October 28 at 2 pm ET"
+      }
+    ]
+  },
+  "args": {
+    "action": "find",
+    "company": "Foxtrot Mills"
+  },
+  "recording": "jobs.recording.json",
+  "expect": {
+    "summary_must": [
+      "Interview Wed Oct 28, 11:00"
+    ],
+    "result": [
+      {
+        "path": "applications.0.interview",
+        "op": "eq",
+        "value": "Wed Oct 28, 11:00"
+      }
+    ],
+    "result_must_not_mention": [
+      "14:00"
+    ]
+  }
+}

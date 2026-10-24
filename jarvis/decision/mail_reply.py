@@ -1,14 +1,13 @@
-"""L3 mail marks (ADR 0123, 0124, 0141): does an unread letter need Allen's own reply, is it junk.
+"""L3 mail marks (ADR 0124, 0141): is an unread letter junk, and how much would Allen want it.
 
 The companion home asks Jev, TypeSafe's hosted decision model reached through
-OpenRouter, two yes/no questions per unread letter in one request, over the
-sender's display name and the subject only. Each answer is a probability
-(``noul``); the home marks a letter ``yes`` only when Jev is very sure it needs
-a reply and ``fyi`` only when very sure it does not, flags it junk only when
-very sure it is junk Allen did not ask for, and leaves every other letter
-unmarked: a wrong mark costs more than a missing one. Each letter is asked once
-per daemon life; a late or failed answer just leaves the letter unmarked until a
-later poll.
+OpenRouter, one yes/no question per unread letter, over the sender's display
+name and the subject only: is it junk Allen did not ask for. The answer is a
+probability (``noul``); the home flags a letter junk only when Jev is very sure,
+and leaves every other letter unflagged: a wrong mark costs more than a missing
+one. Whether a letter waits on his reply is not Jev's guess; the home reads it
+from the conversation (ADR 0364). Each letter is asked once per daemon life; a
+late or failed answer just leaves the letter unflagged until a later poll.
 
 With ``importance`` on (ADR 0141) the same request also rates how much Allen would want to see
 the letter today and names its kind; the rating only orders the home, it is never a mark.
@@ -31,12 +30,6 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(__name__)
 
-_INSTRUCTIONS: Final[str] = (
-    "The text is the sender's display name and the subject line of an email sent to Allen."
-    " Does the sender expect Allen to reply personally: a question, a request, scheduling,"
-    " or a person writing to him? Answer no for a notification, receipt, newsletter,"
-    " automated message or FYI. The text may be in Chinese, English or both."
-)
 _JUNK_INSTRUCTIONS: Final[str] = (
     "The text is the sender's display name and the subject line of an email sent to Allen."
     " Is it junk Allen would not want in his inbox: marketing, promotions, cold sales"
@@ -87,29 +80,24 @@ _UNKNOWN_SENDER: Final[str] = "unknown"
 
 
 class MailReply:
-    """Jev's reply question over unread letters, with a per-letter answer cache."""
+    """Jev's junk question over unread letters, with a per-letter answer cache."""
 
-    def __init__(
-        self, route: SurrogateRoute, yes_at: float, fyi_at: float, junk_at: float,
-        *, importance: bool = False,
-    ) -> None:
+    def __init__(self, route: SurrogateRoute, junk_at: float, *, importance: bool = False) -> None:
         """``route`` is the transport; its ``timeout_ms`` bounds one poll's wait."""
         self._route = route
-        self._yes_at = yes_at
-        self._fyi_at = fyi_at
         self._junk_at = junk_at
         self._importance = importance
-        # message id -> (P(needs a reply), P(junk))
-        self._asked: dict[str, tuple[float, float]] = {}
+        # message id -> P(junk)
+        self._asked: dict[str, float] = {}
         # message id -> {"score": 0-3, "probabilities": {...}, "category": str}, when rated
         self._rated: dict[str, dict[str, Any]] = {}
         self.spent_usd = 0.0
 
-    def marks(self, letters: Sequence[tuple[str, str, str]]) -> dict[str, tuple[str | None, bool]]:
-        """(``reply``, ``junk``) per message id from (id, sender name, subject); never raises.
+    def marks(self, letters: Sequence[tuple[str, str, str]]) -> dict[str, bool]:
+        """Whether each letter is junk, by id, from (id, sender name, subject); never raises.
 
         Letters not asked yet are asked concurrently and waited for up to ``timeout_ms``
-        in all. A letter with no usable answer, now or from an earlier poll, is None, and
+        in all. A letter with no usable answer, now or from an earlier poll, is not junk, and
         is asked again at the next poll.
         """
         sent: dict[str, Future[Reply]] = {}
@@ -118,7 +106,6 @@ class MailReply:
                 continue
             state = f"From: {name or _UNKNOWN_SENDER}\nSubject: {subject}"
             question: dict[str, Any] = {
-                "reply": {"type": "noul", "instructions": _INSTRUCTIONS},
                 "junk": {"type": "noul", "instructions": _JUNK_INSTRUCTIONS},
             }
             if self._importance:
@@ -141,7 +128,7 @@ class MailReply:
         for message_id, future in sent.items():
             if future in done:
                 self._settle(message_id, future)
-        return {one[0]: self._mark(self._asked.get(one[0])) for one in letters}
+        return {one[0]: self._junk(self._asked.get(one[0])) for one in letters}
 
     def rating(self, message_id: str) -> dict[str, Any] | None:
         """``score`` (0-3), ``probabilities`` and ``category`` of a rated letter, else None."""
@@ -152,13 +139,8 @@ class MailReply:
         for message_id in message_ids:
             self._route.note("outcome", "mail", message_id, outcome=what)
 
-    def _mark(self, odds: tuple[float, float] | None) -> tuple[str | None, bool]:
-        if odds is None:
-            return None, False
-        reply, junk = odds
-        mark = "yes" if reply >= self._yes_at else "fyi" if reply <= self._fyi_at else None
-        # A letter that may need a reply is never junk, whatever the second answer says.
-        return mark, junk >= self._junk_at and mark != "yes"
+    def _junk(self, odds: float | None) -> bool:
+        return odds is not None and odds >= self._junk_at
 
     def _settle(self, message_id: str, done: Future[Reply]) -> None:
         """Cache a usable answer and count its cost; warn once per kind of failure."""
@@ -166,45 +148,43 @@ class MailReply:
         if odds is not None:
             self._asked[message_id] = odds
             self.spent_usd += cost
-            mark, junk = self._mark(odds)
+            junk = self._junk(odds)
             rated = _rate(done)
             if rated is not None:
                 self._rated[message_id] = rated
             self._route.note(
-                "decision", "mail", message_id, mark=mark, junk=junk,
+                "decision", "mail", message_id, junk=junk,
                 **({"importance": rated} if rated is not None else {}),
             )
             LOGGER.info(
-                "mail reply: one letter asked, id %s reply p=%.3f mark=%s junk p=%.3f junk=%s,"
-                " $%.6f (total $%.6f)",
-                message_id, odds[0], mark, odds[1], junk, cost, self.spent_usd,
+                "mail marks: one letter asked, id %s junk p=%.3f junk=%s, $%.6f (total $%.6f)",
+                message_id, odds, junk, cost, self.spent_usd,
             )
             while len(self._asked) > _CACHE_MAX:
                 self._rated.pop(oldest := next(iter(self._asked)), None)
                 del self._asked[oldest]
         if error is not None:
-            self._route.warn_once(error, "mail reply", "letters stay unmarked")
+            self._route.warn_once(error, "mail marks", "letters stay unflagged")
 
 
-def _read(done: Future[Reply]) -> tuple[tuple[float, float] | None, float, str | None]:
-    """((reply, junk) probabilities, cost in USD, error) out of one finished call."""
+def _read(done: Future[Reply]) -> tuple[float | None, float, str | None]:
+    """(P(junk), cost in USD, error) out of one finished call."""
     try:
         reply = done.result()
-    except Exception as exc:  # noqa: BLE001 — a worker's failure is just an unmarked letter.
-        LOGGER.warning("mail reply: %s: %s", type(exc).__name__, exc)
+    except Exception as exc:  # noqa: BLE001 — a worker's failure is just an unflagged letter.
+        LOGGER.warning("mail marks: %s: %s", type(exc).__name__, exc)
         return None, 0.0, None
     if reply.error is not None:
         return None, 0.0, reply.error
     try:
-        answers = reply.parsed["answers"]
-        odds = (answers["reply"]["noul"], answers["junk"]["noul"])
+        junk = reply.parsed["answers"]["junk"]["noul"]
         cost = (reply.parsed.get("usage") or {}).get("cost")
     except (KeyError, TypeError, AttributeError):
         return None, 0.0, "bad_json"
-    if any(isinstance(one, bool) or not isinstance(one, int | float) for one in odds):
+    if isinstance(junk, bool) or not isinstance(junk, int | float):
         return None, 0.0, "bad_json"
     paid = float(cost) if isinstance(cost, int | float) and not isinstance(cost, bool) else 0.0
-    return (float(odds[0]), float(odds[1])), paid, None
+    return float(junk), paid, None
 
 
 

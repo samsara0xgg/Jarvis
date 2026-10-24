@@ -79,6 +79,7 @@ _KIND: Final[dict[str, str]] = {
     "search_records": "records",
     "conversation": "records",
     "my_day": "day",
+    "body": "body",
     "my_schedule": "calendar",
     "schedule": "calendar",
     "search_notes": "records",
@@ -86,14 +87,15 @@ _KIND: Final[dict[str, str]] = {
     "open_path": "file",
     "open_url": "url",
     "mail": "mail",
-    "write_mail_draft": "mail_write",
     "refresh_work_state": "work_state",
     "daily_work_report": "report",
+    "jobs": "jobs",
+    # The two tools `jobs` replaced (ADR 0367): turns already in the log still name them.
     "job_ledger": "jobs",
     "record_application": "jobs",
     "show_on_dashboard": "dashboard",
 }
-_RIDE_ARGUMENTS: Final = frozenset({"pin", "ride", "get_off"})
+_RIDE_ARGUMENTS: Final = frozenset({"pin", "ride"})
 _HIDDEN: Final = frozenset(
     {"tool_search", "get_current_time", "ask_user", "dismiss_card"},
 )
@@ -107,6 +109,12 @@ def _by_arguments(tool: str, arguments: object) -> str | None:
         return "ride"
     if tool == "schedule" and given.get("action") not in (None, "", "read"):
         return "calendar_edit"
+    if tool == "mail" and given.get("action") == "archive":
+        return "mail_archive"
+    if tool == "mail" and given.get("action") == "draft":
+        return "mail_write"
+    if tool == "mail" and given.get("action") == "send":
+        return "mail_send"
     return None
 
 
@@ -114,7 +122,8 @@ def kind(tool: str, arguments: object = None) -> str:
     """The language-table kind of a tool: ``step.<kind>`` names it; ``generic`` is no kind.
 
     ``bus`` is a ride when the call pins, rides or sets a stop, else a transit look (ADR 0246).
-    ``schedule`` changes the calendar when its action is not a read (ADR 0299).
+    ``schedule`` changes the calendar when its action is not a read (ADR 0299). ``mail`` archives,
+    writes a letter or sends one when its action says so (ADR 0362, 0366), else it checks his mail.
     """
     if decided := _by_arguments(tool, arguments):
         return decided

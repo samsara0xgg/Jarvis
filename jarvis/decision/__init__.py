@@ -88,6 +88,7 @@ from jarvis.decision.response_run import ResponseCancelledError, wait_out_hold
 from jarvis.decision.stream_envelope import (
     EnvelopeTail,
     StreamEnvelopeSplitter,
+    append_to_document,
     compose_envelope,
     envelope_only,
     split_envelope,
@@ -126,7 +127,18 @@ from jarvis.shared.realtime import (
     stable_authorization_identity,
 )
 from jarvis.shared.realtime_trace import realtime_trace_context, record_realtime_trace
-from jarvis.shared.receipts import Receipt, derive, only_reads, receipt_id, said
+from jarvis.shared.receipts import (
+    Completed,
+    Receipt,
+    call_asks,
+    call_risk,
+    derive,
+    only_reads,
+    receipt_id,
+    said,
+)
+from jarvis.shared.sources import Source, cited
+from jarvis.shared.sources import section as sources_section
 from jarvis.shared.text import is_english, truncate_utf8
 from jarvis.shared.tool_discovery import native_catalog
 from jarvis.state import reactions
@@ -519,6 +531,17 @@ class ToolRegistryLike(Protocol):
         """Return tools this caller may dispatch."""
         ...
 
+    def complete(
+        self,
+        tool_name: str,
+        arguments: Mapping[str, Any],
+        conn: sqlite3.Connection,
+        runtime_paths: RuntimePathsLike,
+        turn_id: str | None = None,
+    ) -> Completed:
+        """The full arguments a call that needs a card will run with (ADR 0361)."""
+        ...
+
     def dispatch(
         self,
         action_request: ActionRequest,
@@ -787,6 +810,9 @@ class _Scratch:
     receipts: dict[str, Receipt] = field(default_factory=dict)
     # ADR 0257: the first valid <react> emoji of the turn's replies.
     reaction: str | None = None
+    # ADR 0359: the pages this turn's tools named for her answer, by address, in the order found;
+    # code writes them under the written part of her answer.
+    sources: dict[str, Source] = field(default_factory=dict)
 
 
 _STATUS_HEADER: Final[str] = "[Current state | from the program, not the user's words]"
@@ -912,7 +938,14 @@ def _interaction_line(packet: SituationPacket, ctx: DecideContext) -> str | None
     # system prompt says once what spoken and typed words are. A typed turn takes the spoken route
     # and the same reply shape, but is never played (ADR 0181).
     device = ctx.turn_device
-    if channel == TYPED_CHANNEL:
+    if channel == TYPED_CHANNEL and packet.trigger_event.payload.get("via") == "watch":
+        # ADR 0401: the phone heard his watch and asked for it; the answer goes back as text.
+        relay = f", relayed by {device}" if device else ""
+        line = (
+            f"This turn: spoken to his watch{relay}; your answer is shown on the watch, not read"
+            f" aloud.\n{_MISHEARD}"
+        )
+    elif channel == TYPED_CHANNEL:
         line = (
             f"This turn: typed on {device}; your answer is shown there, not read aloud."
             if device else "This turn: typed; your answer is shown as text, not read aloud."
@@ -2196,7 +2229,7 @@ def _run_tier0_path(
         tool_name=hit.tool_name,
         target_entity_ref=None,
         caller_principal=CallerPrincipal.REGEX_ROUTER,
-        risk_level=tool_def.risk_level,
+        risk_level=call_risk(tool_def, hit.tool_args),
         arguments=dict(hit.tool_args),
         authorization_lease=None,
         run_id=None,
@@ -2209,7 +2242,7 @@ def _run_tier0_path(
             "action_id": action_id,
             "tool_name": hit.tool_name,
             "caller_principal": CallerPrincipal.REGEX_ROUTER.value,
-            "risk_level": tool_def.risk_level,
+            "risk_level": action_request.risk_level,
             "target_entity_ref": None,
             "turn_id": scratch.turn_id,
             "arguments": dict(hit.tool_args),
@@ -2343,7 +2376,7 @@ def _tool_arguments(arguments_json: str) -> dict[str, Any] | str:
     return parsed
 
 
-def _dispatch_one_tool_call(  # noqa: PLR0915 — single-pass orchestration of resolver + gate + dispatch; splitting muddles the audit trace.
+def _dispatch_one_tool_call(  # noqa: C901, PLR0915 — single-pass orchestration of resolver + gate + dispatch; splitting muddles the audit trace.
     *,
     tool_call: object,
     policy: EffectivePolicy,
@@ -2411,13 +2444,22 @@ def _dispatch_one_tool_call(  # noqa: PLR0915 — single-pass orchestration of r
         # proposes nothing.
         _check_response_cancelled(ctx, "after entity resolve")
 
+    # ADR 0361: a call that needs a card is completed first, so the card shows what will run.
+    if call_asks(tool_def, arguments):
+        done = ctx.tool_registry.complete(
+            name, arguments, ctx.conn, ctx.runtime_paths, scratch.turn_id,
+        )
+        if done.arguments is None:
+            return _completion_failed(name, arguments, done, key, call_id, scratch, messages)
+        arguments = dict(done.arguments)
+
     action_id = _new_action_id()
     action_request = ActionRequest(
         action_id=action_id,
         tool_name=name,
         target_entity_ref=target_entity_ref,
         caller_principal=CallerPrincipal.JARVIS_LLM,
-        risk_level=tool_def.risk_level,
+        risk_level=call_risk(tool_def, arguments),
         arguments=arguments,
         authorization_lease=None,
         run_id=None,
@@ -2432,7 +2474,7 @@ def _dispatch_one_tool_call(  # noqa: PLR0915 — single-pass orchestration of r
             "action_id": action_id,
             "tool_name": name,
             "caller_principal": CallerPrincipal.JARVIS_LLM.value,
-            "risk_level": tool_def.risk_level,
+            "risk_level": action_request.risk_level,
             "target_entity_ref": target_entity_ref,
             "turn_id": scratch.turn_id,
             "arguments": dict(arguments),
@@ -2467,7 +2509,7 @@ def _dispatch_one_tool_call(  # noqa: PLR0915 — single-pass orchestration of r
     # (`_turn_ending_draft`), and the tool loop ends there. The model is told the same thing
     # for each, and a call it makes twice in one response is frozen once.
     if gate_outcome == "confirm_required":
-        _freeze_call(action_request, tool_def, gate_event, scratch)
+        _freeze_call(action_request, gate_event, scratch)
         messages.append(
             _tool_result_message(
                 call_id=call_id,
@@ -2561,6 +2603,7 @@ def _dispatch_one_tool_call(  # noqa: PLR0915 — single-pass orchestration of r
     scratch.calls.append(TurnCall(name, receipt.reads_only, ok=receipt.ok, key=key))
     rid = receipt_id(action_id)
     scratch.receipts[rid] = receipt
+    _note_sources(scratch, result.payload)
 
     # 7. Append the tool result back into the messages list so the LLM
     #    can see it on the next iteration.
@@ -2572,6 +2615,36 @@ def _dispatch_one_tool_call(  # noqa: PLR0915 — single-pass orchestration of r
         ),
     )
     return "continue"
+
+
+def _completion_failed(  # noqa: PLR0913 — the call, what the completion said, and the turn's three holders.
+    name: str,
+    arguments: Mapping[str, Any],
+    done: Completed,
+    key: str,
+    call_id: str,
+    scratch: _Scratch,
+    messages: list[dict[str, Any]],
+) -> _DispatchOutcome:
+    """A call whose completion could not resolve it: a failed receipt, no card (ADR 0361)."""
+    rid = receipt_id(_new_action_id())
+    scratch.receipts[rid] = derive(
+        name, arguments, reads=False, code=done.code, failure=done.kind,
+    )
+    scratch.calls.append(TurnCall(name, read_only=False, ok=False, key=key))
+    body = {"receipt": rid, "error": done.error, "code": done.code, "kind": done.kind}
+    messages.append(
+        _tool_result_message(
+            call_id=call_id, content=json.dumps(body, ensure_ascii=False), is_error=True,
+        )
+    )
+    return "continue"
+
+
+def _note_sources(scratch: _Scratch, payload: Mapping[str, Any]) -> None:
+    """Keep the pages a finished tool call names for her answer (ADR 0359), once each."""
+    for page in cited(payload):
+        scratch.sources.setdefault(page.url, page)
 
 
 def _render_result_for_llm(result: RawResult, rid: str) -> str:
@@ -3489,12 +3562,15 @@ def _finish_spoken(  # noqa: PLR0913 - the turn's handles plus the ask that may 
     """
     tail = speaker.finish()
     suffix = speaker.voice[len(speaker.prefix) :]
+    ask = draft is not None
     if speaker.emitted == 0:
         if draft is None:
             draft = compose_envelope(suffix, tail.document) if tail.enveloped else suffix
-        result = _finalize_response(draft, packet, ctx, scratch)
+        result = _finalize_response(draft, packet, ctx, scratch, with_sources=not ask)
         plan = result.response_plan
-        written_apart = speaker.written_apart and plan is not None and split_envelope(plan.text)[2]
+        written_apart = result.written_apart or (
+            speaker.written_apart and plan is not None and split_envelope(plan.text)[2]
+        )
         return replace(result, written_apart=written_apart)
     if draft is not None:
         suffix = f"{suffix}\n\n{draft}" if suffix.strip() else f"\n\n{draft}"
@@ -3528,8 +3604,14 @@ def _finish_spoken(  # noqa: PLR0913 - the turn's handles plus the ask that may 
             stream_failure=outcome,
         )
     plan = outcome
-    if tail.enveloped:
-        text = compose_envelope(plan.text, tail.document)
+    written_apart = speaker.written_apart
+    text = compose_envelope(plan.text, tail.document) if tail.enveloped else plan.text
+    if not ask and scratch.sources:  # ADR 0359: under the written part, never in what was spoken
+        text, apart = append_to_document(
+            text, sources_section(scratch.sources.values(), scratch.lang),
+        )
+        written_apart = written_apart or apart
+    if text != plan.text:
         plan = replace(
             plan,
             text=text,
@@ -3543,7 +3625,7 @@ def _finish_spoken(  # noqa: PLR0913 - the turn's handles plus the ask that may 
         route="spoken",
         emitted_segments=speaker.emitted,
         last_gate_event_uid=speaker.last_gate,
-        written_apart=speaker.written_apart,
+        written_apart=written_apart,
     )
 
 
@@ -3760,12 +3842,17 @@ def _finalize_response(  # noqa: PLR0913 — draft + the three decide() handles 
     gate_text: str | None = None,
     document_form: bool = False,
     model_answer: bool = False,
+    with_sources: bool = False,
 ) -> DecideResult:
     """Apply the Pre-emit Gate to a draft, emit gate + turn.ended, return.
 
     ``model_answer`` marks a draft the model wrote as its answer. Only that
     draft may get a spoken form (ADR 0040): fixed L3 text is already written
     to be spoken, and a confirmation ask must be heard word for word.
+
+    The pages this turn's tools named go under the written part of the draft (ADR 0359) when it
+    is the model's answer, or when ``with_sources`` says it is the stream's unspoken rest; never
+    under fixed text or an ask. They are never in its voice.
 
     ``gate_text`` (ADR-0011 §12, MUST-FIX 2a): the Tier 0 path
     (`_run_tier0_path`) renders `draft_text` by interpolating TOOL
@@ -3852,6 +3939,11 @@ def _finalize_response(  # noqa: PLR0913 — draft + the three decide() handles 
     if attention == "voice_notify" and model_answer and not typed_turn(packet.trigger_event):
         plan = _with_spoken_form(plan, packet, ctx, scratch)
 
+    # ADR 0359: the pages a deep search rests on, under the written part of her answer.
+    written_apart = False
+    if (model_answer or with_sources) and scratch.sources:
+        plan, written_apart = _with_sources(plan, scratch)
+
     # turn.ended. ``source_event_id`` references the gate verdict.
     if scratch.turn_id is not None:
         scratch.events.append(
@@ -3869,6 +3961,22 @@ def _finalize_response(  # noqa: PLR0913 — draft + the three decide() handles 
         events_emitted=tuple(scratch.events),
         turn_id=scratch.turn_id,
         attention_channel=attention,
+        written_apart=written_apart,
+    )
+
+
+def _with_sources(plan: ResponsePlan, scratch: _Scratch) -> tuple[ResponsePlan, bool]:
+    """``plan`` with the turn's pages listed at the end of its written part (ADR 0359).
+
+    The flag says the written part is now only what the voice leaves out (ADR 0114): the answer
+    had no written part of its own.
+    """
+    text, apart = append_to_document(
+        plan.text, sources_section(scratch.sources.values(), scratch.lang),
+    )
+    return (
+        replace(plan, text=text, response_hash=hashlib.sha256(text.encode("utf-8")).hexdigest()),
+        apart,
     )
 
 
@@ -3972,9 +4080,7 @@ def _confirmation_already_requested_this_turn(scratch: _Scratch) -> bool:
     return scratch.pending_confirmation_template_line is not None
 
 
-def _frozen_snapshot(
-    action_request: ActionRequest, tool_def: ToolLike, lang: Language | None,
-) -> dict[str, Any]:
+def _frozen_snapshot(action_request: ActionRequest, lang: Language | None) -> dict[str, Any]:
     """One call frozen as proposed (ADR 0033, 0321).
 
     The snapshot carries the tool, its caller, its target ref, its risk and its arguments as
@@ -3986,17 +4092,15 @@ def _frozen_snapshot(
         "caller": action_request.caller_principal.value,
         "canonical_target": "",
         "target_entity_ref": action_request.target_entity_ref,
-        "risk_level": tool_def.risk_level,
+        "risk_level": action_request.risk_level,
         "args_meta": dict(action_request.arguments),
         "question": ask_line(action_request.tool_name, action_request.arguments, lang),
     }
 
 
-def _freeze_call(
-    action_request: ActionRequest, tool_def: ToolLike, gate_event: Event, scratch: _Scratch,
-) -> None:
+def _freeze_call(action_request: ActionRequest, gate_event: Event, scratch: _Scratch) -> None:
     """Add the call to this response's frozen calls, once however often the model repeats it."""
-    snapshot = _frozen_snapshot(action_request, tool_def, scratch.lang)
+    snapshot = _frozen_snapshot(action_request, scratch.lang)
     if all(
         _call_identity(snapshot) != _call_identity(frozen.snapshot)
         for frozen in scratch.frozen_calls
@@ -4051,31 +4155,47 @@ def _ask_for_frozen_calls(ctx: DecideContext, scratch: _Scratch) -> None:
     scratch.pending_confirmation_template_line = line
 
 
-def request_confirmation(  # noqa: PLR0913 — the tool, its frozen arguments and the card's two settings.
+class CompletionRefused(Exception):  # noqa: N818 — a refusal he is told about, not a fault.
+    """A call's completion could not resolve it (ADR 0361): no card was raised."""
+
+    def __init__(self, message: str, code: str, kind: str) -> None:
+        """Keep the tool's own wording, code and failure kind."""
+        super().__init__(message)
+        self.code = code
+        self.kind = kind
+
+
+def request_confirmation(  # noqa: PLR0913 — the tool, its frozen arguments and the card's settings.
     conn: sqlite3.Connection,
     registry: ToolRegistryLike,
     tool_name: str,
     arguments: Mapping[str, Any],
     *,
     ttl_ms: int,
+    runtime_paths: RuntimePathsLike,
     lang: Language | None = None,
 ) -> str | None:
     """Put a card on screen for a call Allen himself started, with no model turn (ADR 0148).
 
-    Freezes ``arguments`` exactly as ``_ask_for_frozen_calls`` does;
-    his button then runs the usual answer path (lease, gate, dispatch). The confirmation id,
-    or None when the tool is not on the menu or does not ask first.
+    Completes the call first, as a model's call is (ADR 0361; :class:`CompletionRefused` when it
+    cannot be), then freezes the full arguments exactly as ``_ask_for_frozen_calls`` does; his
+    button then runs the usual answer path (lease, gate, dispatch). The confirmation id, or None
+    when the tool is not on the menu or this call does not ask first.
     """
     tool_def = _find_tool_def(registry, tool_name)
-    if tool_def is None or not tool_def.requires_confirmation:
+    if tool_def is None or not call_asks(tool_def, arguments):
         return None
+    done = registry.complete(tool_name, arguments, conn, runtime_paths)
+    if done.arguments is None:
+        raise CompletionRefused(done.error, done.code, done.kind)
+    arguments = done.arguments
     confirmation_id = _new_confirmation_id()
     call = {
         "tool_name": tool_name,
         "caller": CallerPrincipal.JARVIS_LLM.value,
         "canonical_target": "",
         "target_entity_ref": None,
-        "risk_level": tool_def.risk_level,
+        "risk_level": call_risk(tool_def, arguments),
         "args_meta": dict(arguments),
         "question": ask_line(tool_name, arguments, lang),
     }
@@ -4468,7 +4588,7 @@ def _run_accepted_call(  # noqa: PLR0913 — one keyword per answer-path input.
         tool_name=tool_name,
         target_entity_ref=target_entity_ref,
         caller_principal=CallerPrincipal.JARVIS_LLM,
-        risk_level=tool_def.risk_level,
+        risk_level=call_risk(tool_def, arguments),
         arguments=arguments,
         authorization_lease=lease,
         run_id=None,
@@ -4481,7 +4601,7 @@ def _run_accepted_call(  # noqa: PLR0913 — one keyword per answer-path input.
             "action_id": action_id,
             "tool_name": tool_name,
             "caller_principal": CallerPrincipal.JARVIS_LLM.value,
-            "risk_level": tool_def.risk_level,
+            "risk_level": action_request.risk_level,
             "target_entity_ref": target_entity_ref,
             "turn_id": scratch.turn_id,
             "arguments": dict(arguments),
@@ -4747,6 +4867,10 @@ _CARD_NOTE: Final = (
     " Calling this does not run it: the user gets a card with these arguments"
     " and runs or discards it."
 )
+_CARD_NOTE_BY_CALL: Final = (
+    " A call that needs his approval does not run: he gets a card with these arguments"
+    " and runs or discards it."
+)
 
 
 def _tool_menu(
@@ -4783,7 +4907,11 @@ def _tool_to_dict(tool_def: ToolLike) -> dict[str, Any]:
     A tool that asks first says so (ADR 0062), or the model, believing the
     call acts at once, asks in its own words before the card asks again.
     """
-    card = _CARD_NOTE if tool_def.requires_confirmation else ""
+    card = (
+        _CARD_NOTE if tool_def.requires_confirmation
+        else _CARD_NOTE_BY_CALL if getattr(tool_def, "effect", None) is not None
+        else ""
+    )
     return {
         "name": tool_def.name,
         "description": tool_def.description + card,
@@ -4860,6 +4988,7 @@ __all__ = [
     "DEFAULT_MAX_TOOL_ITERATIONS",
     "PREFIX_WARM_MAX_OUTPUT_TOKENS",
     "AttentionChannel",
+    "CompletionRefused",
     "DecideContext",
     "DecideResult",
     "EffectivePolicy",

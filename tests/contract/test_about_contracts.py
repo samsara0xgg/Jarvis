@@ -33,7 +33,9 @@ def test_the_brain_takes_the_item_a_phone_has_open_as_it_is_checked_and_refuses_
     inputs = contracts.inputs("about", route=ROUTE)
     started: list[tuple[str, str, Any]] = []
 
-    def start(device: str, text: str, _ids: object, about: Any, _utterance: object) -> str:  # noqa: ANN401
+    def start(
+        device: str, text: str, _ids: object, about: Any, _utterance: object, _via: object,  # noqa: ANN401
+    ) -> str:
         started.append((device, text, about))
         return "T1"
 

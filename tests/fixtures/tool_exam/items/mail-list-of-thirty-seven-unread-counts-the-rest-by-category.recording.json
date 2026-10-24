@@ -1,0 +1,89 @@
+{
+ "version": 1,
+ "mailbox": {
+  "messages": [
+   {
+    "id": "noreply{i}",
+    "subject": "Your order {i} shipped",
+    "sender": "Orders <no-reply@example.com>",
+    "ago": 5,
+    "every": 4,
+    "repeat": 3,
+    "headers": {
+     "Auto-Submitted": "auto-generated"
+    },
+    "labels": [
+     "INBOX",
+     "UNREAD",
+     "CATEGORY_UPDATES"
+    ],
+    "plain": "Order {i} is on its way."
+   },
+   {
+    "id": "person{i}",
+    "subject": "Plan {i}",
+    "sender": "Sam Lee <sam@example.com>",
+    "ago": 20,
+    "every": 15,
+    "repeat": 7,
+    "labels": [
+     "INBOX",
+     "UNREAD",
+     "CATEGORY_PERSONAL"
+    ],
+    "plain": "Plan {i} details."
+   },
+   {
+    "id": "promo{i}",
+    "subject": "Deal {i}",
+    "sender": "Shop <deals@example.com>",
+    "ago": 200,
+    "every": 7,
+    "repeat": 15,
+    "headers": {
+     "List-Unsubscribe": "<mailto:stop@example.com>"
+    },
+    "labels": [
+     "INBOX",
+     "UNREAD",
+     "CATEGORY_PROMOTIONS"
+    ],
+    "plain": "Big sale {i}."
+   },
+   {
+    "id": "upd{i}",
+    "subject": "Notice {i}",
+    "sender": "Bank <alerts@example.com>",
+    "ago": 400,
+    "every": 9,
+    "repeat": 8,
+    "headers": {
+     "Auto-Submitted": "auto-generated"
+    },
+    "labels": [
+     "INBOX",
+     "UNREAD",
+     "CATEGORY_UPDATES"
+    ],
+    "plain": "Notice {i}."
+   },
+   {
+    "id": "soc{i}",
+    "subject": "Friend {i} posted",
+    "sender": "Social <notify@example.com>",
+    "ago": 700,
+    "every": 11,
+    "repeat": 4,
+    "headers": {
+     "List-Unsubscribe": "<mailto:stop@example.com>"
+    },
+    "labels": [
+     "INBOX",
+     "UNREAD",
+     "CATEGORY_SOCIAL"
+    ],
+    "plain": "New post {i}."
+   }
+  ]
+ }
+}

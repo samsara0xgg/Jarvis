@@ -1,0 +1,31 @@
+{
+  "id": "mail-preheader-padding-is-not-in-the-body",
+  "tool": "mail",
+  "said": "read the catalogue mail",
+  "at": "2026-10-21T11:00:00-07:00",
+  "zone": "America/Vancouver",
+  "state": null,
+  "args": {
+    "action": "read",
+    "message": "pre1"
+  },
+  "recording": "mail-preheader-padding-is-not-in-the-body.recording.json",
+  "expect": {
+    "result": [
+      {
+        "path": "text",
+        "op": "contains",
+        "value": "Coats are 20% off this week."
+      }
+    ],
+    "result_must_not_mention": [
+      "͏",
+      "​",
+      "‌",
+      "‍",
+      "⁠",
+      "﻿",
+      "­"
+    ]
+  }
+}

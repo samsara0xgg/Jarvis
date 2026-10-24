@@ -13,12 +13,14 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Final, Literal, get_args
+from typing import TYPE_CHECKING, Any, Final, Literal, cast, get_args
 
 from jarvis.shared.here import HereReading
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
+
+    from jarvis.shared import RiskLevel
 
 Status = Literal["done", "pending", "needs_choice", "failed"]
 """``pending``: accepted, not yet confirmed. ``needs_choice``: the tool stopped to ask."""
@@ -191,7 +193,8 @@ _IMPOSSIBLE: Final = frozenset({
 })
 _RETRY_OTHER_ARGS: Final = frozenset({
     "invalid_arguments", "not_found", "no_resolved_target", "file_not_found", "target_not_found",
-    "no_such_stop", "no_item", "empty_text", "empty_message", "empty_ids", "too_long",
+    "no_such_stop", "stop_passed", "no_item", "empty_text", "empty_message", "empty_ids",
+    "too_long",
     "invalid_time", "time_in_past", "too_far_ahead", "bad_cwd", "cwd_not_allowed", "secret_field",
     "no_plan",
 })
@@ -221,7 +224,50 @@ def only_reads(tool: object, arguments: Mapping[str, Any]) -> bool:
     reads = getattr(tool, "reads", None)
     if reads is not None:
         return bool(reads(arguments))
+    if getattr(tool, "effect", None) is not None:
+        return call_risk(tool, arguments) == "L0"
     return bool(getattr(tool, "read_only", False))
+
+
+_LEVELS: Final = frozenset({"L0", "L1", "L2", "L3", "L4"})
+
+
+def call_risk(tool: object, arguments: Mapping[str, Any]) -> RiskLevel:
+    """The level of this call (ADR 0361): the tool's ``effect`` of its arguments, else its level.
+
+    A tool that declares no ``effect`` has one level for every call. An ``effect`` that cannot
+    take these arguments, or answers with no level, counts as the tool's own (highest) level.
+    """
+    effect = getattr(tool, "effect", None)
+    if effect is not None:
+        try:
+            level = effect(arguments)
+        except Exception:  # noqa: BLE001 — arguments the model made up must not lower it.
+            level = None
+        if level in _LEVELS:
+            return cast("RiskLevel", level)
+    return cast("RiskLevel", getattr(tool, "risk_level", "L3"))
+
+
+_CARD_LEVELS: Final = frozenset({"L3", "L4"})
+"""The confirmation floor (ADR 0011 I7): a call at these levels waits for his card."""
+
+
+def call_asks(tool: object, arguments: Mapping[str, Any]) -> bool:
+    """Whether this call needs a card (ADR 0361): its effect is at the floor, else the flag."""
+    if getattr(tool, "effect", None) is None:
+        return bool(getattr(tool, "requires_confirmation", False))
+    return call_risk(tool, arguments) in _CARD_LEVELS
+
+
+@dataclass(frozen=True)
+class Completed:
+    """What a tool's completion gave back (ADR 0361): the full arguments, or why it could not."""
+
+    arguments: Mapping[str, Any] | None
+    error: str = ""
+    code: str = ""
+    kind: FailureKind = "dont_retry"
 
 
 def receipt_id(action_id: str) -> str:

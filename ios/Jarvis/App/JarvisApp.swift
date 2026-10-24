@@ -11,7 +11,7 @@ struct JarvisApp: App {
         StallLog.shared.start()
         BrainClient.trace = PairingTrace.note
         WatchRelay.shared.start()
-        for n in ["InstrumentSerif-Regular", "IBMPlexMono-Regular", "IBMPlexMono-Medium"] {
+        for n in ["InstrumentSerif-Regular"] {
             if let u = Bundle.main.url(forResource: n, withExtension: "ttf") { CTFontManagerRegisterFontsForURL(u as CFURL, .process, nil) }
         }
         #if DEBUG
