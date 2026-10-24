@@ -23,5 +23,9 @@ extension Words {
         static var saveAndUnlock: String { pick(zh: "保存并解锁", en: "Save and unlock") }
         static var forget: String { pick(zh: "忘掉密码", en: "Forget password") }
         static var cancel: String { pick(zh: "取消", en: "Cancel") }
+        static var talk: String { pick(zh: "按住说话，松手打进电脑", en: "Hold to talk; let go to type it on the Mac") }
+        static var listening: String { pick(zh: "在听…", en: "Listening…") }
+        static var noHearing: String { pick(zh: "现在听不到千问，等 Jarvis 连上大脑再试。", en: "Qwen can't hear right now; try again once Jarvis reaches your brain.") }
+        static var trackpad: String { pick(zh: "触控板模式", en: "Trackpad mode") }
     }
 }

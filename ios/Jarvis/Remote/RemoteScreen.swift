@@ -2,13 +2,15 @@ import AVFoundation
 import SwiftUI
 import UIKit
 
-/// The remote view: his Mac's screen edge to edge, three small buttons in the corner (unlock while it is locked, keyboard, close).
+/// The remote view: his Mac's screen edge to edge, small buttons in the top corner (unlock while it is locked, trackpad mode, keyboard, close)
+/// and, under his thumb, hold to talk.
 struct RemoteScreen: View {
     let close: () -> Void
     @State private var live = RemoteLive()
     @State private var asking = false
     @State private var typed = ""
     @State private var pasteFailed = false
+    @State private var trackpad = false
     private var mac: RemoteMac { .shared }
 
     var body: some View {
@@ -21,6 +23,7 @@ struct RemoteScreen: View {
                 pairCard
             }
             controls
+            if case .live = live.state { talk }
         }
         .statusBarHidden()
         .persistentSystemOverlays(.hidden)
@@ -58,12 +61,46 @@ struct RemoteScreen: View {
                     }
                     .simultaneousGesture(LongPressGesture().onEnded { _ in asking = true })
                 }
-                if case .live = live.state { corner("keyboard", Words.Remote.keyboard) { live.canvas.toggleKeyboard() } }
+                if case .live = live.state {
+                    corner(trackpad ? "hand.point.up.left.fill" : "cursorarrow.motionlines", Words.Remote.trackpad) {
+                        trackpad.toggle()
+                        live.canvas.trackpad = trackpad
+                    }
+                    corner("keyboard", Words.Remote.keyboard) { live.canvas.toggleKeyboard() }
+                }
                 corner("xmark", Words.Remote.close, close)
             }
             Spacer()
         }
         .padding(12)
+    }
+
+    /// Hold to talk: what Qwen hears so far shows above the button; letting go types it into the Mac.
+    private var talk: some View {
+        VStack(spacing: 10) {
+            Spacer()
+            if let line = live.heard {
+                Text(line.isEmpty ? Words.Remote.listening : line)
+                    .font(.callout)
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 14).padding(.vertical, 8)
+                    .background(.ultraThinMaterial, in: Capsule())
+                    .frame(maxWidth: 520)
+            }
+            HStack {
+                Spacer()
+                Image(systemName: live.heard == nil ? "mic.fill" : "waveform")
+                    .font(.system(size: 22, weight: .semibold))
+                    .frame(width: 60, height: 60)
+                    .background(live.heard == nil ? AnyShapeStyle(.ultraThinMaterial) : AnyShapeStyle(Color.accentColor), in: Circle())
+                    .foregroundStyle(.white)
+                    .gesture(DragGesture(minimumDistance: 0)
+                        .onChanged { _ in if live.heard == nil { live.startTalking() } }
+                        .onEnded { _ in live.stopTalking() })
+                    .accessibilityLabel(Words.Remote.talk)
+            }
+        }
+        .padding(20)
     }
 
     private func corner(_ symbol: String, _ label: String, _ action: @escaping () -> Void) -> some View {
@@ -151,6 +188,27 @@ struct RemoteScreen: View {
         session.start(host: mac.host, port: mac.port, token: mac.token, curtain: true)
     }
 
+    let voice = RemoteVoice()
+    /// While he holds to talk: Qwen's words so far ("" before the first); nil otherwise.
+    private(set) var heard: String?
+    private var talking = false
+
+    func startTalking() {
+        guard voice.canHear else { heard = Words.Remote.noHearing; Task { try? await Task.sleep(for: .seconds(2)); heard = nil }; return }
+        heard = ""
+        do { try voice.start { [weak self] in self?.heard = $0 }; talking = true } catch { voice.cancel(); heard = nil }
+    }
+
+    func stopTalking() {
+        guard talking else { return }
+        talking = false
+        Task {
+            let words = await voice.finish()
+            heard = nil
+            if let words, !words.isEmpty { session.input(["t": "paste", "s": words]) }
+        }
+    }
+
     /// The password typed into the lock screen's field, then return.
     func unlock(_ password: String) {
         session.input(["t": "text", "s": password])
@@ -166,18 +224,35 @@ private struct CanvasView: UIViewRepresentable {
 }
 
 /// The Mac's screen, and every way of touching it:
-/// tap = click, hold = right click, one finger drag = drag, two fingers = scroll;
+/// tap = click, hold or two-finger tap = right click, one finger drag = drag, two fingers = scroll, pinch = zoom in on part of it;
+/// in trackpad mode one finger pushes the pointer instead and a tap clicks where it is;
 /// a trackpad or mouse moves the pointer, clicks, right-clicks and scrolls as it would on the Mac; keys go through as keys.
-final class RemoteCanvas: UIView {
+final class RemoteCanvas: UIView, UIGestureRecognizerDelegate {
     var videoSize = CGSize.zero
+    /// One finger pushes the pointer, as on a trackpad, instead of touching where it lands.
+    var trackpad = false
     private let session: RemoteSession
     private let keyField = KeyField()
     private var held = false
+    private var cursor = CGPoint(x: 0.5, y: 0.5)   // the pointer, as fractions of the Mac's screen
+    private var zoom: CGFloat = 1
+    private var pan = CGPoint.zero
+    private var pinchAt = CGPoint.zero
+    private var pinching = false
+    private var pinch: UIPinchGestureRecognizer!
+    private var scroll: UIPanGestureRecognizer!
+    private var lastTouch = UITouch.TouchType.direct   // a finger, or the trackpad's click: trackpad mode only takes over fingers
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        if let t = touches.first { lastTouch = t.type }
+        super.touchesBegan(touches, with: event)
+    }
 
     init(session: RemoteSession) {
         self.session = session
         super.init(frame: .zero)
         backgroundColor = .black
+        clipsToBounds = true
         layer.addSublayer(session.layer)
         keyField.canvas = self
         addSubview(keyField)
@@ -191,21 +266,33 @@ final class RemoteCanvas: UIView {
         rightTap.buttonMaskRequired = .secondary
         // a finger has no buttons: left to itself this recogniser took plain taps and turned them into right clicks
         rightTap.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.indirectPointer.rawValue)]
+        let twoTap = UITapGestureRecognizer(target: self, action: #selector(twoTapped))
+        twoTap.numberOfTouchesRequired = 2
+        twoTap.allowedTouchTypes = direct
         let hold = UILongPressGestureRecognizer(target: self, action: #selector(holding))
         hold.allowedTouchTypes = direct
         let drag = UIPanGestureRecognizer(target: self, action: #selector(dragging))
         drag.maximumNumberOfTouches = 1
         drag.allowedTouchTypes = anyPointer
         drag.allowedScrollTypesMask = []
-        let scroll = UIPanGestureRecognizer(target: self, action: #selector(scrolling))
+        scroll = UIPanGestureRecognizer(target: self, action: #selector(scrolling))
         scroll.minimumNumberOfTouches = 2
         scroll.allowedTouchTypes = direct
         scroll.allowedScrollTypesMask = .all
+        scroll.delegate = self
+        pinch = UIPinchGestureRecognizer(target: self, action: #selector(pinched))
+        pinch.allowedTouchTypes = direct
+        pinch.delegate = self
         let hover = UIHoverGestureRecognizer(target: self, action: #selector(hovering))
-        [tap, rightTap, hold, drag, scroll, hover].forEach(addGestureRecognizer)
+        [tap, rightTap, twoTap, hold, drag, scroll, pinch, hover].forEach(addGestureRecognizer)
     }
 
     required init?(coder: NSCoder) { fatalError() }
+
+    // two fingers can scroll and pinch at once; the scroll stands still while the pinch moves the picture
+    func gestureRecognizer(_ a: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith b: UIGestureRecognizer) -> Bool {
+        (a === pinch && b === scroll) || (a === scroll && b === pinch)
+    }
 
     override func layoutSubviews() {
         super.layoutSubviews()
@@ -228,22 +315,40 @@ final class RemoteCanvas: UIView {
 
     private var videoRect: CGRect { videoSize.width > 0 ? AVMakeRect(aspectRatio: videoSize, insideRect: bounds) : .zero }
 
+    /// A point on this view, as fractions of the Mac's screen, through the zoom.
+    private func fraction(_ p: CGPoint) -> CGPoint? {
+        let r = videoRect, c = CGPoint(x: bounds.midX, y: bounds.midY)
+        guard r.width > 0 else { return nil }
+        let q = CGPoint(x: (p.x - c.x - pan.x) / zoom + c.x, y: (p.y - c.y - pan.y) / zoom + c.y)
+        return CGPoint(x: min(max((q.x - r.minX) / r.width, 0), 1), y: min(max((q.y - r.minY) / r.height, 0), 1))
+    }
+
+    private func send(_ t: String, _ f: CGPoint, button: Int = 0) {
+        cursor = f
+        session.input(["t": t, "x": Double(f.x), "y": Double(f.y), "b": button])
+    }
+
     private func mouse(_ t: String, _ p: CGPoint, button: Int = 0) {
-        let r = videoRect
-        guard r.width > 0 else { return }
-        session.input(["t": t, "x": Double((p.x - r.minX) / r.width), "y": Double((p.y - r.minY) / r.height), "b": button])
+        if let f = fraction(p) { send(t, f, button: button) }
     }
 
-    private func click(_ p: CGPoint, button: Int) {
-        mouse("move", p); mouse("down", p, button: button); mouse("up", p, button: button)
+    private func click(_ f: CGPoint, button: Int) {
+        send("move", f); send("down", f, button: button); send("up", f, button: button)
     }
 
-    @objc private func tapped(_ g: UITapGestureRecognizer) { click(g.location(in: self), button: 0) }
-    @objc private func rightTapped(_ g: UITapGestureRecognizer) { click(g.location(in: self), button: 1) }
-    @objc private func holding(_ g: UILongPressGestureRecognizer) { if g.state == .began { click(g.location(in: self), button: 1) } }
+    /// Where a touch acts: where it lands, or in trackpad mode wherever the pointer already is.
+    private func target(_ g: UIGestureRecognizer) -> CGPoint? {
+        trackpad && lastTouch == .direct ? cursor : fraction(g.location(in: self))
+    }
+
+    @objc private func tapped(_ g: UITapGestureRecognizer) { if let f = target(g) { click(f, button: 0) } }
+    @objc private func rightTapped(_ g: UITapGestureRecognizer) { if let f = fraction(g.location(in: self)) { click(f, button: 1) } }
+    @objc private func twoTapped(_ g: UITapGestureRecognizer) { if let f = target(g) { click(f, button: 1) } }
+    @objc private func holding(_ g: UILongPressGestureRecognizer) { if g.state == .began, let f = target(g) { click(f, button: 1) } }
     @objc private func hovering(_ g: UIHoverGestureRecognizer) { if !held { mouse("move", g.location(in: self)) } }
 
     @objc private func dragging(_ g: UIPanGestureRecognizer) {
+        if trackpad && lastTouch == .direct { return push(g) }
         let p = g.location(in: self)
         switch g.state {
         case .began:
@@ -256,13 +361,47 @@ final class RemoteCanvas: UIView {
         }
     }
 
+    /// Trackpad mode: the finger's travel moves the pointer, faster than the finger so one stroke crosses the screen.
+    private func push(_ g: UIPanGestureRecognizer) {
+        let r = videoRect
+        guard g.state == .changed, r.width > 0 else { return }
+        let d = g.translation(in: self)
+        g.setTranslation(.zero, in: self)
+        let speed: CGFloat = 1.6   // ponytail: fixed pointer speed; add acceleration if long strokes feel slow
+        let f = CGPoint(x: min(max(cursor.x + d.x * speed / (r.width * zoom), 0), 1), y: min(max(cursor.y + d.y * speed / (r.height * zoom), 0), 1))
+        send("move", f)
+    }
+
     @objc private func scrolling(_ g: UIPanGestureRecognizer) {
         guard g.state == .changed, videoRect.width > 0 else { return }
         let d = g.translation(in: self)
         g.setTranslation(.zero, in: self)
+        guard !pinching else { return }
         // the Mac's points per point here, its stream being at 2x
-        let k = videoSize.width / 2 / videoRect.width
+        let k = videoSize.width / 2 / (videoRect.width * zoom)
         session.input(["t": "scroll", "dx": Double(d.x * k), "dy": Double(d.y * k)])
+    }
+
+    /// Zoom between 1x and 4x, keeping what is under the fingers under them; back at 1x the picture fits again.
+    @objc private func pinched(_ g: UIPinchGestureRecognizer) {
+        let c = CGPoint(x: bounds.midX, y: bounds.midY), at = g.location(in: self)
+        switch g.state {
+        case .began:
+            pinching = true
+            pinchAt = at
+        case .changed:
+            // the picture point that was under the fingers, before this step
+            let q = CGPoint(x: (pinchAt.x - c.x - pan.x) / zoom + c.x, y: (pinchAt.y - c.y - pan.y) / zoom + c.y)
+            zoom = min(max(zoom * g.scale, 1), 4)
+            g.scale = 1
+            pan = zoom == 1 ? .zero : CGPoint(x: at.x - c.x - (q.x - c.x) * zoom, y: at.y - c.y - (q.y - c.y) * zoom)
+            pinchAt = at
+            CATransaction.begin(); CATransaction.setDisableActions(true)
+            session.layer.setAffineTransform(CGAffineTransform(translationX: pan.x, y: pan.y).scaledBy(x: zoom, y: zoom))
+            CATransaction.commit()
+        default:
+            pinching = false
+        }
     }
 
     // MARK: keys
