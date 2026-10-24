@@ -346,7 +346,16 @@ final class RemoteCanvas: UIView, UIGestureRecognizerDelegate {
     override func didMoveToWindow() {
         super.didMoveToWindow()
         if window != nil { becomeFirstResponder() }
+        // ProMotion: ask the screen for 120 Hz while the Mac's picture is up, or the iPad may show it at 60
+        promotion?.invalidate()
+        promotion = nil
+        guard window != nil else { return }
+        let link = CADisplayLink(target: Tick.shared, selector: #selector(Tick.tick))
+        link.preferredFrameRateRange = CAFrameRateRange(minimum: 80, maximum: 120, preferred: 120)
+        link.add(to: .main, forMode: .common)
+        promotion = link
     }
+    private var promotion: CADisplayLink?
 
     func toggleKeyboard() {
         if keyField.isFirstResponder { becomeFirstResponder() } else { keyField.becomeFirstResponder() }
@@ -512,4 +521,10 @@ private final class KeyField: UIView, UIKeyInput {
 
     override func pressesBegan(_ p: Set<UIPress>, with e: UIPressesEvent?) { if canvas?.keys(p, down: true) != true { super.pressesBegan(p, with: e) } }
     override func pressesEnded(_ p: Set<UIPress>, with e: UIPressesEvent?) { if canvas?.keys(p, down: false) != true { super.pressesEnded(p, with: e) } }
+}
+
+/// The display link's target: it only has to exist (a link holds its target, and the canvas should not be held by its own link).
+private final class Tick: NSObject {
+    static let shared = Tick()
+    @objc func tick() {}
 }

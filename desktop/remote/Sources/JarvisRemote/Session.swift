@@ -43,7 +43,7 @@ final class Session: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
     private var inFlight = 0            // bytes handed to the connection and not yet taken by TCP
     private var behind = false          // a frame came while the link was full; the newest goes once it drains
     // ~0.15 s of video at the bitrate: past this the link is behind, and new screens wait instead of queueing
-    private static let fullLink = 1_000_000
+    private static let fullLink = 1_500_000
     private var size = (0, 0)
     private var locked: Bool?
     private var lockWatch: DispatchSourceTimer?
@@ -163,7 +163,7 @@ final class Session: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
 
             let cfg = SCStreamConfiguration()
             cfg.width = w; cfg.height = h
-            cfg.minimumFrameInterval = CMTime(value: 1, timescale: 60)
+            cfg.minimumFrameInterval = CMTime(value: 1, timescale: 120)   // his iPad and this display are both ProMotion
             cfg.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
             cfg.queueDepth = 4
             cfg.showsCursor = true
@@ -209,8 +209,8 @@ final class Session: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
         VTSessionSetProperty(s, key: kVTCompressionPropertyKey_ProfileLevel, value: kVTProfileLevel_HEVC_Main_AutoLevel)
         VTSessionSetProperty(s, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse)
         // ponytail: fixed bitrate sized for the tailnet at home (direct over the LAN); adapt to the link if he drives it from outside
-        VTSessionSetProperty(s, key: kVTCompressionPropertyKey_AverageBitRate, value: 50_000_000 as CFNumber)
-        VTSessionSetProperty(s, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: 60 as CFNumber)
+        VTSessionSetProperty(s, key: kVTCompressionPropertyKey_AverageBitRate, value: 80_000_000 as CFNumber)
+        VTSessionSetProperty(s, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: 120 as CFNumber)
         // the capture is sRGB-converted BT.709 video range: say so, or the iPad guesses and the colours wash out
         VTSessionSetProperty(s, key: kVTCompressionPropertyKey_ColorPrimaries, value: kCVImageBufferColorPrimaries_ITU_R_709_2)
         VTSessionSetProperty(s, key: kVTCompressionPropertyKey_TransferFunction, value: kCVImageBufferTransferFunction_ITU_R_709_2)
