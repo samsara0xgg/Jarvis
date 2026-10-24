@@ -16,6 +16,7 @@ from jarvis.runtime.daily_report import (
     DailySchedule,
     microsoft_plan,
 )
+from jarvis.runtime.day_rows import DayRows
 from jarvis.runtime.doing_run import DoingSchedule
 from jarvis.runtime.highlight_marks import HighlightMarks
 from jarvis.runtime.ledger import LedgerContext
@@ -107,6 +108,18 @@ def _about_items(
 ) -> AboutItems:
     """ADR 0298: the day line `GET /inherent/day` folds, from local stores only."""
     return AboutItems(
+        paths.event_log,
+        DaySources(
+            config.zone, config.observer.timesink_db_path, memory.db_path,
+            attachments=paths.artifacts_root / ATTACHMENTS_DIRNAME,
+            shipped=paths.root / imports.IMPORTS_DIRNAME,
+        ),
+    )
+
+
+def _day_rows(config: RuntimeConfig, memory: MemorySettings, paths: RuntimePaths) -> DayRows:
+    """ADR 0391: the rows `my_day` names by id, from the local stores the day page folds."""
+    return DayRows(
         paths.event_log,
         DaySources(
             config.zone, config.observer.timesink_db_path, memory.db_path,

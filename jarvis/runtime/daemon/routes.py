@@ -15,7 +15,11 @@ from typing import TYPE_CHECKING, Any, cast
 
 from jarvis.decision import request_confirmation
 from jarvis.deployment.launchd import supervised
-from jarvis.runtime.daemon.output_watchers import add_places, add_reactions, add_steps
+from jarvis.runtime.daemon.output_watchers import (
+    add_places_and_links,
+    add_reactions,
+    add_steps,
+)
 from jarvis.runtime.daemon.restart import restart_when_idle, restarting
 from jarvis.runtime.doing_day import page_reach, read_day_doing
 from jarvis.runtime.job_mail import served_notices, settle_notice
@@ -644,7 +648,7 @@ async def refresh_work_state_now(service: WorkStateService) -> dict[str, Any]:
 def _dress_rows(runtime: JarvisRuntime, memory_db: Path, rows: list[dict[str, object]]) -> None:
     """What a row of the conversation carries beside its words, read from the log and the topics."""
     add_steps(runtime.runtime_paths.event_log, rows)
-    add_places(runtime.runtime_paths.event_log, rows)
+    add_places_and_links(runtime.runtime_paths.event_log, rows)
     add_reactions(runtime.runtime_paths.event_log, rows)
     topics.tag_rows(memory_db, rows)
 

@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, Final
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from jarvis.execution import places_api
+from jarvis.execution.my_day_tool import turn_rows
 from jarvis.execution.transit_tool import first_leave_ms
 from jarvis.shared.lang import is_filler
 from jarvis.state import reactions
@@ -21,7 +22,7 @@ from jarvis.state.turn_facts import clarifications_asked_in_turn
 
 if TYPE_CHECKING:
 
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
     from pathlib import Path
 
     from jarvis.decision import turn_timing
@@ -241,6 +242,62 @@ def turn_places(conn: sqlite3.Connection, turn_id: str) -> list[dict[str, Any]]:
     except (sqlite3.Error, ValueError, KeyError, TypeError):
         LOGGER.warning("turn %s: its answer's places could not be read", turn_id, exc_info=True)
         return []
+
+
+LINKS_MAX: Final = 3
+LINK_TITLE_CHARS: Final = 20
+
+
+def turn_links(
+    conn: sqlite3.Connection, turn_id: str, about: Callable[[], dict[str, Any] | None],
+) -> list[dict[str, Any]]:
+    """The rows of his day this turn's answer links to (ADR 0391); none if the log cannot say.
+
+    As with the places, an unreadable row costs the phone its links, not the turn its answer.
+    """
+    try:
+        return _read_turn_links(conn, turn_id, about)
+    except (sqlite3.Error, ValueError, KeyError, TypeError):
+        LOGGER.warning("turn %s: its answer's links could not be read", turn_id, exc_info=True)
+        return []
+
+
+def _read_turn_links(
+    conn: sqlite3.Connection, turn_id: str, about: Callable[[], dict[str, Any] | None],
+) -> list[dict[str, Any]]:
+    """``[{kind, id, date, start_ms, end_ms, title}]``, at most :data:`LINKS_MAX`.
+
+    From the ``show`` lines of the answer's claims block, in their order, each kept only when it
+    names a row ``my_day`` showed her this turn or the item his phone has open (``about``, read
+    only when a line names a row she was not shown); anything else is dropped without a word. A
+    link's title is her words for it, else the row's own, cut to :data:`LINK_TITLE_CHARS`. An
+    answer sent back has no links: the one that replaced it would have written the last row.
+    """
+    checked = list(iter_events_for_turn(conn, turn_id, ("answer.claims_checked",)))
+    if not checked or checked[-1].payload.get("sent_back"):
+        return []
+    shown = checked[-1].payload.get("show") or []
+    rows = turn_rows(conn, turn_id) if shown else {}
+    opened: dict[str, Any] | None = None
+    looked = False
+    links: list[dict[str, Any]] = []
+    for one in shown:
+        row = rows.get(str(one["id"]))
+        if row is None:
+            if not looked:
+                opened, looked = about(), True
+            row = opened if opened is not None and opened["id"] == one["id"] else None
+        if row is None:
+            continue
+        links.append({**row, "title": _link_title(str(one.get("what") or row.get("title") or ""))})
+        if len(links) == LINKS_MAX:
+            break
+    return links
+
+
+def _link_title(text: str) -> str:
+    line = " ".join(text.split())
+    return line if len(line) <= LINK_TITLE_CHARS else f"{line[: LINK_TITLE_CHARS - 1]}…"
 
 
 def _read_turn_times(conn: sqlite3.Connection, turn_id: str) -> list[dict[str, Any]]:

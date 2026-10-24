@@ -876,8 +876,9 @@ SPOKEN_REPLY_FORMAT: Final[dict[str, Any]] = {
                     "The lines of the answer's claims block, as the prompt describes: one "
                     "line for each thing the answer says was done, set up, sent, shown, "
                     "cancelled, looked up or promised for later, with the receipt ids it "
-                    "rests on, and for each lookup or action it offers. An empty string when "
-                    "the answer claims and offers nothing."
+                    "rests on, for each lookup or action it offers, and for each row of his "
+                    "day it shows. An empty string when the answer claims, offers and shows "
+                    "nothing."
                 ),
             },
             "spoken": {
@@ -1866,11 +1867,15 @@ def _claims_checked(  # noqa: PLR0913 - the loop's handles, the verdicts and the
     verdicts: Sequence[claims_check.Verdict],
     *,
     had_block: bool,
-    unread: int,
+    block: str | None,
     sent_back: bool,
     **detail: bool,
 ) -> None:
-    """Write the one ``answer.claims_checked`` row of a checked reply (ADR 0320)."""
+    """Write the one ``answer.claims_checked`` row of a checked reply (ADR 0320).
+
+    ``show`` (ADR 0391) is the rows of his day the block names, ``{id, what}``, when it names any.
+    """
+    shown = [{"id": row, "what": what} for row, what in claims_check.shows(block)]
     scratch.events.append(
         emit_event(
             ctx.conn,
@@ -1879,8 +1884,9 @@ def _claims_checked(  # noqa: PLR0913 - the loop's handles, the verdicts and the
                 "turn_id": scratch.turn_id,
                 "had_block": had_block,
                 "entries": [v.to_json() for v in verdicts],
-                "unread": unread,
+                "unread": claims_check.unread(block),
                 "sent_back": sent_back,
+                **({"show": shown} if shown else {}),
                 **detail,
             },
             correlation={"turn_id": scratch.turn_id} if scratch.turn_id else None,
@@ -2019,7 +2025,7 @@ def _run_tool_use_loop(
         )
         _claims_checked(
             ctx, scratch, verdicts, had_block=block is not None,
-            unread=claims_check.unread(block), sent_back=sent_back,
+            block=block, sent_back=sent_back,
             spoken_as_written=failed and not sent_back,
         )
         if sent_back:
@@ -2136,7 +2142,7 @@ def _wrap_up_claims(
     verdicts = _judge_claims(ctx, scratch, messages, frozenset(), block)
     _claims_checked(
         ctx, scratch, verdicts, had_block=block is not None,
-        unread=claims_check.unread(block), sent_back=False,
+        block=block, sent_back=False,
         spoken_as_written=any(not v.ok for v in verdicts),
     )
     return answer.strip(), emoji
@@ -3464,7 +3470,7 @@ def _stream_spoken_request(  # noqa: C901, PLR0912, PLR0913, PLR0915 - one reque
     if hold.had_block or not reply.tool_calls:
         _claims_checked(
             ctx, scratch, hold.verdicts, had_block=hold.had_block,
-            unread=claims_check.unread(hold.block), sent_back=reply.sent_back,
+            block=hold.block, sent_back=reply.sent_back,
             spoken_as_written=hold.failed and not bounce_open,
             ended_in_call=bool(reply.tool_calls), stopped_at_call=hold.stopped_at_call,
         )

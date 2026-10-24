@@ -918,7 +918,7 @@ class StepsHost:
             limit=limit,
         )
         output_watchers.add_steps(self.log, rows)
-        output_watchers.add_places(self.log, rows)
+        output_watchers.add_places_and_links(self.log, rows)
         return {"since": "", "rows": rows, "has_more": more}
 
     async def _main(self) -> None:

@@ -138,6 +138,18 @@ def about_record(runtime: JarvisRuntime, trigger: Event) -> str | None:
         return None
 
 
+def about_row(runtime: JarvisRuntime, trigger: Event) -> dict[str, Any] | None:
+    """ADR 0391: the item this turn's phone has open, as a row its answer may link to."""
+    raw = trigger.payload.get("about")
+    if runtime.about_items is None or raw is None:
+        return None
+    try:
+        return runtime.about_items.row(clean_about(raw))
+    except Exception:  # an answer's links must never fail its turn.
+        LOGGER.exception("answer links: the about row could not be read, skipped")
+        return None
+
+
 def turn_topic(runtime: JarvisRuntime, trigger: Event) -> topics.Topic | None:
     """ADR 0390: the listed topic this turn's words were sent from; never fails the turn."""
     raw = trigger.payload.get("topic")

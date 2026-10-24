@@ -331,13 +331,16 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
     # and whether the reply had a block at all (`had_block`). `unread`: lines of the block with
     # words but no entry. `spoken_as_written`: it failed and was spoken anyway;
     # `ended_in_call` / `stopped_at_call`: the reply went on to a tool call, and speech stopped
-    # there.
+    # there. ADR 0391: `show` is the rows of his day the block names, `{id, what}`, its `show`
+    # lines, which are not judged.
     EventTypeSchema(
         event_type="answer.claims_checked",
         owner_layer="L3",
         actor="jarvis_runtime",
         required_payload=("turn_id", "had_block", "entries", "sent_back"),
-        optional_payload=("unread", "spoken_as_written", "ended_in_call", "stopped_at_call"),
+        optional_payload=(
+            "unread", "spoken_as_written", "ended_in_call", "stopped_at_call", "show",
+        ),
         schema_version=1,
     ),
     EventTypeSchema(
@@ -845,6 +848,8 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
             "times",
             # ADR 0283: the places the turn's tools returned, for the phone's map card.
             "places",
+            # ADR 0391: the rows of his day the answer links to, at most three.
+            "links",
             "response_hash",
             "response_id",
             "response_group_id",
@@ -1266,6 +1271,16 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         owner_layer="L4",
         actor="jarvis_llm",
         required_payload=("turn_id", "places"),
+        optional_payload=("action_id",),
+        schema_version=1,
+    ),
+    # ADR 0391: the rows of a day `my_day` showed her, logged so the turn's answer can link to
+    # them; `rows` are `{kind: row | outing, id, date, start_ms, end_ms, title}`.
+    EventTypeSchema(
+        event_type="day.rows_read",
+        owner_layer="L4",
+        actor="jarvis_llm",
+        required_payload=("turn_id", "rows"),
         optional_payload=("action_id",),
         schema_version=1,
     ),
