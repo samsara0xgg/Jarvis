@@ -171,7 +171,7 @@ enum LocateOutcome: Equatable, Sendable {
 
 /// phone -> host
 enum PhoneFrame: Equatable, Sendable {
-    case hello
+    case hello(voice: Bool)                     // `voice` false: the host builds no voice pipeline for this connection, so her words come as rows and no audio (她出不出声)
     case located(requestId: String, outcome: LocateOutcome)
     case say(utteranceId: String, text: String, language: String?, confidence: Double?, spoken: Bool, overHer: Bool = false, conversation: Bool = false,
              about: Data? = nil,                        // the item he has open (ADR 0214), as JSON
@@ -184,7 +184,7 @@ enum PhoneFrame: Equatable, Sendable {
     var json: Data {
         var o: [String: Any]
         switch self {
-        case .hello: o = ["type": "hello", "voice": true]
+        case .hello(let voice): o = ["type": "hello", "voice": voice]
         case .say(let id, let text, let lang, let conf, let spoken, let overHer, let conversation, let about, let attachments, let continues):
             o = ["type": "say", "utterance_id": id, "text": text, "spoken": spoken]
             if !attachments.isEmpty { o["attachments"] = attachments }
@@ -212,7 +212,7 @@ enum PhoneFrame: Equatable, Sendable {
     init?(_ data: Data) {
         guard let o = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any], let type = o["type"] as? String else { return nil }
         switch type {
-        case "hello": self = .hello
+        case "hello": self = .hello(voice: o["voice"] as? Bool ?? false)
         case "say":
             guard let id = o["utterance_id"] as? String, let text = o["text"] as? String, let spoken = o["spoken"] as? Bool else { return nil }
             self = .say(utteranceId: id, text: text, language: o["language"] as? String, confidence: (o["confidence"] as? NSNumber)?.doubleValue, spoken: spoken,
@@ -319,7 +319,7 @@ func demoVoiceWire() {
     for f in outs { assert(PlayerOut(f.bytes) == f, "\(f)") }
     assert([UInt8](PlayerOut.discardAck(1).bytes) == [0x84, 1, 0, 0, 0, 0, 0, 0, 0])
     assert(PlayerIn(Data([6, 1, 2])) == nil && PlayerIn(Data()) == nil && PlayerOut(Data([0x82, 1])) == nil)
-    let phone: [PhoneFrame] = [.hello, .say(utteranceId: "u1", text: "你好 Jarvis", language: "zh", confidence: 0.93, spoken: true),
+    let phone: [PhoneFrame] = [.hello(voice: true), .hello(voice: false), .say(utteranceId: "u1", text: "你好 Jarvis", language: "zh", confidence: 0.93, spoken: true),
                                .say(utteranceId: "u2", text: "hi", language: nil, confidence: nil, spoken: false),
                                .say(utteranceId: "u3", text: "等一下", language: "zh", confidence: 0.8, spoken: true, overHer: true, conversation: true),
                                .say(utteranceId: "u4", text: "这个几点", language: "zh", confidence: 0.9, spoken: true, about: Data(#"{"id":"r1","kind":"reminder","start_ms":1,"title":"t"}"#.utf8)),
@@ -331,7 +331,7 @@ func demoVoiceWire() {
     assert(plain?["over_her"] == nil && plain?["conversation"] == nil)
     assert(plain?["attachments"] == nil, "no files: no key, so an older host sees the say it knows")
     assert(plain?["continues"] == nil, "no earlier say: no key")
-    let flagged = (try? JSONSerialization.jsonObject(with: phone[3].json)) as? [String: Any]
+    let flagged = (try? JSONSerialization.jsonObject(with: phone[4].json)) as? [String: Any]
     assert(flagged?["over_her"] as? Bool == true && flagged?["conversation"] as? Bool == true)
     let row = RowFrame(eventType: "surface.response_chunk", eventUid: String(repeating: "a", count: 32),
                        payload: ["turn_id": "T1", "text": "好的", "sequence": 2, "phase": "final"], tsEpochMs: 1_700_000_000_000)

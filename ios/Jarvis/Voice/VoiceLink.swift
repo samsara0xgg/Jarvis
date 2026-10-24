@@ -27,6 +27,17 @@ enum LinkEvent: Sendable {
     case closed
 }
 
+/// 她出不出声: whether her answers are spoken on this phone. A phone preference, on by default. Off, the hello asks the host for no voice pipeline: her words come as rows and no audio
+/// (the host's `ready.voice` is false then, which the session already answers by showing her words whole). The line asks the host again when it changes.
+enum VoicePrefs {
+    static let key = "voice.spoken"
+    static let changed = Notification.Name("jarvis.voicePrefs.spoken")
+    static var spoken: Bool {
+        get { UserDefaults.standard.object(forKey: key) as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: key); NotificationCenter.default.post(name: changed, object: nil) }
+    }
+}
+
 enum LinkError: Error, LocalizedError {
     case notConnected, timeout, unpaired, host(String)
     /// a typed say's files were refused by the host's store (`attachment_refused`): its own sentence
@@ -96,10 +107,21 @@ final class WebSocketVoiceLink: VoiceLink {
     private var ready = false                        // the host answered hello: a say sent now is read at once
     private var openedAt = 0.0
     private var stopped = 0                          // barges and cancels so far: a say still waiting for the connection is dropped by one
+    private var sentVoice = true                     // the `voice` of the hello this connection opened with
 
     init(endpoint: @escaping () -> (base: URL, token: String)?) {
         self.endpoint = endpoint
         (events, out) = AsyncStream.makeStream(of: LinkEvent.self)
+        // 她出不出声 changed: a connection opened under the other answer is let go and opened again, so that it takes effect now
+        _ = NotificationCenter.default.addObserver(forName: VoicePrefs.changed, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.voiceChanged() }
+        }
+    }
+
+    private func voiceChanged() {
+        guard task != nil, sentVoice != VoicePrefs.spoken else { return }
+        close(.notConnected)
+        if wanted { backoff = 1; open() }
     }
 
     func connect() {
@@ -127,7 +149,8 @@ final class WebSocketVoiceLink: VoiceLink {
         generation += 1
         let mine = generation
         t.resume()
-        sendText(.hello)                                  // the first frame, well inside the host's 5 s
+        sentVoice = VoicePrefs.spoken
+        sendText(.hello(voice: sentVoice))                // the first frame, well inside the host's 5 s
         Task { await receive(t, mine) }
         pingTask = Task { [weak self] in                  // the host maps our clock to its own from these
             while !Task.isCancelled {

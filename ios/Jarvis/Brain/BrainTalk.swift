@@ -40,6 +40,7 @@ struct ConversationRow: Equatable {
         guard let o = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any], let rows = o["rows"] as? [[String: Any]] else { return nil }
         return rows.compactMap { r in
             guard let seq = r["seq"] as? Int, let source = r["source"] as? String, let text = r["text"] as? String else { return nil }
+            AnswerLinkStore.shared.note(id: (r["id"] as? String) ?? "", raw: r["links"])          // the 今天 rows and 地图 trips her answer points at (Sky/ChatLinks.swift)
             return ConversationRow(seq: seq, source: source, ts: (r["ts"] as? String) ?? "", text: text, steps: StepsInfo.parse(r),
                                    id: (r["id"] as? String) ?? "", attachments: RowAttachment.parse(r), reactions: RowReactions.parse(r), places: AnswerPlace.parse(r["places"]))
         }
