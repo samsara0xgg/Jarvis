@@ -431,10 +431,10 @@ struct TLBarView: View {
         }
         return ForEach(shown, id: \.h) { t in
             if phone {
-                Text(String(format: "%02d", t.h)).font(Look.figures(Look.small)).foregroundStyle(Look.ink3).frame(width: 14, height: 14)
+                Text(String(format: "%02d", t.h)).font(Look.figures(Look.small)).foregroundStyle(Look.ink3).fixedSize().frame(width: 14, height: 14)
                     .offset(x: t.x - (t.h == 24 ? 2 : 1), y: -18)          // over the bar, centred on its hour
             } else {
-                Text(String(format: "%02d", t.h)).font(AT.mono(10)).foregroundStyle(RGB(196, 204, 238).color(0.38)).frame(width: 12)
+                Text(String(format: "%02d", t.h)).font(AT.mono(10)).foregroundStyle(RGB(196, 204, 238).color(0.38)).fixedSize().frame(width: 12)          // the system's digits are a little wider than the old 12 pt: the label keeps one line, centred on its hour
                     .offset(x: t.x, y: bh + 4)
             }
         }
