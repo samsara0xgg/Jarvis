@@ -66,6 +66,8 @@ struct RemoteScreen: View {
                         trackpad.toggle()
                         live.canvas.trackpad = trackpad
                     }
+                    corner("magnifyingglass", Words.Remote.launcher) { live.canvas.chord(49, mods: 0x80000) }   // ⌥Space: Raycast's own default
+                    corner("dock.rectangle", Words.Remote.dock) { live.canvas.showDock() }
                     corner("keyboard", Words.Remote.keyboard) { live.canvas.toggleKeyboard() }
                 }
                 corner("xmark", Words.Remote.close, close)
@@ -277,14 +279,18 @@ final class RemoteCanvas: UIView, UIGestureRecognizerDelegate {
         drag.allowedScrollTypesMask = []
         scroll = UIPanGestureRecognizer(target: self, action: #selector(scrolling))
         scroll.minimumNumberOfTouches = 2
+        scroll.maximumNumberOfTouches = 2
         scroll.allowedTouchTypes = direct
         scroll.allowedScrollTypesMask = .all
         scroll.delegate = self
         pinch = UIPinchGestureRecognizer(target: self, action: #selector(pinched))
         pinch.allowedTouchTypes = direct
         pinch.delegate = self
+        let swipe = UIPanGestureRecognizer(target: self, action: #selector(swiped))
+        swipe.minimumNumberOfTouches = 3
+        swipe.allowedTouchTypes = direct
         let hover = UIHoverGestureRecognizer(target: self, action: #selector(hovering))
-        [tap, rightTap, twoTap, hold, drag, scroll, pinch, hover].forEach(addGestureRecognizer)
+        [tap, rightTap, twoTap, hold, drag, scroll, pinch, swipe, hover].forEach(addGestureRecognizer)
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -380,6 +386,24 @@ final class RemoteCanvas: UIView, UIGestureRecognizerDelegate {
         // the Mac's points per point here, its stream being at 2x
         let k = videoSize.width / 2 / (videoRect.width * zoom)
         session.input(["t": "scroll", "dx": Double(d.x * k), "dy": Double(d.y * k)])
+    }
+
+    /// Three fingers as on his Mac's trackpad: up is Mission Control, down the app's windows, left and right the next and previous desktop.
+    @objc private func swiped(_ g: UIPanGestureRecognizer) {
+        guard g.state == .ended else { return }
+        let d = g.translation(in: self)
+        guard max(abs(d.x), abs(d.y)) > 40 else { return }
+        let arrow = abs(d.y) > abs(d.x) ? (d.y < 0 ? 126 : 125) : (d.x < 0 ? 124 : 123)   // ↑ ↓ → ←: swiping left brings the desktop on the right
+        chord(arrow, mods: 0x40000)
+    }
+
+    /// The pointer to the bottom edge, where a hidden Dock rises.
+    func showDock() { send("move", CGPoint(x: 0.5, y: 1)) }
+
+    /// One key with modifiers held, pressed and let go.
+    func chord(_ code: Int, mods: Int) {
+        session.input(["t": "key", "code": code, "down": true, "mods": mods])
+        session.input(["t": "key", "code": code, "down": false, "mods": mods])
     }
 
     /// Zoom between 1x and 4x, keeping what is under the fingers under them; back at 1x the picture fits again.

@@ -36,7 +36,10 @@ final class Input {
             CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2, wheel1: dy, wheel2: dx, wheel3: 0)?.post(tap: .cghidEventTap)
         case "key":
             guard let code = j["code"] as? Int, let e = CGEvent(keyboardEventSource: nil, virtualKey: CGKeyCode(code), keyDown: j["down"] as? Bool ?? true) else { return }
-            e.flags = CGEventFlags(rawValue: UInt64(j["mods"] as? Int ?? 0))
+            var flags = CGEventFlags(rawValue: UInt64(j["mods"] as? Int ?? 0))
+            // a real arrow key also carries these, and ⌃↑ ⌃↓ ⌃← ⌃→ (Mission Control, the desktops) only answer when they are there
+            if (123 ... 126).contains(code) { flags.formUnion([.maskNumericPad, .maskSecondaryFn]) }
+            e.flags = flags
             e.post(tap: .cghidEventTap)
         case "text":
             // The on-screen keyboard's characters, whatever the Mac's layout: typed as Unicode, 20 UTF-16 units per event (the event's limit).

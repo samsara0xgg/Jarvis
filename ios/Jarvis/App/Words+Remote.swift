@@ -27,5 +27,7 @@ extension Words {
         static var listening: String { pick(zh: "在听…", en: "Listening…") }
         static var noHearing: String { pick(zh: "现在听不到千问，等 Jarvis 连上大脑再试。", en: "Qwen can't hear right now; try again once Jarvis reaches your brain.") }
         static var trackpad: String { pick(zh: "触控板模式", en: "Trackpad mode") }
+        static var launcher: String { pick(zh: "Raycast（⌥空格）", en: "Raycast (⌥Space)") }
+        static var dock: String { pick(zh: "叫出程序坞", en: "Show the Dock") }
     }
 }
