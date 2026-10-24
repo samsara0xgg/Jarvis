@@ -75,23 +75,26 @@ struct TLRowView: View, Equatable {
     var open = false                    // and it is open
     var railUp = PhoneRail.none         // the phone's rail above its circle, and below it
     var railDown = PhoneRail.none
+    var stage = false                   // beside the iPad's stage: the phone's row, opened on the stage, with › where it opens there
     @Environment(\.accessibilityReduceMotion) private var reduce
     @Environment(\.padFlight) private var flight          // set on the iPad only
 
     /// Two rows are the same when what they draw is, and where they stand (the closures come from the list and know where): a row that is the same is not drawn again, which is what keeps
     /// the list cheap while it is scrolled to the minute under a finger. What lights a row is read by the row's own `TLRowHeat`, and what it opened to reads what it shows itself.
     static func == (a: TLRowView, b: TLRowView) -> Bool {
-        a.e == b.e && a.dim == b.dim && a.top == b.top && a.room == b.room && a.inPlace == b.inPlace && a.open == b.open && a.railUp == b.railUp && a.railDown == b.railDown
+        a.e == b.e && a.dim == b.dim && a.top == b.top && a.room == b.room && a.inPlace == b.inPlace && a.open == b.open && a.railUp == b.railUp && a.railDown == b.railDown && a.stage == b.stage
     }
 
     /// the circle's size: a place's header has a dot, a stop on the way a smaller one
     private var beadSize: Double { e.kind == .stay ? 8 : e.token != nil ? TLStopToken.size : e.kind == .pause ? 7 : TLColumns.bead }
     /// where the title's line begins: the block of a row is centred in its height
     private var titleTop: Double { e.hasLine ? (e.base - 35) / 2 : (e.base - 18) / 2 }
-    /// a tap on it does something: on the phone, open it where it stands or frame its block; on the iPad, open it on the stage
-    private var touchable: Bool { inPlace ? e.touchable : e.opens }
-    /// it opens where it stands, which the arrow at its right says
-    private var arrow: Bool { inPlace && e.expands }
+    /// the phone's row: in the phone's list, or beside the iPad's stage
+    private var phone: Bool { inPlace || stage }
+    /// a tap on it does something: in the phone's row, open it (where it stands, or on the stage) or frame its block; on the footprint page, open it
+    private var touchable: Bool { phone ? e.touchable : e.opens }
+    /// it opens where it stands or on the stage, which the arrow at its right says
+    private var arrow: Bool { phone && e.expands }
     /// the column at the right that the arrow keeps clear on the phone
     private var arrowRoom: Double { inPlace ? TLColumns.arrow : 0 }
 
@@ -103,9 +106,9 @@ struct TLRowView: View, Equatable {
                 .overlay(alignment: .bottomLeading) {          // an outing's speed along it (the footprint page)
                     if !e.ribbon.isEmpty { TLRibbon(cells: e.ribbon).frame(width: TLColumns.words, height: TLRibbon.height).padding(.leading, TLColumns.text).padding(.bottom, 6) }
                 }
-                .background { TLRowHeat(id: e.id, tl: tl, inset: inPlace ? 12 : -8) }
+                .background { TLRowHeat(id: e.id, tl: tl, inset: phone ? 12 : -8, stage: stage) }
                 .contentShape(Rectangle())
-                .modifier(TLRowTap(on: touchable, tap: tap, inset: inPlace ? 12 : -8))
+                .modifier(TLRowTap(on: touchable, tap: tap, inset: phone ? 12 : -8))
                 .accessibilityElement(children: .combine)
                 .accessibilityAddTraits(touchable ? .isButton : [])
                 .accessibilityHint(arrow ? (open ? Words.Timeline.collapse : Words.Timeline.expand) : "")
@@ -117,14 +120,14 @@ struct TLRowView: View, Equatable {
                     .transition(reduce ? .opacity : TLUnfold.transition)
             }
         }
-        .background(alignment: .topLeading) { if inPlace { phoneRails } else { rails } }
+        .background(alignment: .topLeading) { if phone { phoneRails } else { rails } }
         .opacity(dim)
         .animation(.easeOut(duration: 0.15), value: dim)
     }
 
     // MARK: the line
 
-    @ViewBuilder private var lineOfRow: some View { if inPlace { phoneLine } else { line } }
+    @ViewBuilder private var lineOfRow: some View { if phone { phoneLine } else { line } }
 
     @ViewBuilder private var line: some View {
         switch e.kind {
@@ -184,9 +187,9 @@ struct TLRowView: View, Equatable {
         .opacity(e.later ? 0.62 : 1)
     }
 
-    /// the arrow of a row that opens where it stands: down, and up while it is open
+    /// the arrow of a row that opens where it stands: down, and up while it is open; beside the iPad's stage, ›
     private var chevron: some View {
-        Image(systemName: "chevron.down").font(.system(size: 10, weight: .semibold)).foregroundStyle(Look.ink2)
+        Image(systemName: stage ? "chevron.right" : "chevron.down").font(.system(size: 10, weight: .semibold)).foregroundStyle(Look.ink2)
             .frame(width: 12, height: 12)
             .rotationEffect(.degrees(open ? 180 : 0))
             .animation(reduce ? nil : .timingCurve(0.2, 0.8, 0.2, 1, duration: 0.3), value: open)
@@ -304,6 +307,7 @@ struct TLRowView: View, Equatable {
                     .foregroundStyle(e.kind == .segment ? e.color?.color ?? Look.ink2 : iconColor)
             }
             .frame(width: PhoneCol.bead, height: PhoneCol.bead)
+            .background { if let flight { Color.clear.onGeometryChange(for: CGRect.self) { $0.frame(in: .named("padHome")) } action: { flight.rects[e.id] = $0 } } }          // the iPad's stage flies this icon to its title
         }
     }
 
@@ -460,16 +464,18 @@ private struct TLPreview: View {
     }
 }
 
-/// What lights a row: the finger on the bar over it (`hot`), her answer's link to it (`linked`), and the way to what waits having just arrived at it (`flash`). It reads them itself, so that the minute moving across the bar
-/// draws these small views and not the list and its rows.
+/// What lights a row: the finger on the bar over it (`hot`), her answer's link to it (`linked`), the way to what waits having just arrived at it (`flash`), and beside the iPad's stage
+/// its being the row on the stage. It reads them itself, so that the minute moving across the bar draws these small views and not the list and its rows.
 private struct TLRowHeat: View {
     let id: String
     let tl: TimelineState
     let inset: Double
+    var stage = false
 
     var body: some View {
-        let hot = tl.hot == id || tl.linked.contains(id), flashing = tl.flash == id
+        let hot = tl.hot == id || tl.linked.contains(id), flashing = tl.flash == id, staged = stage && tl.openRow == id
         ZStack {
+            RoundedRectangle(cornerRadius: 13).fill(Color.white.opacity(staged ? 0.065 : 0)).animation(padMotion, value: staged)
             RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(hot ? 0.07 : 0)).animation(.easeOut(duration: 0.1), value: hot)
             RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(flashing ? 0.12 : 0)).animation(flashing ? nil : .easeOut(duration: 0.6), value: flashing)
         }

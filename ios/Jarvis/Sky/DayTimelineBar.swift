@@ -347,6 +347,7 @@ struct TLBarView: View {
     var blink: TLBlink?                     // a time framed for a moment
     var phone = false                       // the phone's 今天 bar (跨端UI标准 §3): hours over the bar, icons alone in the pieces, the planned as a dashed box and a pin, stars over it
     var stars: [TLStar] = []                // what he marked and she picked, over the bar at their minute (the phone's)
+    var names = false                       // the phone's bar with a name beside the icon where the piece has room (the iPad's, 跨端UI标准 §11)
 
     @Environment(\.tlBarWidth) private var bw
     @Environment(\.tlBarHeight) private var bh
@@ -361,7 +362,7 @@ struct TLBarView: View {
                 BarCanvas(scene: scene, rects: rects, radius: radius).equatable()
                 if sweeping { TLTidySweep(scene: scene, rects: rects).transition(.opacity) }
                 planned(axis)
-                TLBarLabels(scene: scene, axis: axis, reduce: reduce, iconsOnly: phone, height: bh).equatable()
+                TLBarLabels(scene: scene, axis: axis, reduce: reduce, iconsOnly: phone && !names, height: bh).equatable()
                 if let g = ghost { ghostLayer(g) }
             }
             .animation(.easeOut(duration: 0.25), value: sweeping)
@@ -392,7 +393,7 @@ struct TLBarView: View {
         let axis = self.axis(for: g)
         return ZStack(alignment: .topLeading) {
             BarCanvas(scene: g, rects: TLGeo.rects(g.pieces, axis: axis, height: bh), radius: radius).equatable()
-            TLBarLabels(scene: g, axis: axis, reduce: reduce, iconsOnly: phone, height: bh).equatable()
+            TLBarLabels(scene: g, axis: axis, reduce: reduce, iconsOnly: phone && !names, height: bh).equatable()
         }
         .frame(width: bw, height: bh, alignment: .topLeading)
         .opacity(ghostGone ? 0 : 1)

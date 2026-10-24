@@ -9,14 +9,18 @@ import SwiftUI
 @Observable final class PadFlight {
     struct Item { let id: String; let symbol: String; let color: Color; let from: CGRect; var to: CGRect? }
     @ObservationIgnored var rects: [String: CGRect] = [:]          // row icons, rewritten while the list scrolls: kept out of observation
+    @ObservationIgnored var titles: [String: CGRect] = [:]         // the stage's title icons, which may be laid out before the flight begins
     var item: Item?
 
     func begin(_ e: TLEntry) {
         guard !e.symbol.isEmpty, let from = rects[e.id] else { item = nil; return }
-        item = Item(id: e.id, symbol: e.symbol, color: e.color.map { $0.color } ?? SetColor.ink.opacity(0.82), from: from, to: nil)
+        item = Item(id: e.id, symbol: e.symbol, color: e.color.map { $0.color } ?? SetColor.ink.opacity(0.82), from: from, to: titles[e.id])
     }
     /// the title's icon is in place: the flight lands on it
-    func land(_ id: String, at r: CGRect) { if item?.id == id, item?.to != r { item?.to = r } }
+    func land(_ id: String, at r: CGRect) {
+        titles[id] = r
+        if item?.id == id, item?.to != r { item?.to = r }
+    }
 }
 
 private struct PadFlightKey: EnvironmentKey { static let defaultValue: PadFlight? = nil }

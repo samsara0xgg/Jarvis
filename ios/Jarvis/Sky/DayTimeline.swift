@@ -633,7 +633,7 @@ struct TLList: View {
     let room: Double                    // how tall the list is under the pinned cards
     let lens: TLLens?                   // the kind brought forward: the rest is dimmed
     @Binding var nowInView: Bool
-    let inPlace: Bool                   // a row opens where it stands (the phone), not on a stage beside the list (the iPad)
+    let inPlace: Bool                   // a row opens where it stands (the phone), not on a stage beside the list (the iPad: the phone's rows, with › where they open there)
     @State private var pos: ScrollPosition
     @State private var opened: Double   // the room it was made for, which the first rows' entry is laid out for
     @State private var at = ScrollAt()  // where the list is now (written as it moves, never drawn from)
@@ -662,18 +662,17 @@ struct TLList: View {
             VStack(spacing: 0) {
                 ForEach(Array(model.entries.enumerated()), id: \.element.id) { i, e in
                     TLRowView(e: e, dim: dim(e), top: offs[i], room: room, tl: tl, engine: engine, tap: { tap(e) }, inPlace: inPlace, open: open == e.id,
-                              railUp: inPlace && i > 0 ? PhoneRail.between(model.entries[i - 1], e, ahead: nowIdx.map { i > $0 } ?? false) : .none,
-                              railDown: inPlace && i + 1 < model.entries.count ? PhoneRail.between(e, model.entries[i + 1], ahead: nowIdx.map { i + 1 > $0 } ?? false) : .none)
+                              railUp: i > 0 ? PhoneRail.between(model.entries[i - 1], e, ahead: nowIdx.map { i > $0 } ?? false) : .none,
+                              railDown: i + 1 < model.entries.count ? PhoneRail.between(e, model.entries[i + 1], ahead: nowIdx.map { i + 1 > $0 } ?? false) : .none, stage: !inPlace)
                         .equatable()
                         .modifier(Rise(rank: ranks[e.id], on: tl.reveal, reduce: reduce))
                         .transition(reduce ? .opacity : TLGrow.transition)          // what is new grows in, and what he says is not his collapses out the same way
                 }
                 if let n = model.missing {
                     Text(n).font(.system(size: Look.note)).foregroundStyle(Look.ink3).frame(maxWidth: .infinity, minHeight: TLMetrics.note, alignment: .leading)
-                        .padding(.leading, inPlace ? TLLayout.Today.side : 0)
+                        .padding(.leading, TLLayout.Today.side)
                 }
             }
-            .padding(.horizontal, inPlace ? 0 : 30)
             .animation(TLMotion.listChange(reduce: reduce), value: model.entries.map(\.id))
         }
         // room under the last row, so the line for now can be brought up to 60% of the way down on any day
@@ -703,13 +702,13 @@ struct TLList: View {
     }
 
     /// A tap on a row, with a light tick of the phone and her eyes going to it once: on the phone it opens where it stands or frames its block on the bar (`TimelineState.tapRow`), on the iPad
-    /// it opens on the stage.
+    /// it opens on the stage or frames its block (`TimelineState.padTapRow`, Pad/PadHome.swift).
     private func tap(_ e: TLEntry) {
-        guard inPlace ? e.touchable : e.opens else { return }
+        guard e.touchable else { return }
         Haptic.selection()
         engine.releaseTalk()
         if let top = inPlace ? tl.top(of: e.id, in: model) : model.top(of: e.id) { engine.glance(at: TLGaze.row(top: top + e.gap, height: e.base, scrolled: at.y)) }
-        if inPlace { tl.tapRow(e, in: model, room: room) } else { tl.openRow = e.id }
+        if inPlace { tl.tapRow(e, in: model, room: room) } else { tl.padTapRow(e) }
     }
 }
 

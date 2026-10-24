@@ -7,6 +7,7 @@ struct HerBadge: View {
     let engine: StarEngine
     let ui: StarUI
     @Environment(\.accessibilityReduceMotion) private var reduce
+    var seat: (at: CGPoint, r: Double)?     // where her middle is and her radius, in this view's W x H, where she is not on the phone's stage (the iPad's her)
     @State private var shown = 0            // the last number, kept while the badge grows back into her
 
     private static let ink = Color(red: 27 / 255, green: 19 / 255, blue: 5 / 255)           // #1B1305
@@ -16,7 +17,7 @@ struct HerBadge: View {
     var body: some View {
         let n = ui.tl.waitingCount, on = n > 0 && HomeModule.shared.isTimeline && ui.tlHome
         TimelineView(.animation(paused: !on && shown == 0)) { _ in
-            let c = engine.seat, s = engine.seatR.value / Self.disc
+            let c = seat?.at ?? engine.seat, s = (seat?.r ?? engine.seatR.value) / Self.disc
             Button {
                 engine.showPage(.day)
                 ui.tl.waitingTap += 1
