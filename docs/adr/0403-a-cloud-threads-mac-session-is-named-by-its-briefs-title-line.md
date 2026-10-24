@@ -1,4 +1,4 @@
-# ADR 0403 — A cloud thread's Mac session is named by its brief's first line
+# ADR 0403 — A cloud thread's Mac session is named by its brief's title line
 
 **Status:** Accepted
 **Date:** 2026-10-24
@@ -21,10 +21,12 @@
 
 ## Decision
 
-The Mac shipper takes one line of text from a session: the first line of a meta (harness-made)
-user entry that comes before any prompt of his, when that line starts with `Thread title:`. The
-rest of it, at most 200 characters, is the field `thread_title`; nothing else of the brief, and
-nothing from any later entry, is copied. The day line names a `code` item by it after
+The Mac shipper takes one line of text from a session: the first line that starts with
+`Thread title:` (leading spaces aside) in a user entry up to and including his first prompt. The
+brief arrives wrapped in a relay tag and a note, so the line is not the entry's first; Remote
+Control instructions may arrive as the first prompt. The rest of the line, at most 200
+characters, is the field `thread_title`; nothing else of the entry, and nothing from any later
+entry, is copied. The day line names a `code` item by it after
 `custom_title` and `desktop_title` and before `ai_title` and `agent_name`.
 
 Threads started before the line existed are named once by hand: `imports/thread-names.json` on
