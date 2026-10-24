@@ -19,6 +19,7 @@ from jarvis.decision.pre_route import ToolCueConfigError, load_tool_cues
 from jarvis.decision.tier0 import Tier0ConfigError, load_tier0_table, validate_tier0_table
 from jarvis.deployment.models import default_meaning_dir
 from jarvis.execution.archive_tool import build_archive_tool
+from jarvis.execution.body_tool import build_body_tool
 from jarvis.execution.conversation_tool import build_conversation_tool
 from jarvis.execution.dashboard_tool import build_dashboard_tool
 from jarvis.execution.jobs_tool import JobsSource, build_jobs_tool
@@ -241,6 +242,12 @@ def _register_my_day(registry: ToolRegistry, sources: LedgerSources) -> None:
         registry.register(tool)
 
 
+def _register_body(registry: ToolRegistry, sources: LedgerSources) -> None:
+    """``body`` (ADR 0388): every Health measure from his watch and phone, by day or hours."""
+    for tool in build_body_tool(sources.event_log, sources.zone):
+        registry.register(tool)
+
+
 @dataclass(frozen=True)
 class Catalog:
     """What :func:`register_catalog` hands back besides the registry."""
@@ -285,6 +292,7 @@ def register_catalog(  # noqa: PLR0913 - one call site per caller, the dependenc
     _register_archive(registry, memory_db, paths.root)
     _register_tidy(registry, doing)
     _register_my_day(registry, ledger)
+    _register_body(registry, ledger)
     plugins.refresh_search()  # ADR 0247: every built-in tool is registered now
     return Catalog(registry, started, plugins, job_mail, home)
 

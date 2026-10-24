@@ -110,7 +110,7 @@ LIVE_READ = frozenset({
     "map_search",  # reads Google Places; its spend rows go to the sandbox's log
     "look_at_picture",  # calls the vision preset's model
     "mail",  # reads run; archive, draft and send are stubbed (_STUB_ACTIONS): his real mailbox
-    "conversation", "archive", "my_day",
+    "conversation", "archive", "my_day", "body",
     "list_plugins", "tool_search", "read_skill",
     "search_notes",  # a device tool: device_not_connected on this host
 })

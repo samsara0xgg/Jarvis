@@ -79,6 +79,7 @@ _KIND: Final[dict[str, str]] = {
     "search_records": "records",
     "conversation": "records",
     "my_day": "day",
+    "body": "body",
     "my_schedule": "calendar",
     "schedule": "calendar",
     "search_notes": "records",
