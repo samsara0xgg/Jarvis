@@ -349,11 +349,11 @@ struct FootprintDayList: View {
         .onChange(of: tl.request) { _, r in
             if r.glide && !reduce { withAnimation(TLMotion.follow) { pos.scrollTo(y: r.y) } } else { pos.scrollTo(y: r.y) }
         }
-        .frame(width: W, height: FootprintDayPage.Y.viewport + TLLayout.fade, alignment: .top)
+        .frame(width: W, height: FootprintDayPage.Y.viewport + TLLayout.fade + TLLayout.under, alignment: .top)          // to the screen's foot, under the bar
         .mask(alignment: .top) {
             VStack(spacing: 0) {
                 LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom).frame(height: TLLayout.fadeTop)
-                Color.black.frame(height: FootprintDayPage.Y.viewport - TLLayout.fadeTop)
+                Color.black.frame(height: FootprintDayPage.Y.viewport + TLLayout.under - TLLayout.fadeTop)
                 LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom).frame(height: TLLayout.fade)
             }
         }

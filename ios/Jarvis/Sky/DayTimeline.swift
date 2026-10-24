@@ -26,8 +26,10 @@ enum TLLayout {
     /// nothing of them round its ends or under it
     static let listTop = Today.listTop, fade = 24.0, fadeTop = 12.0, listBottom = HomeBar.top + 12 - fade
     /// what the list gives up at its foot while the composer is out at rest (the bar has given way to it): its fade ends 8 pt over the field
-    static var composerRoom: Double { listBottom + fade - (H - StarUI.restGap - 48 - 8) }
+    static var composerRoom: Double { StarUI.restGap + 48 + 8 }
     static var viewport: Double { listBottom - listTop }
+    /// what is under the list's visible room, down to the screen's foot: the list runs on through it under the glass bar, its rows seen through the glass
+    static var under: Double { H - listBottom - fade }
     /// what is left of the list's height under `pinned` points of cards (and the gap under them)
     static func room(pinned: Double) -> Double { viewport - (pinned > 0 ? pinned + 4 : 0) }
     /// the pinned cards of what waits on him are never taller than this
@@ -465,7 +467,7 @@ struct DayTimelineView: View {
     /// The list under the pinned top: from `TLLayout.Today.listTop` to the foot (her card stands over it and never moves it), where it runs on under the glass bar. Its top has a soft
     /// edge of 18 pt under the pinned cards, and nothing else is laid over it. The foot's fade stays where the bar is while the list moves.
     private func listArea(_ shown: Shown, away: Bool) -> some View {
-        let h = TLLayout.viewport + TLLayout.fade
+        let h = TLLayout.viewport + TLLayout.fade + TLLayout.under          // to the screen's foot, under the bar
         return ZStack(alignment: .top) {
             VStack(spacing: 0) {
                 waiting
@@ -581,7 +583,7 @@ private struct FootFade: ViewModifier {
         let field = ui.composerOut ? TLLayout.composerRoom : 0
         content.mask(alignment: .top) {
             VStack(spacing: 0) {
-                Color.black.frame(height: max(0, TLLayout.viewport - field - ui.kbLift - ui.attach.rise))
+                Color.black.frame(height: max(0, TLLayout.viewport + TLLayout.under - field - ui.kbLift - ui.attach.rise))
                 LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom).frame(height: TLLayout.fade)
                 Color.clear
             }

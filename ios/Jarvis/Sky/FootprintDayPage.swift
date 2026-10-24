@@ -157,7 +157,7 @@ struct FootprintDayPage: View {
     private var scrim: some View {
         LinearGradient(stops: [.init(color: .black.opacity(0), location: 0), .init(color: .black.opacity(0.8), location: 0.12), .init(color: .black.opacity(0.8), location: 0.78), .init(color: .black.opacity(0), location: 1)],
                        startPoint: .top, endPoint: .bottom)
-            .frame(width: W, height: TLLayout.listBottom + TLLayout.fade - 500).offset(y: 500)
+            .frame(width: W, height: H - 500).offset(y: 500)
             .allowsHitTesting(false)
     }
 }

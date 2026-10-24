@@ -40,7 +40,7 @@ struct SettingsSheet: View {
                 }
                 scrollPage(.pair, size: geo.size, fit: fit) { SettingsPairPage(isCurrent: page == .pair) { go(.main) } }
                 scrollPage(.log, size: geo.size, fit: fit) { SettingsLogPage(model: model) }
-                if asPage { foot; strip.modifier(InDesign(fit: fit)).frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading) } else { header }
+                if asPage { strip.modifier(InDesign(fit: fit)).frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading) } else { header }
             }
         }
         .foregroundStyle(SetColor.ink)
@@ -80,18 +80,6 @@ struct SettingsSheet: View {
             .opacity(current ? 1 : (reduceMotion ? 0 : (p == .main ? 0.35 : 1)))
             .allowsHitTesting(current)
             .accessibilityHidden(!current)
-    }
-
-    /// As a page, the list fades into the page colour as it goes into the bar at the foot, as the home's list does (TLLayout.listBottom): no line shows round the glass's ends or under it.
-    private var foot: some View {
-        VStack(spacing: 0) {
-            Spacer(minLength: 0)
-            LinearGradient(colors: [Look.sky.opacity(0), Look.sky], startPoint: .top, endPoint: .bottom).frame(height: TLLayout.fade)
-            Look.sky.frame(height: H - TLLayout.listBottom - TLLayout.fade)
-        }
-        .ignoresSafeArea(edges: .bottom)
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
     }
 
     // MARK: the strip (as a page)

@@ -34,14 +34,12 @@ enum HomePage: CaseIterable {
 
 enum HomeBar {
     static let side = 30.0                                   // in from each side
-    /// how tall it is, and how far up from the foot of the screen: the drawn bar's 62 and 21; on iOS 26 where the system's own bar stands (54 pt tall, its foot 25 pt over the
-    /// screen's bottom safe area: measured on iPhone 17 Pro, iOS 26.4), in design points
-    static var h: Double { stock ? 54 / scale : 62 }
-    static var foot: Double { stock ? (safeBottom + 25) / scale : 21 }
+    /// how tall it is, and how far up from the foot of the screen: the drawn bar's 62 and 21 design points; on iOS 26 where a UITabBarController puts the system's own glass (62 pt
+    /// tall, 21 pt over the screen's foot and in from its sides: measured on iPhone 17 Pro, iOS 26.4), in design points
+    static var h: Double { stock ? 62 / scale : 62 }
+    static var foot: Double { stock ? 21 / scale : 21 }
     private static var stock: Bool { if #available(iOS 26.0, *) { true } else { false } }
     private static var scale: Double { StarChartScreen.fit(UIScreen.main.bounds.size).k }
-    // ponytail: the home indicator's inset of every Face ID iPhone, not read from the window (reading it while the page is laid out re-enters the layout); an iPhone SE would want 0
-    private static let safeBottom = 34.0
     static let inset = 4.0                                   // the light round the tab it is on, inside the bar
     static var top: Double { H - foot - h }
     /// how far the field rests over its place on the conversation's page: 8 pt over the bar

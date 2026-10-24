@@ -57,7 +57,7 @@ struct StarChartScreen: View {
             // the bar at the foot: the system's own on iOS 26 (its lens follows the finger), the drawn one before it (Sky/HomeBar.swift)
             if #available(iOS 26.0, *) {
                 let shows = engine.ui.barShows
-                VStack { Spacer(); HomeStockTabs(engine: engine).frame(height: 83) }
+                VStack { Spacer(); HomeStockTabs(engine: engine).frame(height: 83) }.ignoresSafeArea(edges: .bottom)          // to the screen's foot: the bar keeps the home indicator's room itself, as a tab bar does
                     .opacity(shows ? 1 : 0).offset(y: shows ? 0 : 16).allowsHitTesting(shows).accessibilityHidden(!shows)
                     .animation(.easeOut(duration: shows ? 0.25 : 0.2), value: shows)
             } else {
