@@ -3,7 +3,7 @@ import UIKit
 import Network
 import VideoToolbox
 
-/// One connection to Jarvis Remote on his Mac: the screen comes in as H.264 and goes straight to a display layer,
+/// One connection to Jarvis Remote on his Mac: the screen comes in as HEVC and goes straight to a display layer,
 /// his touches and keys go out as small JSON events. The wire is desktop/remote's `Wire`, mirrored here.
 final class RemoteSession {
     enum State: Equatable { case connecting, live(locked: Bool), refused, closed }
@@ -116,7 +116,7 @@ final class RemoteSession {
     }
 
     private static func format(_ sets: [Data]) -> CMVideoFormatDescription? {
-        guard sets.count >= 2 else { return nil }
+        guard sets.count >= 3 else { return nil }
         var out: CMVideoFormatDescription?
         let ptrs = sets.map { d -> UnsafeMutablePointer<UInt8> in
             let p = UnsafeMutablePointer<UInt8>.allocate(capacity: d.count)
@@ -124,8 +124,8 @@ final class RemoteSession {
             return p
         }
         defer { ptrs.forEach { $0.deallocate() } }
-        CMVideoFormatDescriptionCreateFromH264ParameterSets(allocator: nil, parameterSetCount: ptrs.count, parameterSetPointers: ptrs.map { UnsafePointer($0) },
-                                                            parameterSetSizes: sets.map(\.count), nalUnitHeaderLength: 4, formatDescriptionOut: &out)
+        CMVideoFormatDescriptionCreateFromHEVCParameterSets(allocator: nil, parameterSetCount: ptrs.count, parameterSetPointers: ptrs.map { UnsafePointer($0) },
+                                                            parameterSetSizes: sets.map(\.count), nalUnitHeaderLength: 4, extensions: nil, formatDescriptionOut: &out)
         return out
     }
 

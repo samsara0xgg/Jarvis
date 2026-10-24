@@ -12,7 +12,7 @@ enum Wire {
     static let keyframe: UInt8 = 0x03   // empty: the decoder lost its place
     // Mac → iPad
     static let info: UInt8 = 0x10       // JSON {"w", "h", "locked"}: the stream's pixel size
-    static let params: UInt8 = 0x11     // H.264 parameter sets, each [UInt16 big-endian length][bytes]
+    static let params: UInt8 = 0x11     // HEVC parameter sets (VPS, SPS, PPS), each [UInt16 big-endian length][bytes]
     static let frame: UInt8 = 0x12      // [1 = keyframe][AVCC NAL units]
     static let refused: UInt8 = 0x13    // JSON {"error"}
 
@@ -196,12 +196,12 @@ final class Session: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
     private func makeEncoder(_ w: Int, _ h: Int) -> VTCompressionSession? {
         var s: VTCompressionSession?
         let spec = [kVTVideoEncoderSpecification_EnableLowLatencyRateControl: true] as CFDictionary
-        VTCompressionSessionCreate(allocator: nil, width: Int32(w), height: Int32(h), codecType: kCMVideoCodecType_H264,
+        VTCompressionSessionCreate(allocator: nil, width: Int32(w), height: Int32(h), codecType: kCMVideoCodecType_HEVC,
                                    encoderSpecification: spec, imageBufferAttributes: nil, compressedDataAllocator: nil,
                                    outputCallback: nil, refcon: nil, compressionSessionOut: &s)
         guard let s else { return nil }
         VTSessionSetProperty(s, key: kVTCompressionPropertyKey_RealTime, value: kCFBooleanTrue)
-        VTSessionSetProperty(s, key: kVTCompressionPropertyKey_ProfileLevel, value: kVTProfileLevel_H264_ConstrainedHigh_AutoLevel)
+        VTSessionSetProperty(s, key: kVTCompressionPropertyKey_ProfileLevel, value: kVTProfileLevel_HEVC_Main_AutoLevel)
         VTSessionSetProperty(s, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse)
         // ponytail: fixed bitrate sized for the tailnet at home (direct over the LAN); adapt to the link if he drives it from outside
         VTSessionSetProperty(s, key: kVTCompressionPropertyKey_AverageBitRate, value: 50_000_000 as CFNumber)
@@ -248,10 +248,10 @@ final class Session: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
         let key = !(att?[kCMSampleAttachmentKey_NotSync] as? Bool ?? false)
         if key, let fmt = sb.formatDescription {
             var params = Data(), count = 0
-            CMVideoFormatDescriptionGetH264ParameterSetAtIndex(fmt, parameterSetIndex: 0, parameterSetPointerOut: nil, parameterSetSizeOut: nil, parameterSetCountOut: &count, nalUnitHeaderLengthOut: nil)
+            CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(fmt, parameterSetIndex: 0, parameterSetPointerOut: nil, parameterSetSizeOut: nil, parameterSetCountOut: &count, nalUnitHeaderLengthOut: nil)
             for i in 0 ..< count {
                 var p: UnsafePointer<UInt8>?, n = 0
-                CMVideoFormatDescriptionGetH264ParameterSetAtIndex(fmt, parameterSetIndex: i, parameterSetPointerOut: &p, parameterSetSizeOut: &n, parameterSetCountOut: nil, nalUnitHeaderLengthOut: nil)
+                CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(fmt, parameterSetIndex: i, parameterSetPointerOut: &p, parameterSetSizeOut: &n, parameterSetCountOut: nil, nalUnitHeaderLengthOut: nil)
                 guard let p else { continue }
                 withUnsafeBytes(of: UInt16(n).bigEndian) { params.append(contentsOf: $0) }
                 params.append(p, count: n)
