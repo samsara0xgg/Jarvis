@@ -46,13 +46,19 @@ final class Session: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
     // An iPad without acks: past this many bytes waiting to enter TCP the link is behind. TCP's own buffer (up to 4 MB) sits under it,
     // which on a slow link is seconds of lag.
     private static let fullLink = 1_500_000
-    // An iPad that acks: the frames on their way to it, oldest first. Past ~0.1 s of video at the bitrate the link is behind,
-    // so what he sees is never more than that old, whatever the buffers in between hold.
+    // An iPad that acks: the frames on their way to it, oldest first, with when each went. Once the oldest has been out
+    // longer than `lag` the link is behind, so what he sees is never much older than that, whatever the buffers in between hold.
+    // (A byte budget scaled by the bitrate starved itself: a low rate gave a small budget, which stalled, which cut the rate.)
     private var acks = false
-    private var unacked: [Int] = []
+    private var unacked: [(bytes: Int, sent: UInt64)] = []
     private var unackedBytes = 0
-    private var delivered = 0           // bytes the iPad acked this second: what the link really carries
-    private var held: Bool { acks ? unackedBytes > rate / 80 : inFlight >= Session.fullLink }
+    private var delivered = 0           // bytes the iPad acked this second
+    private static let lag: UInt64 = 100_000_000
+    private var held: Bool {
+        guard acks else { return inFlight >= Session.fullLink }
+        guard let oldest = unacked.first else { return false }
+        return DispatchTime.now().uptimeNanoseconds - oldest.sent > Session.lag
+    }
     private var size = (0, 0)
     private var locked: Bool?
     private var lockWatch: DispatchSourceTimer?
@@ -127,7 +133,7 @@ final class Session: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
         case Wire.keyframe: needKey = true; reencodeLast()
         case Wire.got:
             guard !unacked.isEmpty else { return }
-            let n = unacked.removeFirst()
+            let n = unacked.removeFirst().bytes
             unackedBytes -= n
             delivered += n
             if behind && !held { behind = false; reencodeLast() }
@@ -221,7 +227,7 @@ final class Session: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
         lockWatch = t
     }
 
-    /// Once a second: a second with stalls cuts the bitrate (to just under what the iPad acked, when it acks), three clear seconds raise it. The quantiser cap that keeps text sharp
+    /// Once a second: a second with stalls cuts the bitrate, three clear seconds raise it. The quantiser cap that keeps text sharp
     /// would override a low bitrate, so it holds only while the link can afford it.
     private func adapt() {
         let was = rate
@@ -229,10 +235,9 @@ final class Session: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
         if captured > 0 {
             print("1s: captured \(captured) sent \(sentFrames) \(sentBytes * 8 / 1_000_000) Mbit delivered \(delivered * 8 / 1_000_000) Mbit stalls \(stalls) unacked \(unackedBytes / 1000) kB rate \(rate / 1_000_000)")
         }
-        let carried = delivered * 8
         captured = 0; sentFrames = 0; sentBytes = 0; delivered = 0
         if stalls > 0 {
-            rate = max(acks ? min(rate, max(carried * 85 / 100, rate / 2)) : rate * 2 / 3, Session.floorRate)
+            rate = max(rate * 2 / 3, Session.floorRate)
             clear = 0
         } else {
             clear += 1
@@ -321,7 +326,7 @@ final class Session: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
         payload.withUnsafeMutableBytes { _ = CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: n, destination: $0.baseAddress! + 1) }
         sentFrames += 1
         sentBytes += payload.count
-        if acks { unacked.append(payload.count); unackedBytes += payload.count }
+        if acks { unacked.append((payload.count, DispatchTime.now().uptimeNanoseconds)); unackedBytes += payload.count }
         send(Wire.frame, payload)
     }
 
