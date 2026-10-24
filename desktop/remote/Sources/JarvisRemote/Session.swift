@@ -40,8 +40,10 @@ final class Session: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
     private var encoder: VTCompressionSession?
     private var lastPixels: CVPixelBuffer?
     private var needKey = true
-    private var dropping = false
-    private var inFlight = 0
+    private var inFlight = 0            // bytes handed to the connection and not yet taken by TCP
+    private var behind = false          // a frame came while the link was full; the newest goes once it drains
+    // ~0.15 s of video at the bitrate: past this the link is behind, and new screens wait instead of queueing
+    private static let fullLink = 1_000_000
     private var size = (0, 0)
     private var locked: Bool?
     private var lockWatch: DispatchSourceTimer?
@@ -106,7 +108,7 @@ final class Session: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
         }
         switch type {
         case Wire.input: input.handle(json)
-        case Wire.keyframe: needKey = true; dropping = true; reencodeLast()
+        case Wire.keyframe: needKey = true; reencodeLast()
         default: break
         }
     }
@@ -118,8 +120,13 @@ final class Session: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
     }
 
     private func send(_ type: UInt8, _ payload: Data) {
-        inFlight += 1
-        conn.send(content: Wire.pack(type, payload), completion: .contentProcessed { [self] _ in q.async { self.inFlight -= 1 } })
+        inFlight += payload.count
+        conn.send(content: Wire.pack(type, payload), completion: .contentProcessed { [self] _ in
+            q.async {
+                self.inFlight -= payload.count
+                if self.behind && self.inFlight < Session.fullLink { self.behind = false; self.reencodeLast() }
+            }
+        })
     }
 
     // MARK: the screen
@@ -196,8 +203,13 @@ final class Session: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
         VTSessionSetProperty(s, key: kVTCompressionPropertyKey_RealTime, value: kCFBooleanTrue)
         VTSessionSetProperty(s, key: kVTCompressionPropertyKey_ProfileLevel, value: kVTProfileLevel_H264_ConstrainedHigh_AutoLevel)
         VTSessionSetProperty(s, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse)
-        // ponytail: fixed bitrate sized for the tailnet at home; adapt to the link if he drives it from outside
-        VTSessionSetProperty(s, key: kVTCompressionPropertyKey_AverageBitRate, value: 20_000_000 as CFNumber)
+        // ponytail: fixed bitrate sized for the tailnet at home (direct over the LAN); adapt to the link if he drives it from outside
+        VTSessionSetProperty(s, key: kVTCompressionPropertyKey_AverageBitRate, value: 50_000_000 as CFNumber)
+        VTSessionSetProperty(s, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: 60 as CFNumber)
+        // the capture is sRGB-converted BT.709 video range: say so, or the iPad guesses and the colours wash out
+        VTSessionSetProperty(s, key: kVTCompressionPropertyKey_ColorPrimaries, value: kCVImageBufferColorPrimaries_ITU_R_709_2)
+        VTSessionSetProperty(s, key: kVTCompressionPropertyKey_TransferFunction, value: kCVImageBufferTransferFunction_ITU_R_709_2)
+        VTSessionSetProperty(s, key: kVTCompressionPropertyKey_YCbCrMatrix, value: kCVImageBufferYCbCrMatrix_ITU_R_709_2)
         VTSessionSetProperty(s, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: 600 as CFNumber)
         VTCompressionSessionPrepareToEncodeFrames(s)
         return s
@@ -209,6 +221,7 @@ final class Session: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
               let raw = info[.status] as? Int, SCFrameStatus(rawValue: raw) == .complete,
               let pixels = sb.imageBuffer else { return }
         lastPixels = pixels
+        if inFlight >= Session.fullLink { behind = true; return }
         encode(pixels, at: sb.presentationTimeStamp)
     }
 
@@ -228,17 +241,12 @@ final class Session: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
         }
     }
 
-    /// A link that falls behind drops frames until the next keyframe rather than queueing seconds of stale screen.
+    /// Every encoded frame goes: a link that falls behind holds back the capture instead (above), so no frame is missing from the chain.
     private func ship(_ sb: CMSampleBuffer) {
         guard !ended, let block = sb.dataBuffer else { return }
         let att = (CMSampleBufferGetSampleAttachmentsArray(sb, createIfNecessary: false) as? [[CFString: Any]])?.first
         let key = !(att?[kCMSampleAttachmentKey_NotSync] as? Bool ?? false)
-        if !key && (dropping || inFlight > 4) {
-            if !dropping { dropping = true; needKey = true }
-            return
-        }
         if key, let fmt = sb.formatDescription {
-            dropping = false
             var params = Data(), count = 0
             CMVideoFormatDescriptionGetH264ParameterSetAtIndex(fmt, parameterSetIndex: 0, parameterSetPointerOut: nil, parameterSetSizeOut: nil, parameterSetCountOut: &count, nalUnitHeaderLengthOut: nil)
             for i in 0 ..< count {
