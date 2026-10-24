@@ -13,9 +13,10 @@ window.renderLoop = s => {
   h.core.motion = J.MOTION_V2; h.core.layers = J.LAYERS_ON;
   h.face = s.face; h.faceUntil = 1e15; h.out = s.out; h.look = s.look;
   h.shine.value = s.out ? 1 : 0; h.sc.value = 1;
-  const DT = 1 / 32, SUB = 32 / s.fps, input = { expr: s.face, look: s.look, still: false, pressed: false };
+  // SUB whole steps per frame, at least 32 steps a second (8 fps: 4 x 1/32 s; 30 fps: 2 x 1/60 s)
+  const SUB = Math.ceil(32 / s.fps), DT = 1 / (s.fps * SUB), input = { expr: s.face, look: s.look, still: false, pressed: false };
   let vt = 1000;
-  for (let f = 0; f < 96; f++) { vt += DT * 1000; h.core.update(vt, DT, input); }
+  for (let f = 0; f < 3 / DT; f++) { vt += DT * 1000; h.core.update(vt, DT, input); }  // 3 s to settle
   const t0 = vt; h.core.blinkAt = s.blinkMs == null ? 1e15 : t0 + s.blinkMs;
   const frames = [];
   for (let i = 0; i < s.n; i++) {

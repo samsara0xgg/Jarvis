@@ -3,31 +3,39 @@
 //
 //   node ios/Tools/her_frames/render.cjs
 //
-// Needs `npm ci` in desktop/resonance (rolldown bundles the Mac code, playwright drives Chrome). Writes
-//   ios/JarvisWatch/Her.xcassets/her-<face>-<NN>.imageset      the loops (2 px/pt; ball = BALL pt wide, image = FRAME pt, ball centred)
+// Needs `npm ci` in desktop/resonance (rolldown bundles the Mac code, playwright drives Chrome) and pngquant (brew). Writes
+//   ios/JarvisWatch/Her.xcassets/her-<face>-<NN>.dataset       the loops, as data (2 px/pt; ball = BALL pt wide, image = FRAME pt, ball centred; 256-colour)
 //   ios/JarvisWatch/Her/HerFrames.swift                        frame counts, fps and pixel sizes (generated)
 //   ios/JarvisWatchWidgets/Assets.xcassets/her-comp*.imageset  complication stills
 // Faces use the Mac's names: rest, 35 (listen), 30 (think), ask, 39 (talk), doze. Output is repeatable (seeded blinks, virtual time).
-const fs = require('node:fs'), path = require('node:path'), { createRequire } = require('node:module'), { pathToFileURL } = require('node:url');
+const fs = require('node:fs'), path = require('node:path'), { execFileSync } = require('node:child_process'), { createRequire } = require('node:module'), { pathToFileURL } = require('node:url');
 const root = path.resolve(__dirname, '../../..'), res = path.join(root, 'desktop/resonance'), req = createRequire(path.join(res, 'package.json'));
 const watch = path.join(root, 'ios/JarvisWatch'), widgets = path.join(root, 'ios/JarvisWatchWidgets');
 
-const BALL = 80, FRAME = 128, PPP = 2;   // pt; her radius R = BALL/2 css px at dpr 2 (Her caps dpr at 2)
-const FPS = 8;
-const FACES = [                          // [swift case, Mac face, look, frames, blink after ms (null: none)]; frames ~ the face's own period:
-  ['rest', 'rest', [0, .15], 24, 1100],  // one blink per 3 s loop (the Mac blinks every 3-6 s)
-  ['listen', '35', [0, 0], 26, 1100],    // head sway 3.2 s
-  ['think', '30', [0, 0], 24, 1100],
-  ['ask', 'ask', [0, .15], 26, 1100],    // head sway 3.2 s
-  ['talk', '39', [0, .3], 24, 1100],
-  ['doze', 'doze', [0, .2], 40, null],   // breath 5 s
+// her biggest on the watch: the home sprite, 236 of the 208 pt frame, is a ~170 pt ball; every smaller size scales these down
+const BALL = 170, FRAME = 272, PPP = 2;  // pt; her radius R = BALL/2 css px at dpr 2 (Her caps dpr at 2)
+const FACES = [                          // [swift case, Mac face, look, fps, frames, blink after ms (null: none)]; frames ~ the face's own period:
+  ['rest', 'rest', [0, .15], 8, 24, 1100],  // one blink per 3 s loop (the Mac blinks every 3-6 s)
+  ['listen', '35', [0, 0], 30, 96, 1100],    // head sway 3.2 s; 30 fps while he talks to her
+  ['think', '30', [0, 0], 8, 24, 1100],
+  ['ask', 'ask', [0, .15], 8, 26, 1100],    // head sway 3.2 s
+  ['talk', '39', [0, .3], 30, 96, 1100],     // 3.2 s: of the lengths 2-4.3 s, the one whose end best meets its start; 30 fps while she talks
+  ['doze', 'doze', [0, .2], 8, 40, null],   // breath 5 s
 ];
+// the loops are quantized to 256 colours (pngquant, repeatable) and kept as data assets, PNG as written: HerSprite decodes a frame
+// when it is drawn, where an image set would be kept decoded by the system, every frame of a face. ~16 MB in the app, against
+// ~26 MB as image sets compiled lossy (actool's jpeg-lzfse, the same for a quantized PNG) and ~33 MB lossless in full colour
 const COMP = { R: 14, W: 56 };           // circular complication: a 28 pt ball
 
 const imageset = (dir, name, png) => {
   const d = path.join(dir, `${name}.imageset`); fs.mkdirSync(d, { recursive: true });
   fs.writeFileSync(path.join(d, `${name}.png`), png);
   fs.writeFileSync(path.join(d, 'Contents.json'), JSON.stringify({ images: [{ filename: `${name}.png`, idiom: 'universal', scale: '2x' }], info: { author: 'xcode', version: 1 } }, null, 2) + '\n');
+};
+const dataset = (dir, name, png) => {
+  const d = path.join(dir, `${name}.dataset`); fs.mkdirSync(d, { recursive: true });
+  fs.writeFileSync(path.join(d, `${name}.png`), png);
+  fs.writeFileSync(path.join(d, 'Contents.json'), JSON.stringify({ data: [{ filename: `${name}.png`, idiom: 'universal', 'universal-type-identifier': 'public.png' }], info: { author: 'xcode', version: 1 } }, null, 2) + '\n');
 };
 const catalog = dir => { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(path.join(dir, 'Contents.json'), '{\n  "info" : { "author" : "xcode", "version" : 1 }\n}\n'); };
 const png = url => Buffer.from(url.split(',')[1], 'base64');
@@ -50,14 +58,16 @@ const png = url => Buffer.from(url.split(',')[1], 'base64');
 
   const faces = path.join(watch, 'Her.xcassets'); fs.rmSync(faces, { recursive: true, force: true }); catalog(faces);
   const rows = [];
-  for (const [name, face, look, n, blinkMs] of FACES) {
-    const urls = await p.evaluate(s => window.renderLoop(s), { face, R: BALL / 2, W: FRAME, out: true, look, n, fps: FPS, blinkMs });
-    urls.forEach((u, i) => imageset(faces, `her-${name}-${String(i).padStart(2, '0')}`, png(u)));
-    rows.push(`        case .${name}: HerClip(frames: ${n}, fps: ${FPS}, pixels: ${FRAME * PPP}, ball: ${BALL * PPP})`);
+  for (const [name, face, look, fps, n, blinkMs] of FACES) {
+    const urls = await p.evaluate(s => window.renderLoop(s), { face, R: BALL / 2, W: FRAME, out: true, look, n, fps, blinkMs });
+    const names = urls.map((u, i) => `her-${name}-${String(i).padStart(2, '0')}`);
+    names.forEach((s, i) => dataset(faces, s, png(urls[i])));
+    execFileSync('pngquant', ['--force', '--ext', '.png', '--strip', '256', ...names.map(s => path.join(faces, `${s}.dataset`, `${s}.png`))]);
+    rows.push(`        case .${name}: HerClip(frames: ${n}, fps: ${fps}, pixels: ${FRAME * PPP}, ball: ${BALL * PPP})`);
     console.log(name, urls.length);
   }
   fs.writeFileSync(path.join(watch, 'Her/HerFrames.swift'), `// Generated by ios/Tools/her_frames/render.cjs from the Mac's starCore + her.ts. Do not edit; rerun the script.
-// Each face is a loop of \`frames\` square PNGs named her-<face>-<NN>, \`pixels\` wide, with the ball \`ball\` pixels wide at the centre.
+// Each face is a loop of \`frames\` square PNGs (data assets) named her-<face>-<NN>, \`pixels\` wide, with the ball \`ball\` pixels wide at the centre.
 import CoreGraphics
 
 struct HerClip {
