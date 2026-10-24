@@ -535,13 +535,15 @@ def test_a_session_record_holds_what_the_log_says_and_nothing_that_was_said(
 def test_a_thread_session_is_named_by_its_briefs_first_line_and_keeps_nothing_else_of_it(
     tmp_path: Path,
 ) -> None:
-    """Only a ``Thread title:`` first line of a meta entry before his first prompt (ADR 0403)."""
+    """Only a ``Thread title:`` line of a user entry up to his first prompt (ADR 0403)."""
     root = tmp_path / ".claude" / "projects"
     log = root / "-bridge" / f"{SESSION}.jsonl"
     log.parent.mkdir(parents=True)
     log.write_bytes(_log(
-        _entry("user", "2026-10-19T05:00:00.000Z", isMeta=True, message={"content": [
-            {"type": "text", "text": "  Thread title: 语音识别「135 亿」出错\nBODY-brief"}]}),
+        _entry("user", "2026-10-19T05:00:00.000Z", isMeta=True, message={"content": (
+            '<relay from="BODY-coordinator">\n  BODY-who wrote it\n  <note>\n'
+            "    Thread title: 语音识别「135 亿」出错\n    BODY-brief\n  </note>"
+        )}),
         _entry("user", "2026-10-19T05:00:01.000Z", isMeta=True, message={
             "content": "Thread title: BODY-second-meta"}),
         _entry("user", "2026-10-19T05:00:02.000Z", message={"content": "BODY-user"}),
@@ -553,6 +555,12 @@ def test_a_thread_session_is_named_by_its_briefs_first_line_and_keeps_nothing_el
         _entry("user", "2026-10-19T06:00:01.000Z", isMeta=True, message={
             "content": "Thread title: BODY-after-a-prompt"}),
         _entry("user", "2026-10-19T06:00:02.000Z", message={"content": "Thread title: BODY-typed"}),
+    ))
+    remote = root / "-remote" / "2c3135fe-5d47-430f-933a-498ed40e5484.jsonl"
+    remote.parent.mkdir(parents=True)
+    remote.write_bytes(_log(  # Remote Control's instructions arrive as the first prompt
+        _entry("user", "2026-10-19T07:00:00.000Z", message={"content": [
+            {"type": "text", "text": "Thread title: 部署\nBODY-instructions"}]}),
     ))
     sink = Recorder()
     config = ShipConfig(tmp_path / "state.db", session_roots=(("b", root),))
@@ -566,6 +574,7 @@ def test_a_thread_session_is_named_by_its_briefs_first_line_and_keeps_nothing_el
     )
     unnamed = by_id["1c3135fe-5d47-430f-933a-498ed40e5484"]
     assert (unnamed["text"], unnamed["fields"]["thread_title"]) == ("", None)  # type: ignore[index]
+    assert by_id["2c3135fe-5d47-430f-933a-498ed40e5484"]["text"] == "部署"
     assert "BODY-" not in b"".join(body for _, body in sink.bodies).decode()
 
 

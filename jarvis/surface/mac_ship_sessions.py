@@ -4,7 +4,7 @@ One record per session file, revised as the file grows. A record holds what the 
 the session as a whole (where, on which branch and repo, with which models, how long, what it
 cost, what it was called, what Claude Code's own recap of it says) and nothing of what was said:
 no prompt, no assistant text, no tool input or output is ever copied. The one line taken from a
-message is a project thread's own name, the ``Thread title:`` line its opening brief starts with
+message is a project thread's own name, the ``Thread title:`` line of its opening brief
 (ADR 0403). A file is read once from its start and afterwards from the byte offset it was read
 to, whole lines only; the running record is kept in the shipper's state, so a restart resumes.
 
@@ -89,8 +89,12 @@ def _is_prompt(entry: dict[str, Any]) -> bool:
 
 
 def _thread_title(record: dict[str, Any], entry: dict[str, Any]) -> str | None:
-    """The name a harness-made entry before his first prompt opens with, if it opens with one."""
-    if entry.get("type") != "user" or not entry.get("isMeta") or record["user_prompts"]:
+    """The name on a ``Thread title:`` line of a user entry up to his first prompt, if any.
+
+    A thread's brief comes wrapped (a relay tag, a note), so the line is looked for on every line
+    of the entry, not only the first; Remote Control's instructions may come as the first prompt.
+    """
+    if entry.get("type") != "user" or record["user_prompts"]:
         return None
     message = entry.get("message")
     content = message.get("content") if isinstance(message, dict) else None
@@ -101,10 +105,10 @@ def _thread_title(record: dict[str, Any], entry: dict[str, Any]) -> str | None:
         )
     if not isinstance(content, str):
         return None
-    first = content.lstrip().split("\n", 1)[0]
-    if not first.startswith(_THREAD_TITLE):
-        return None
-    return first.removeprefix(_THREAD_TITLE).strip()[:_THREAD_TITLE_CAP] or None
+    for line in content.splitlines():
+        if (line := line.strip()).startswith(_THREAD_TITLE):
+            return line.removeprefix(_THREAD_TITLE).strip()[:_THREAD_TITLE_CAP] or None
+    return None
 
 
 def _take(record: dict[str, Any], entry: dict[str, Any]) -> None:  # noqa: C901 - one switch over the log's line types
