@@ -53,6 +53,8 @@ struct WatchCardView: View {
         switch card {
         case .answer(_, _, let a?): (a.id, a.actions)
         case .waiting(let w) where !w.actions.isEmpty: (w.id, w.actions)
+        case .morning: ("morning", [.init(id: "today", title: Words.Watch.seeToday), .init(id: "ok", title: Words.Watch.ok)])
+        case .unsure(let u): (u.id, [.init(id: "unsure", title: Words.Watch.yes), .init(id: "talk", title: Words.Watch.no)])   // 对: WatchActionID.unsure on the phone
         default: nil
         }
     }
@@ -75,11 +77,24 @@ struct WatchCardView: View {
                 Text(left > 0 ? Words.Watch.minutes(left) : Words.Watch.now)
                     .font(.system(size: 24, weight: .semibold, design: .rounded)).monospacedDigit().foregroundStyle(WatchTheme.ink)
                 line(Words.Watch.leaveAt(t.formatted(.dateTime.hour(.twoDigits(amPM: .omitted)).minute(.twoDigits))))
+            case .morning(let slept, let things, let first):
+                label("sun.max", Words.Watch.morning, WatchTheme.muted)
+                Text(Words.Watch.slept(slept)).font(.system(size: 18, weight: .semibold)).foregroundStyle(WatchTheme.ink).padding(.top, 1)
+                line(Words.Watch.today(things, first: first))
+            case .unsure(let u):
+                label("questionmark.circle", Words.Watch.unsure(u.span), WatchTheme.muted)
+                HStack(alignment: .firstTextBaseline, spacing: 5) {
+                    Image(systemName: u.symbol).font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(u.rgb.map(WatchTheme.color) ?? WatchTheme.icon)
+                    Text(Words.Watch.asked(u.title)).font(.system(size: 18, weight: .semibold)).foregroundStyle(WatchTheme.ink)
+                }
+                .padding(.top, 1)
+                if !u.line.isEmpty { line(u.line) }
             }
             if let a = actions {
                 HStack(spacing: 6) {
                     ForEach(Array(a.list.prefix(2).enumerated()), id: \.offset) { i, act in
-                        WatchPill(title: act.title, primary: i == 0, fill: isAnswer ? WatchTheme.ink : WatchTheme.amber) { answer(a.id, act.id) }
+                        WatchPill(title: act.title, primary: i == 0, fill: isAmber ? WatchTheme.amber : WatchTheme.ink, symbol: act.id == "talk" ? "mic.fill" : nil) { answer(a.id, act.id) }
                     }
                 }
                 .padding(.top, 8)
@@ -89,7 +104,8 @@ struct WatchCardView: View {
         .padding(EdgeInsets(top: 13, leading: 14, bottom: 12, trailing: 14))
     }
 
-    private var isAnswer: Bool { if case .answer = card { true } else { false } }
+    /// what waits on him has amber buttons; her own cards have white ones
+    private var isAmber: Bool { if case .waiting = card { true } else { false } }
 
     private func label(_ symbol: String, _ text: String, _ tint: Color) -> some View {
         HStack(spacing: 5) {

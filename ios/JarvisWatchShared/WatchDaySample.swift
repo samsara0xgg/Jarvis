@@ -45,6 +45,25 @@ extension WatchDay {
     /// 该出门了 two minutes before he should go
     static var sampleLeaving: WatchDay { var d = sampleQuiet; d.leaveAt = Date().addingTimeInterval(120); return d }
 
+    /// 早: the morning's first look, the boards' night and first thing
+    static var sampleMorning: WatchDay {
+        var d = sampleQuiet
+        d.slept = 400
+        d.headline = .init(title: "10:00 组会", note: "", waits: false)
+        d.next = [
+            .init(id: "meet", symbol: "person.3", title: "组会", sub: "10:00 · 还有 2 小时 18 分", right: "", planned: true),
+            .init(id: "lunch", symbol: "fork.knife", title: "和 Mia 吃午饭", sub: "", right: "12:30", planned: true),
+            .init(id: "pottery", symbol: "calendar", title: "陶艺课", sub: "", right: "22:00", planned: true),
+        ]
+        return d
+    }
+    /// a stretch she is not sure of, as on the board
+    static var sampleUnsure: WatchDay {
+        var d = sampleQuiet
+        d.unsure = .init(id: "span-920", symbol: "book", rgb: 0x8B6AD8, title: "在图书馆学习", span: "15:20–16:30", line: "UVic 图书馆待了 1 小时 10 分，Mac 没开。", yes: "在图书馆学习")
+        return d
+    }
+
     /// what he said, what she said and the card she put up, for the talk scenes
     static let sampleHeard = "陶艺课改到明天同一时间"
     static let sampleSpoken = "好，改到明天 22:00。"

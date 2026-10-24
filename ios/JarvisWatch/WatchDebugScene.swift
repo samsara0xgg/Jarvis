@@ -2,10 +2,10 @@
 import SwiftUI
 
 /// Debug only: `-watchScene <name>` puts the app in one state with a made-up day (WatchDaySample), for screenshots: the home (rest, waiting, aod), a talk
-/// (listen, think, answer), a card (reminder, leave), a page (today, ride, and today scrolled to its end), 设置 (and scrolled to its end),
+/// (listen, think, answer), a card (reminder, leave, morning, unsure), a page (today, ride, and today scrolled to its end), 设置 (and scrolled to its end),
 /// and the complications' gallery. `cycle` steps a talk listen → think → answer every 3 s, for her face changes.
 enum WatchScene: String {
-    case home, waiting, aod, listen, think, answer, reminder, leave, today, ride, complications, cycle
+    case home, waiting, aod, listen, think, answer, reminder, leave, morning, unsure, today, ride, complications, cycle
     case todayEnd = "today-end", settings, settingsMore = "settings-more"
 
     static var current: WatchScene? { UserDefaults.standard.string(forKey: "watchScene").flatMap(WatchScene.init(rawValue:)) }
@@ -17,6 +17,8 @@ enum WatchScene: String {
         switch scene {
         case .waiting, .reminder, .today, .ride, .complications, .todayEnd, .settings, .settingsMore: m.adopt(.sample)
         case .leave: m.adopt(.sampleLeaving)
+        case .morning: m.adopt(.sampleMorning); WatchCard.morningUntil = 24; UserDefaults.standard.removeObject(forKey: "watch.morningSeen")
+        case .unsure: m.adopt(.sampleUnsure)
         default: m.adopt(.sampleQuiet)
         }
         m.startTalk = { m.talk = .listening(heard: "") }

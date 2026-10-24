@@ -15,11 +15,13 @@ struct WatchPill: View {
     var title: String
     var primary: Bool
     var fill: Color = WatchTheme.amber
+    var symbol: String?
     var action: () -> Void
 
     var body: some View {
         let b = Button(action: action) {
             HStack(spacing: 4) {
+                if let symbol { Image(systemName: symbol).font(.system(size: 12, weight: .semibold)) }
                 Text(title).font(.system(size: 14.5, weight: .semibold)).lineLimit(1).minimumScaleFactor(0.7)
                 if primary { Text(Words.Watch.doubleTap).font(.system(size: 10, weight: .medium)).lineLimit(1).opacity(0.65) }
             }

@@ -18,6 +18,10 @@ struct WatchRoot: View {
     @State private var answered: Set<String> = []
     /// the 该出门了 he put away (its `leaveAt`), so it does not come back
     @State private var leaveDismissed: Date?
+    /// the stretches she was not sure of that he answered or put away (kept over a new day from the phone, which may still have one as it was)
+    @State private var putAway: Set<String> = []
+    /// the day whose 早 he has seen
+    @AppStorage("watch.morningSeen") private var morningSeen = ""
     @State private var cardHeight: CGFloat = 0
     @State private var settingsOpen: Bool
     /// the pages open scrolled to their end (the debug scenes)
@@ -51,7 +55,8 @@ struct WatchRoot: View {
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 10)) { ctx in          // 该出门了 comes up and counts down by the clock
-            let card = WatchCard.top(answer: answerCard, day: model.day, queue: queue, answered: answered, leaveDismissed: leaveDismissed, now: ctx.date)
+            let card = WatchCard.top(answer: answerCard, day: model.day, queue: queue, answered: answered, leaveDismissed: leaveDismissed, now: ctx.date,
+                                     morningSeen: morningSeen, putAway: putAway)
             stage(card, now: ctx.date)
                 .onChange(of: card != nil) { _, up in if up { withAnimation(Self.spring) { page = .home } } }          // a card lies over her in the middle
         }
@@ -206,6 +211,8 @@ struct WatchRoot: View {
         case .answer: "answer"
         case .waiting(let w): "waiting." + w.id
         case .leave: "leave"
+        case .morning: "morning"
+        case .unsure(let u): "unsure." + u.id
         }
     }
 
@@ -224,8 +231,17 @@ struct WatchRoot: View {
     }
 
     private func answer(_ card: WatchCard, _ id: String, _ action: String) {
-        send(id, action)
-        if case .answer = card { model.talk = .idle }
+        switch card {
+        case .morning:                                          // 看今天 opens 今天要办的; 好 puts it away
+            dismiss(card)
+            if action == "today" { withAnimation(Self.spring) { page = .today } }
+        case .unsure:                                           // 对 goes to the phone; 不是 is said to her
+            dismiss(card)
+            if action == "talk" { model.startTalk() } else { model.answer(id, action) }
+        default:
+            send(id, action)
+            if case .answer = card { model.talk = .idle }
+        }
     }
 
     private func dismiss(_ card: WatchCard) {
@@ -233,6 +249,8 @@ struct WatchRoot: View {
         case .answer: model.talk = .idle
         case .waiting(let w): queue.removeAll { $0 == w.id }
         case .leave(let t): leaveDismissed = t
+        case .morning: morningSeen = model.day?.date ?? ""
+        case .unsure(let u): _ = withAnimation(Self.spring) { putAway.insert(u.id) }
         }
     }
 }
