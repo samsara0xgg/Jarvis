@@ -40,12 +40,33 @@ const dataset = (dir, name, png) => {
 const catalog = dir => { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(path.join(dir, 'Contents.json'), '{\n  "info" : { "author" : "xcode", "version" : 1 }\n}\n'); };
 const png = url => Buffer.from(url.split(',')[1], 'base64');
 
+// For the periodic loops (page.html renderPeriodic): every clock-driven motion in the core, `t * <rate>` (sin and cos of it, or `(t * r) % m`),
+// gets its rate rounded to whole cycles of the loop while window.__herLoop holds the loop's length; unset, the rate is the core's own.
+// A `% m` term's cycle is m, a sine's 2π; terms that share a rate on one line (the reading gaze's `% 1` and `% 3`) take the longer cycle.
+// Event-driven motion (hops, nods, wince, bounce) is not clocked this way; renderPeriodic keeps those events from firing.
+const RATES = 26;                        // the clocked terms in starCore.ts today: a change there should be looked at, not rounded blind
+const loopable = {
+  name: 'loopable',
+  transform(code, id) {
+    if (!id.endsWith('/starCore.ts')) return null;
+    let n = 0;
+    const lines = code.split('\n').map(line => {
+      const re = /\b(st\.t|t) \* (TAU \/ [\w.[\]]+|\.?\d[\d.]*)(?=(\)\s*%\s*(\d+))?)/g, cyc = {};
+      for (const m of line.matchAll(re)) cyc[m[2]] = Math.max(cyc[m[2]] ?? 0, m[4] ? +m[4] : 0);
+      return line.replace(re, (all, t, rate, _, mod) => { n++; return `${t} * __hq(${rate}, ${cyc[rate] ? cyc[rate] : 'TAU'}, ${JSON.stringify(rate)})`; });
+    });
+    if (n !== RATES) throw new Error(`loopable: ${n} clocked terms in starCore.ts, expected ${RATES}`);
+    return `const __hq = (w, c, src) => { const T = globalThis.__herLoop; if (!T) return w; const q = Math.round(w * T / c) * c / T;
+  (globalThis.__herLoopLog ??= {})[src + (c === Math.PI * 2 ? '' : ' %' + c)] = [w, q]; return q; };\n` + lines.join('\n');
+  },
+};
+
 (async () => {
   const { rolldown } = await import(pathToFileURL(req.resolve('rolldown')).href);
   const inline = { name: 'inline', resolveId(s, imp) { if (s.endsWith('?inline')) return '\0inline:' + path.resolve(path.dirname(imp), s.slice(0, -7)); },
     load(id) { if (id.startsWith('\0inline:')) return `export default "data:image/jpeg;base64,${fs.readFileSync(id.slice(8)).toString('base64')}";`; } };
   const out = path.join(__dirname, 'out'); fs.mkdirSync(out, { recursive: true });
-  await (await rolldown({ input: path.join(__dirname, 'entry.ts'), plugins: [inline], platform: 'browser', logLevel: 'warn' }))
+  await (await rolldown({ input: path.join(__dirname, 'entry.ts'), plugins: [inline, loopable], platform: 'browser', logLevel: 'warn' }))
     .write({ file: path.join(out, 'her-main.js'), format: 'iife', minify: true });
 
   const { chromium } = req('playwright');

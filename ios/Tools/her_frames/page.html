@@ -6,8 +6,9 @@
 const J = window.JarvisHer;
 let seed = 7; // mulberry32: the core picks blink times with Math.random
 Math.random = () => { seed = (seed + 0x6D2B79F5) | 0; let t = Math.imul(seed ^ (seed >>> 15), 1 | seed); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
-const copy = c => { const o = document.createElement('canvas'); o.width = c.width; o.height = c.height; o.getContext('2d').drawImage(c, 0, 0); return o; };
-// s: {face, R, W, out, look, n, fps, blinkMs}; returns n PNG data URLs (one loop; no cross-fade: blending two poses of her eyes ghosts them).
+// bg: a colour to flatten her onto (the opaque video frames sit on the watch's black); none keeps the alpha
+const copy = (c, bg) => { const o = document.createElement('canvas'); o.width = c.width; o.height = c.height; const g = o.getContext('2d'); if (bg) { g.fillStyle = bg; g.fillRect(0, 0, o.width, o.height); } g.drawImage(c, 0, 0); return o; };
+// s: {face, R, W, out, look, n, fps, blinkMs, bg?}; returns n PNG data URLs (one loop; no cross-fade: blending two poses of her eyes ghosts them).
 window.renderLoop = s => {
   const cv = document.createElement('canvas'), h = new J.Her(cv, s.W, s.R, true);
   h.core.motion = J.MOTION_V2; h.core.layers = J.LAYERS_ON;
@@ -22,9 +23,59 @@ window.renderLoop = s => {
   for (let i = 0; i < s.n; i++) {
     for (let k = 0; k < SUB; k++) { vt += DT * 1000; k === SUB - 1 ? h.frame(vt, DT) : h.core.update(vt, DT, input); }
     if (s.blinkMs != null && vt > t0 + s.blinkMs + 50 && h.core.blinkStart < 0) h.core.blinkAt = 1e15; // one blink per loop
-    frames.push(copy(cv));
+    frames.push(copy(cv, s.bg));
   }
   return frames.map(c => c.toDataURL('image/png'));
+};
+// A loop that is exactly periodic in s.T seconds, s.n frames at t0 + (i+1)·T/n (frame n-1 is the state at t0, so 0 follows it as 1 follows 0).
+// The bundle (render.cjs) rounds every frequency in the core's motion to whole cycles in T (window.__herLoop); here what is left:
+// - her own moments (glances, idle gestures, saccades, check-ins) never fire: they are random; she looks at s.look the whole loop
+// - one blink at s.blinkMs, done well inside the loop
+// - the stars inside turn a whole number of times in T (their speed rounded likewise), the texture angle too
+// - the shader's clock (star twinkle, nebula drift) runs on a circle: t0 + T/2π·sin(2π·phase), back to where it started at the seam
+// - 20 s to settle first, so every spring and smoothing (and think's effort ramp, 7 s) is on its steady cycle
+// s.check: one more frame at T + T/n, which must match frame 0. s: {face, R, W, out, look, T, n, blinkMs, bg?}
+window.renderPeriodic = s => {
+  window.__herLoop = s.T; window.__herLoopLog = {};
+  const cv = document.createElement('canvas'), h = new J.Her(cv, s.W, s.R, true), core = h.core;
+  core.motion = J.MOTION_V2; core.layers = J.LAYERS_ON;
+  h.face = s.face; h.faceUntil = 1e15; h.out = s.out; h.look = s.look;
+  h.shine.value = s.out ? 1 : 0; h.sc.value = 1;
+  const DT = s.T / s.n / Math.ceil(32 * s.T / s.n), SUB = Math.round(s.T / s.n / DT), input = { expr: s.face, look: s.look, still: false, pressed: false };
+  const tame = () => {
+    core.microAt = core.sacAt = core.anticAt = core.idleAt = core.sighAt = core.blinkAt = 1e15; core.checkAt = core.yawnAt = 0;
+    core.micro = [0, 0]; core.sac = [...(s.look ?? [0, 0])]; core.attn.on = false; core.attn.checkAt = 1e15; core.focus = null; core.twice = false;
+  };
+  let vt = 1000;
+  const step = draw => { vt += DT * 1000; draw ? h.frame(vt, DT) : core.update(vt, DT, input); tame(); };
+  for (let f = 0; f < Math.round(20 / DT); f++) step(false);
+  const t0 = vt, spin0 = core.spin, rate = core.s.spinV.value, U0 = core.st.t;
+  const ks = Math.round(rate * s.T / (2 * Math.PI)), kt = Math.round(.3 * rate * s.T / (2 * Math.PI));
+  const render = core.render.bind(core);
+  core.render = (S, q) => {
+    const ph = (vt - t0) / (s.T * 1000), t = core.st.t;
+    core.st.spin = spin0 + 2 * Math.PI * ks * ph;
+    core.texA = .3 * core.st.spin + (-.3 * spin0 - 2 * Math.PI * kt * ph);   // the texture angle the core draws is -0.3·spin + texA
+    core.st.t = U0 + s.T / (2 * Math.PI) * Math.sin(2 * Math.PI * ph);
+    const ok = render(S, q); core.st.t = t; return ok;                       // her motes (orbit) keep the core's own clock
+  };
+  // how far each frame is from the one before (mean of |Δ| over every channel, 0-255): steps[i] is frame i-1 to i, steps[0] the seam (n-1 to 0)
+  const frames = [], steps = [], px = c => c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+  const gap = (a, b) => { let d = 0; for (let i = 0; i < a.length; i++) d += Math.abs(a[i] - b[i]); return d / a.length; };
+  let first, prev, check;
+  for (let i = 0; i < s.n + (s.check ? 1 : 0); i++) {
+    for (let k = 0; k < SUB; k++) {
+      if (s.blinkMs != null && Math.abs(vt + DT * 1000 - (t0 + s.blinkMs)) < DT * 500) core.blinkStart = vt + DT * 1000;
+      step(k === SUB - 1);
+    }
+    const c = copy(cv, s.bg), d = px(c);
+    if (i === s.n) { check = gap(d, first); break; }
+    if (i) steps[i] = gap(prev, d); else first = d;
+    prev = d; frames.push(c);
+  }
+  steps[0] = gap(prev, first);
+  delete window.__herLoop;
+  return { frames: frames.map(c => c.toDataURL('image/png')), steps, check, spin: { rate, turns: ks, texTurns: kt }, quantized: window.__herLoopLog };
 };
 document.title = 'ready';
 </script>
