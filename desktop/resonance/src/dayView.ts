@@ -19,8 +19,8 @@ export type DayItem = {
   credit?: string; ended_reason?: string; detail?: string;
   // What his phone and iPad sync (ADR 0304, 0305): a media block's app and its top titles, a message burst's conversation and counts, a phone call's person and seconds, a phone-use block's device.
   titles?: { title: string; artist?: string }[]; conversation?: string; person?: string; device?: string; sent?: number; received?: number; duration_s?: number;
-  // How many prompts he sent in a Claude Code session (0: it ran by itself); a brain that does not say has him in all of them.
-  prompts?: number;
+  // How many prompts he sent in a Claude Code session (0: it ran by itself); a brain that does not say has him in all of them. `remote_session`: the cloud thread a Remote Control session on this Mac runs.
+  prompts?: number; remote_session?: string;
   // Where a stay was, as the phone has it.
   lat?: number; lng?: number;
 };
@@ -67,7 +67,7 @@ const MAX_MS = 8.64e15, time = (v: unknown): v is number => typeof v === 'number
 // A name the brain sent, looked up in a table: only the table's own keys count (`constructor` is no stage and no weather).
 const own = <T>(table: Record<string, T>, key: string): T | undefined => Object.hasOwn(table, key) ? table[key] : undefined;
 const bool = (v: unknown) => typeof v === 'boolean' ? v : undefined;
-const STRINGS = ['place', 'activity', 'text', 'app', 'route', 'board_stop', 'alight_stop', 'note', 'title', 'source', 'to', 'attachment', 'currency', 'direction', 'counterparty', 'project', 'account', 'credit', 'ended_reason', 'detail', 'conversation', 'person', 'device'] as const;
+const STRINGS = ['place', 'activity', 'text', 'app', 'route', 'board_stop', 'alight_stop', 'note', 'title', 'source', 'to', 'attachment', 'currency', 'direction', 'counterparty', 'project', 'account', 'credit', 'ended_reason', 'detail', 'conversation', 'person', 'device', 'remote_session'] as const;
 const NUMBERS = ['minutes', 'active_s', 'turns', 'messages', 'chats', 'energy_kcal', 'distance_m', 'avg_hr', 'lat', 'lng', 'sent', 'received', 'duration_s', 'prompts'] as const;
 const FLAGS = ['confirmed', 'private', 'fired', 'acknowledged'] as const;
 // A place he keeps, as the day carries it under a stay and as the brain answers a write of one (an id and a name are needed).
@@ -395,19 +395,23 @@ export function doingAt(spans: readonly DoingSpan[] | undefined, ms: number, t: 
 }
 // A Claude Code session's account, as the letter it is known by.
 export const accountOf = (it: DayItem) => /^[ab]$/i.test(clean(it.account)) ? clean(it.account).toUpperCase() : '';
-// What a Claude Code session is called: its title (a worktree's folder name, `bridge-cse_…`, is no name), else just Claude Code; never its repo or folder (`project`). The glyph says the rest.
+// A Remote Control session is a cloud thread running on this Mac: the brain says so (`remote_session`); an older brain only has its worktree folder (`bridge-cse_…`) as the project or the title.
+const WORKTREE = /^bridge-cse_/i, isRemote = (it: DayItem) => !!clean(it.remote_session) || WORKTREE.test(clean(it.project)) || WORKTREE.test(clean(it.title));
+const cloudWords = (n: number, t: Say) => t([`Cloud threads running on this Mac · ${n}`, `云端线程在 Mac 上跑 · ${n} 个`]);
+// What a Claude Code session is called: its title, else just Claude Code; never its repo or folder (`project`). The glyph says the rest.
 // The session's own name (「部署」) goes first here once the brain serves it.
-const WORKTREE = /^bridge-cse_/i, named = (s: string) => WORKTREE.test(s) ? '' : s;
-export const codeName = (it: DayItem, t: Say) => named(clean(it.title)) || t(['Claude Code', 'Claude Code']);
-// Sessions as the lines of a stretch or of the card: his (prompts above 0, or not said) are one line per name, with how many when more than one; the ones that ran by
-// themselves are one line together. Each line's key is its earliest session's id; `items` are in time order.
+export const codeName = (it: DayItem, t: Say) => isRemote(it) ? cloudWords(1, t) : clean(it.title) || t(['Claude Code', 'Claude Code']);
+// Sessions as the lines of a stretch or of the card: the cloud threads are one line (even one alone), his others (prompts above 0, or not said) one line per name, with how many
+// when more than one; the ones that ran by themselves are one line together. Each line's key is its earliest session's id; `items` are in time order.
 export type CodeLine = { key: string; title: string; detail: string; items: DayItem[] };
 export function codeLines(list: DayItem[], t: Say): CodeLine[] {
-  const mine = new Map<string, DayItem[]>(), bg: DayItem[] = [];
+  const mine = new Map<string, DayItem[]>(), bg: DayItem[] = [], cloud: DayItem[] = [];
   for (const it of [...list].sort((a, b) => a.start_ms - b.start_ms)) {
-    if ((it.prompts ?? 1) > 0) { const name = codeName(it, t); mine.set(name, [...mine.get(name) ?? [], it]); } else bg.push(it);
+    if (isRemote(it)) cloud.push(it);
+    else if ((it.prompts ?? 1) > 0) { const name = codeName(it, t); mine.set(name, [...mine.get(name) ?? [], it]); } else bg.push(it);
   }
   const out: CodeLine[] = [...mine].map(([title, items]) => ({ key: items[0].id, title, detail: items.length > 1 ? t([`${items.length} sessions`, `${items.length} 个会话`]) : '', items }));
+  if (cloud.length) out.push({ key: cloud[0].id, title: cloudWords(cloud.length, t), detail: '', items: cloud });
   if (bg.length) out.push({ key: bg[0].id, title: out.length ? t([`${bg.length} more background ${bg.length === 1 ? 'session' : 'sessions'}`, `另有 ${bg.length} 个后台会话`]) : t([`${bg.length} background ${bg.length === 1 ? 'session' : 'sessions'}`, `${bg.length} 个后台会话`]), detail: '', items: bg });
   return out.sort((a, b) => a.items[0].start_ms - b.items[0].start_ms);
 }
