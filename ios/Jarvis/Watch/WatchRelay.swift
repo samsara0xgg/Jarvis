@@ -184,6 +184,7 @@ final class WatchRelay: NSObject, WCSessionDelegate {
         guard WatchTalk.canListen else { return fail(id, Words.Relay.cannotListen) }
         lineForTalk = PhoneLink.shared.link == nil
         PhoneLink.shared.ensure()
+        PhoneLink.shared.floorState(watch: true)            // he is talking here: the other devices stay out of it (ADR 0407)
         let t = WatchTalk(id: id, send: { [weak self] in self?.tell($0) }, paused: { [weak self] in Task { @MainActor in self?.finishTalk(id) } })
         talk = t; finishing = false
         feeding.withLock { f in
@@ -204,6 +205,7 @@ final class WatchRelay: NSObject, WCSessionDelegate {
     private func endTalk() {
         talk = nil; finishing = false
         feeding.withLock { $0.talk = nil }
+        PhoneLink.shared.floorState(watch: false)
         if lineForTalk { lineForTalk = false; PhoneLink.shared.settle() }
         if backgroundTask != .invalid { UIApplication.shared.endBackgroundTask(backgroundTask); backgroundTask = .invalid }
     }

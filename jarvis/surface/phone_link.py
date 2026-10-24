@@ -31,6 +31,8 @@ a newer one replaces the older (the older is closed with code 4000).
                                                           its output, and asks the host to stop
                                                           (the older phone; see ``over_her``)
     phone -> host   {"type": "cancel"}                    stop the current answer
+    phone -> host   {"type": "floor", "busy": false, "hears": true, "touched": true}
+    host -> phone   {"type": "floor", "standing": "mine" | "other" | "taken"}
     phone -> host   {"type": "ping", "t_ns": 123}
     host -> phone   {"type": "pong", "t_ns": 123, "host_ns": 456}
     host -> phone   {"type": "locate", "request_id": "<1-64 of A-Za-z0-9_->"}
@@ -148,6 +150,14 @@ the phone then streams each utterance it hears in ``hear`` frames, the very fram
 terminal's utterance does (``qwen``, or why not: ``qwen_unavailable``, ``qwen_timeout``,
 ``qwen_error``, ``qwen_empty``), kept on the row; one that is not a short word is ignored.
 
+**One device answers him (ADR 0407).** The phone sends ``floor`` as its state changes: ``busy``
+(it is in a conversation), ``hears`` (it can hear his wake word now) and, on its own,
+``touched: true`` when he touches its screen; a value that is not a bool is ignored. The host
+answers each change of the brain's floor (:mod:`jarvis.surface.voice_floor`) with this device's
+``standing``, and sends it once after ``ready``; a host without a floor never sends it, and the
+phone keeps ``mine``. A spoken ``say`` from a device whose standing is ``taken`` is answered
+``elsewhere``, as words heard elsewhere are.
+
 **Binary frames** carry the player protocol, one WebSocket message per frame:
 :mod:`jarvis.surface.phone_player` has the layouts. After ``ready`` with ``voice: true`` the
 phone sends READY (its audio session is up); the host speaks nothing before it.
@@ -193,6 +203,7 @@ if TYPE_CHECKING:
     from jarvis.surface.terminal_events import BrainEvents
     from jarvis.surface.terminal_hearing import BrainHearing
     from jarvis.surface.terminal_voice import RowCursor
+    from jarvis.surface.voice_floor import VoiceFloor
 
 LOGGER = logging.getLogger("jarvis.surface.phone_link")
 
@@ -303,6 +314,9 @@ class PhoneHub:
 
     ``hearing`` (ADR 0404) is the brain's Qwen, shared with the voice terminals; ``None`` is a
     host that does not hear, and the phone's own recognizer writes its words.
+
+    ``floor`` (ADR 0407) is the brain's one answer to which device answers him, shared with the
+    voice terminals; ``None`` is a host without one, where every phone answers its own wake word.
     """
 
     events: BrainEvents
@@ -322,6 +336,7 @@ class PhoneHub:
     check_attachments: Callable[[Sequence[str]], object] | None = None
     resolve_topic: Callable[[str], str | None] | None = None
     hearing: BrainHearing | None = None
+    floor: VoiceFloor | None = None
     live: dict[str, _Connection] = field(default_factory=dict)
 
     def connected(self, device: str) -> bool:
@@ -340,6 +355,18 @@ class PhoneHub:
             conn.queue_threadsafe(frame) for name, conn in list(self.live.items())
             if device is None or name == device
         )
+
+    def __post_init__(self) -> None:
+        """The phones are told each time the floor moves (ADR 0407)."""
+        if self.floor is not None:
+            self.floor.on_change = self.tell_floor
+
+    def tell_floor(self) -> None:
+        """Send each connected phone its standing now (ADR 0407); callable from any thread."""
+        if self.floor is None:
+            return
+        for name, conn in list(self.live.items()):
+            conn.queue_threadsafe(_floor_frame(self.floor, name))
 
     def word_hooks(
         self, heard_elsewhere: Callable[[str, str], bool] | None = None,
@@ -418,6 +445,10 @@ class _Connection:
             return
 
 
+def _floor_frame(floor: VoiceFloor, device: str) -> str:
+    return json.dumps({"type": "floor", "standing": floor.standing(device)})
+
+
 def _hello_voice(text: str) -> bool | None:
     """Whether the hello declares voice, or ``None`` if the frame is not a hello."""
     try:
@@ -474,6 +505,8 @@ async def serve_phone(hub: PhoneHub, ws: WebSocket, device: str) -> None:
                 "hear": hub.hearing is not None,
             },
         )
+        if hub.floor is not None:
+            await conn.send_text(_floor_frame(hub.floor, device))
         await _receive(hub, conn)
     except (WebSocketDisconnect, RuntimeError):
         pass  # the phone left, or this socket was closed under us by a replacing connection
@@ -503,6 +536,8 @@ async def _end(
             LOGGER.exception("phone %s: closing its voice pipeline failed", conn.device)
     if hub.live.get(conn.device) is conn:
         del hub.live[conn.device]
+        if hub.floor is not None:
+            hub.floor.left(conn.device)
     with contextlib.suppress(RuntimeError):
         await conn.ws.close()
     LOGGER.info("phone %s: disconnected", conn.device)
@@ -582,7 +617,7 @@ async def _binary(conn: _Connection, data: bytes) -> bool:
     return True
 
 
-def _control(hub: PhoneHub, conn: _Connection, text: str) -> None:
+def _control(hub: PhoneHub, conn: _Connection, text: str) -> None:  # noqa: C901 - one branch per frame type
     """One JSON control frame from the phone; anything it does not understand is ignored."""
     try:
         frame = json.loads(text)
@@ -604,10 +639,22 @@ def _control(hub: PhoneHub, conn: _Connection, text: str) -> None:
         conn.send_json({"type": "pong", "t_ns": t_ns, "host_ns": host_ns})
     elif kind == "located":
         _located(hub, conn, frame)
+    elif kind == "floor" and hub.floor is not None:
+        _floor(hub.floor, conn.device, frame)
     elif kind == "barge":
         conn.spawn(_interrupt(hub, conn, reason="barge_in", cancel_turns=False))
     elif kind == "cancel":
         conn.spawn(_interrupt(hub, conn, reason="user_stop", cancel_turns=True))
+
+
+def _floor(floor: VoiceFloor, device: str, frame: dict[str, Any]) -> None:
+    """The phone's half of the voice floor (ADR 0407); a part that is not a bool is left out."""
+    busy, hears = frame.get("busy"), frame.get("hears")
+    floor.report(
+        device, busy=busy if isinstance(busy, bool) else None,
+        hears=hears if isinstance(hears, bool) else None,
+        used_ago_s=0.0 if frame.get("touched") is True else None,
+    )
 
 
 def _located(hub: PhoneHub, conn: _Connection, frame: dict[str, Any]) -> None:

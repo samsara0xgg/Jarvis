@@ -51,6 +51,7 @@ def spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - eac
     set_quiet: Callable[[str], None] | None = None,
     echo_canceller: voice_aec.EchoCanceller | None = None,
     ports: ListenPorts | None = None,
+    floor: Callable[[], str] | None = None,
 ) -> SessionAttempt:
     """Start Wave 3, or say what came of the attempt.
 
@@ -240,6 +241,7 @@ def spawn_single_ingress_session(  # noqa: C901, PLR0911, PLR0913, PLR0915 - eac
             yield_speaking=tts.set_yield_gain if tts is not None else None,
             pause_speaking=tts.pause_speaking if tts is not None else None,
             ambient=listen.ambient,
+            floor=floor,
         )
     except Exception as exc:
         LOGGER.exception(

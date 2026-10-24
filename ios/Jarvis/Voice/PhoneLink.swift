@@ -1,6 +1,7 @@
 // words: legacy
 import Foundation
 import UIKit
+import UIKit.UIGestureRecognizerSubclass
 
 // The one line to the host (/phone/ws). The voice and the typed words both go over it, and the steps of every turn come back on it; it is open while the app is
 // on screen, and a turn in flight keeps it a little longer.
@@ -35,6 +36,13 @@ final class PhoneLink {
 
     private(set) var link: VoiceLink?
     private(set) var ready = false
+    /// ADR 0407: where this phone stands on the brain's voice floor. `mine`: it answers his wake word (also while the brain says nothing). `other`: another device he
+    /// used later answers it. `taken`: another device is in a conversation with him.
+    private(set) var floor = "mine"
+    private var talking = (voice: false, watch: false)
+    private var hears = false
+    private var floorSent: [Bool]?                  // the (busy, hears) the brain was last told on this line
+    private var touchedAt = -10.0
     private var linkIsReal = false
     private var pump: Task<Void, Never>?
     private var sinks: [Int: AsyncStream<LinkEvent>.Continuation] = [:]
@@ -99,10 +107,36 @@ final class PhoneLink {
         ready = false
     }
 
+    /// This phone's half of the floor, sent as it changes: in a conversation (the voice session's, or a watch talk) and able to hear the wake word now.
+    func floorState(voice: Bool? = nil, watch: Bool? = nil, hears: Bool? = nil) {
+        if let voice { talking.voice = voice }
+        if let watch { talking.watch = watch }
+        if let hears { self.hears = hears }
+        sendFloor(touched: false)
+    }
+
+    /// He touched the screen (`TouchSeen`): the brain is told at most once a second.
+    func touched() {
+        let t = ProcessInfo.processInfo.systemUptime
+        guard t - touchedAt >= 1 else { return }
+        touchedAt = t
+        sendFloor(touched: true)
+    }
+
+    private func sendFloor(touched: Bool) {
+        let now = [talking.voice || talking.watch, hears]
+        guard ready, let link, touched || now != floorSent else { return }
+        floorSent = now
+        link.sendFrame(.floor(busy: now[0], hears: now[1], touched: touched))
+    }
+
     private func handle(_ e: LinkEvent) {
         switch e {
-        case .ready: ready = true
-        case .closed, .unpaired, .replaced: ready = false
+        case .ready: ready = true; floorSent = nil; sendFloor(touched: false)
+        case .floor(let standing):
+            if standing != floor { VoiceTrace.note("floor: \(standing)") }
+            floor = standing
+        case .closed, .unpaired, .replaced: ready = false; floor = "mine"
         case .reaction(let f): Reactions.shared.apply(f)
         case .locate(let id):
             // asked for where he is: one fix, and the answer goes back on the line that asked
@@ -156,5 +190,25 @@ final class PhoneLink {
             }
         }
         return last
+    }
+}
+
+/// Every touch on the app's windows, seen and let through (ADR 0407): he is using this device, which the brain weighs when it picks who answers his wake word.
+final class TouchSeen: UIGestureRecognizer {
+    /// One on each window of the app's scenes that has none yet; called as the app becomes active.
+    static func install() {
+        for case let scene as UIWindowScene in UIApplication.shared.connectedScenes {
+            for w in scene.windows where !(w.gestureRecognizers ?? []).contains(where: { $0 is TouchSeen }) {
+                let seen = TouchSeen(target: nil, action: nil)
+                seen.cancelsTouchesInView = false
+                seen.delaysTouchesEnded = false
+                w.addGestureRecognizer(seen)
+            }
+        }
+    }
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
+        PhoneLink.shared.touched()
+        state = .failed                             // it never recognizes, so every other gesture goes on as before
     }
 }

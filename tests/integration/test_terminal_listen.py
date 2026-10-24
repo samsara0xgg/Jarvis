@@ -505,7 +505,7 @@ def test_an_ask_waits_for_the_tells_sent_before_it_and_runs_them_in_order(tmp_pa
     assert seen[:3] == ["hold:True", "say:T1:start", "say:T1:end"]
     assert sorted(seen[3:]) == ["controls", "working"]  # answered asks run beside each other
     assert replies["a" * 32]["value"] == {"working": True}
-    assert replies["b" * 32]["value"] == {"conversation": True, "quiet": "off"}
+    assert replies["b" * 32]["value"] == {"conversation": True, "quiet": "off", "floor": "mine"}
 
 
 def test_the_answer_goes_to_the_terminal_that_heard_the_utterance(tmp_path: Path) -> None:

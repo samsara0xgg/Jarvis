@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
 
 from jarvis.surface import voice_audio, voice_session
@@ -42,6 +42,9 @@ class ModeSession:
         turn_working: Callable[[], bool] | None = None,
         set_quiet: Callable[[str], None] | None = None,
         answer_words: Callable[[str, str, str], None] | None = None,
+        floor: Callable[[], str] | None = None,
+        broadcaster: Any = None,  # noqa: ANN401 - a recorder with broadcast_voice_sync
+        judged_on_send: bool = False,
     ) -> None:
         monkeypatch.setitem(
             voice_audio._MODE_THRESHOLDS,  # noqa: SLF001 - loosened for one-frame onsets
@@ -64,7 +67,7 @@ class ModeSession:
                 wake_engine=self.wake_engine,
                 vad=voice_audio.SileroVad(mode="record"),
                 pipeline=self.pipeline,
-                broadcaster=None,
+                broadcaster=broadcaster,
                 output_active=lambda: self.speaking,
                 wake_threshold=0.5,
                 config=replace(
@@ -85,6 +88,8 @@ class ModeSession:
                 stop_speaking=self.stopped.set,
                 hold_output=hold_output,
                 supersede_unspoken=supersede_unspoken,
+                floor=floor,
+                judged_on_send=judged_on_send,
             )
             assert self.session.start().started
 

@@ -36,9 +36,11 @@ from jarvis.surface.voice_media.pipeline import StreamingTTSPipeline
 if TYPE_CHECKING:
     import sqlite3
     from collections.abc import Callable
+    from pathlib import Path
 
     from jarvis.surface import voice_controls
     from jarvis.surface.terminal_link import TerminalHub
+    from jarvis.surface.voice_floor import VoiceFloor
 
 LOGGER = logging.getLogger(__name__)
 
@@ -175,6 +177,23 @@ def per_device[T](make: Callable[[str], T]) -> Callable[[str], T]:
     return get
 
 
+def heard_elsewhere_check(
+    floor: VoiceFloor | None, event_log: Path,
+) -> Callable[[str, str, str], bool]:
+    """``(device, turn_id, text) -> bool``: the words ``device`` heard are another device's.
+
+    They are while another device is in a conversation with him (ADR 0407), and when another
+    device recorded the same words just now (ADR 0219). Blocks on the log; a worker's.
+    """
+
+    def check(device: str, _turn_id: str, text: str) -> bool:
+        return (floor is not None and floor.taken_from(device)) or device_voice.heard_elsewhere(
+            event_log, device, text,
+        )
+
+    return check
+
+
 def build_phone_hub(
     runtime: JarvisRuntime, knobs: VoiceKnobs, *, set_quiet: Callable[[str], None] | None,
 ) -> tuple[PhoneHub, Callable[[str], int | None]] | None:
@@ -195,6 +214,8 @@ def build_phone_hub(
     speech = build_phone_speech(runtime, knobs, rows)
     registry = runtime.response_runs
     mine = local_listen_ports(runtime, None)
+    # ADR 0407: on a brain, the phones and the voice terminals share one floor.
+    floor = None if runtime.terminal_hub is None else runtime.terminal_hub.floor
     hub = PhoneHub(
         events=events,
         rows=rows,
@@ -208,9 +229,7 @@ def build_phone_hub(
         begin_line=mine.begin_line,
         recent_speech=mine.recent_speech,
         set_quiet=set_quiet,
-        heard_elsewhere=lambda device, _turn_id, text: device_voice.heard_elsewhere(
-            runtime.runtime_paths.event_log, device, text,
-        ),
+        heard_elsewhere=heard_elsewhere_check(floor, runtime.runtime_paths.event_log),
         voiceprints=runtime.voiceprints,
         check_attachments=(
             None if runtime.attachments is None else runtime.attachments.check_for_turn
@@ -220,6 +239,7 @@ def build_phone_hub(
             else functools.partial(resolve_topic, runtime.memory.db_path)
         ),
         hearing=None if runtime.terminal_hub is None else runtime.terminal_hub.hearing,
+        floor=floor,
     )
     if runtime.locator is not None:
         # ADR 0281: a phone with a live conversation socket is asked for a fix over it.
@@ -306,9 +326,7 @@ def build_brain_listening(
         ),
         composes_into=compose if registry is not None else None,
         take_over=make_continuation_callable(runtime) if registry is not None else None,
-        heard_elsewhere=lambda device, _turn_id, text: device_voice.heard_elsewhere(
-            event_log_path, device, text,
-        ),
+        heard_elsewhere=heard_elsewhere_check(hub.floor, event_log_path),
         voiceprints=runtime.voiceprints,
         set_conversation=set_conversation,
         set_quiet=set_quiet,

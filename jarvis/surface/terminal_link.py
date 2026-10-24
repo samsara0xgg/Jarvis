@@ -44,6 +44,7 @@ from fastapi import WebSocketDisconnect
 
 from jarvis.shared.device_link import DeviceCallError
 from jarvis.surface.terminal_events import OBSERVER_EVENT_TYPES, VOICE_TERMINAL_EVENT_TYPES
+from jarvis.surface.voice_floor import VoiceFloor
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Coroutine, Mapping
@@ -121,6 +122,8 @@ class TerminalHub:
         """What answers a voice terminal's capture session (ADR 0172); set by the runtime."""
         self.hearing: BrainHearing | None = None
         """What hears a voice terminal's utterances in the cloud (ADR 0400); set with a key."""
+        self.floor = VoiceFloor()
+        """Which device answers his voice now (ADR 0407), shared with the phones."""
         self._lock = threading.Lock()
         self._links: list[_Link] = []  # oldest connection first
         self._last_name: dict[str, str] = {}

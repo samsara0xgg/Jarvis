@@ -184,11 +184,16 @@ enum PhoneFrame: Equatable, Sendable {
     case barge
     case cancel
     case ping(tNs: Int64)
+    /// this phone's half of the voice floor (ADR 0407): in a conversation, able to hear the wake word now, and (on its own) he just touched the screen
+    case floor(busy: Bool, hears: Bool, touched: Bool = false)
 
     var json: Data {
         var o: [String: Any]
         switch self {
         case .hello(let voice): o = ["type": "hello", "voice": voice]
+        case .floor(let busy, let hears, let touched):
+            o = ["type": "floor", "busy": busy, "hears": hears]
+            if touched { o["touched"] = true }
         case .say(let id, let text, let lang, let conf, let spoken, let overHer, let conversation, let about, let attachments, let continues, let topic, let engine):
             o = ["type": "say", "utterance_id": id, "text": text, "spoken": spoken]
             if let engine { o["asr_engine"] = engine }
@@ -242,6 +247,9 @@ enum PhoneFrame: Equatable, Sendable {
         case "barge": self = .barge
         case "cancel": self = .cancel
         case "ping": guard let t = (o["t_ns"] as? NSNumber)?.int64Value else { return nil }; self = .ping(tNs: t)
+        case "floor":
+            guard let busy = o["busy"] as? Bool, let hears = o["hears"] as? Bool else { return nil }
+            self = .floor(busy: busy, hears: hears, touched: o["touched"] as? Bool ?? false)
         default: return nil
         }
     }
@@ -263,6 +271,8 @@ enum HostFrame: Equatable, Sendable {
     /// the brain wants a fresh fix of where he is now; answered with `located`
     case locate(requestId: String)
     case pong(tNs: Int64, hostNs: Int64)
+    /// where this phone stands on the voice floor (ADR 0407): mine (it answers the wake word), other (another device he used later does), taken (another device is in a conversation)
+    case floor(standing: String)
     /// codes: bad_say, bad_ping, bad_frame, no_voice, retry (resend the same say), interrupt_failed; attachment_refused (the message is the store's sentence)
     /// and no_attachments (this host takes none) for a typed say with files
     case error(code: String, message: String)
@@ -284,6 +294,7 @@ enum HostFrame: Equatable, Sendable {
             o = ["type": "step", "turn_id": f.turnId, "step": f.step, "tool": f.tool, "label": f.label, "state": f.state.rawValue, "started_ms": f.startedMs,
                  "ended_ms": f.endedMs.map { $0 as Any } ?? NSNull()]
         case .pong(let t, let h): o = ["type": "pong", "t_ns": t, "host_ns": h]
+        case .floor(let s): o = ["type": "floor", "standing": s]
         case .error(let c, let m): o = ["type": "error", "code": c, "message": m]
         }
         return (try? JSONSerialization.data(withJSONObject: o, options: [.sortedKeys])) ?? Data()
@@ -320,6 +331,9 @@ enum HostFrame: Equatable, Sendable {
         case "pong":
             guard let t = (o["t_ns"] as? NSNumber)?.int64Value, let h = (o["host_ns"] as? NSNumber)?.int64Value else { return nil }
             self = .pong(tNs: t, hostNs: h)
+        case "floor":
+            guard let s = o["standing"] as? String, ["mine", "other", "taken"].contains(s) else { return nil }
+            self = .floor(standing: s)
         case "error": self = .error(code: o["code"] as? String ?? "", message: o["message"] as? String ?? "error")
         default: return nil
         }
@@ -350,7 +364,8 @@ func demoVoiceWire() {
                                .say(utteranceId: "u5", text: "", language: nil, confidence: nil, spoken: false, attachments: ["a1", "b2"]),
                                .say(utteranceId: "u6", text: "往39路的地方走", language: "zh", confidence: nil, spoken: true, overHer: true, continues: "u1"), .barge, .cancel, .ping(tNs: 1_234_567_890_123),
                                .say(utteranceId: "u7", text: "135E", language: "zh", confidence: 0.9, spoken: true, asrEngine: "qwen"),
-                               .hear(sid: "c1", op: "open", terms: ["Jarvis"]), .hear(sid: "c1", op: "audio", pcm: Data([1, 0, 255, 127])), .hear(sid: "c1", op: "finish")]
+                               .hear(sid: "c1", op: "open", terms: ["Jarvis"]), .hear(sid: "c1", op: "audio", pcm: Data([1, 0, 255, 127])), .hear(sid: "c1", op: "finish"),
+                               .floor(busy: true, hears: false), .floor(busy: false, hears: true, touched: true)]
     for f in phone { assert(PhoneFrame(f.json) == f, "\(f)") }
     // the flags go on the wire only when true
     let plain = (try? JSONSerialization.jsonObject(with: PhoneFrame.say(utteranceId: "u", text: "x", language: nil, confidence: nil, spoken: true).json)) as? [String: Any]
@@ -367,8 +382,10 @@ func demoVoiceWire() {
                              .ready(device: "phone", voice: true, sampleRate: 32_000, judges: true, hear: true),
                              .hear(sid: "c1", op: "text", text: "135"), .hear(sid: "c1", op: "done", text: "135E"), .hear(sid: "c1", op: "failed", text: "refused"),
                              .step(StepFrame(turnId: "T1", step: 1, tool: "transit", label: "查公交 · 去 UVic", state: .running, startedMs: 1_700_000_000_000, endedMs: nil)),
-                             .step(StepFrame(turnId: "T1", step: 1, tool: "transit", label: "查公交 · 去 UVic", state: .failed, startedMs: 1_700_000_000_000, endedMs: 1_700_000_004_000))]
+                             .step(StepFrame(turnId: "T1", step: 1, tool: "transit", label: "查公交 · 去 UVic", state: .failed, startedMs: 1_700_000_000_000, endedMs: 1_700_000_004_000)),
+                             .floor(standing: "mine"), .floor(standing: "other"), .floor(standing: "taken")]
     for f in host { assert(HostFrame(f.json) == f, "\(f)") }
+    assert(HostFrame(Data(#"{"type":"floor","standing":"nobody"}"#.utf8)) == nil, "a standing the phone does not know is dropped, so it stays where it was")
     // an old host: no judges, no verdict
     assert(HostFrame(Data(#"{"type":"ready","device":"phone","voice":true,"sample_rate":32000}"#.utf8)) == .ready(device: "phone", voice: true, sampleRate: 32_000, judges: false))
     assert(HostFrame(Data(#"{"type":"said","utterance_id":"u1","turn_id":"T1"}"#.utf8)) == .said(utteranceId: "u1", turnId: "T1", verdict: "turn"))

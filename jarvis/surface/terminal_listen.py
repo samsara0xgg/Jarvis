@@ -29,7 +29,8 @@ utterance the final words, as the pipeline     ``{"verdict": "turn", "event_uid"
 working  (none)                                ``{"working": bool}``: a turn is in flight
 interrupt source                               ``{"outcome": str}``: generation cancel
 cancel_runs (none)                             ``{}``
-controls (none)                                ``{"conversation": bool, "quiet": str}``
+controls busy, hears, idle_s (each optional)  ``{"conversation": bool, "quiet": str,
+                                               "floor": "mine" | "other" | "taken"}``
 conversation on, reason                        ``{}``: set conversation mode
 quiet    level                                 ``{}``
 polish   raw, context, language, vocab         ``{"text": str}``: dictation's words polished
@@ -47,6 +48,12 @@ microphone that heard it), then same-words-from-another-device (ADR 0219), then 
 and Jev, then, for a turn, the unspoken answer it replaces is dropped (ADR 0074) before the row
 is written; the row keeps the voiceprint's score, never its embedding. The terminal acts on the
 verdict it gets back.
+
+``controls`` is also the terminal's half of the voice floor (ADR 0407,
+:mod:`jarvis.surface.voice_floor`): it says whether the terminal is in a conversation, whether
+it can hear his wake word now and how many seconds ago he last used its keyboard or mouse, and
+gets back where it stands. Conversation mode on the brain counts as the terminal being in a
+conversation, and ``conversation`` with ``on`` says so at once.
 
 ``interrupt`` and ``cancel_runs`` act for the terminal that sent them, which the brain knows
 from the link: they touch the turns that terminal opened and no others (ADR 0219), and the
@@ -78,6 +85,7 @@ from jarvis.state.quiet_mode import LEVELS as QUIET_LEVELS
 from jarvis.state.voiceprint import Scored, Voiceprint, VoiceprintBook
 from jarvis.surface import word_judge
 from jarvis.surface.terminal_speaker import BrainCallError
+from jarvis.surface.voice_floor import STANDINGS
 from jarvis.surface.voice_pipeline import UtteranceJudgedError
 
 if TYPE_CHECKING:
@@ -100,8 +108,8 @@ ASKS: Final = frozenset(
         "polish",
     },
 )
-_DEVICE_OPS: Final = frozenset({"interrupt", "cancel_runs"})
-"""The asks whose hook is told which terminal sent them (ADR 0219)."""
+_DEVICE_OPS: Final = frozenset({"interrupt", "cancel_runs", "controls", "conversation"})
+"""The asks whose hook is told which terminal sent them (ADR 0219, 0407)."""
 TELLS: Final = frozenset({"hold", "say"})
 
 UTTERANCE_TIMEOUT_S: Final = 8.0
@@ -212,12 +220,12 @@ class BrainListening:
         self.hooks = ListenHooks()
         self._last: _Link | None = None  # the terminal that last sent a turn
         self._ops: dict[str, Callable[[Mapping[str, Any]], Any]] = {
-            "working": self._working, "controls": self._controls,
-            "conversation": self._conversation, "quiet": self._quiet, "polish": self._polish,
+            "working": self._working, "quiet": self._quiet, "polish": self._polish,
             "hold": self._hold, "say": self._say,
         }
         self._device_ops: dict[str, Callable[[str, Mapping[str, Any]], Any]] = {
             "interrupt": self._interrupt, "cancel_runs": self._cancel_runs,
+            "controls": self._controls, "conversation": self._conversation,
         }
 
     # -- frames ------------------------------------------------------------------------
@@ -252,6 +260,7 @@ class BrainListening:
             self._last = None
         if state is None:
             return
+        self._hub.floor.left(link.name)
         running = [*state.tasks, *([state.worker] if state.worker is not None else [])]
         for task in running:
             task.cancel()
@@ -452,15 +461,25 @@ class BrainListening:
             self.hooks.cancel_runs(device)
         return {}
 
-    def _controls(self, _args: Mapping[str, Any]) -> dict[str, Any]:
+    def _controls(self, device: str, args: Mapping[str, Any]) -> dict[str, Any]:
         hook = self.hooks.controls
         state = hook() if hook is not None else {}
-        return {"conversation": state.get("conversation") is True,
-                "quiet": state.get("quiet", "off")}
+        conversation = state.get("conversation") is True
+        hears, idle_s = args.get("hears"), args.get("idle_s")
+        floor = self._hub.floor
+        floor.report(
+            device, busy=conversation or args.get("busy") is True,
+            hears=hears if isinstance(hears, bool) else None,
+            used_ago_s=float(idle_s) if isinstance(idle_s, int | float) else None,
+        )
+        return {"conversation": conversation, "quiet": state.get("quiet", "off"),
+                "floor": floor.standing(device)}
 
-    def _conversation(self, args: Mapping[str, Any]) -> dict[str, Any]:
+    def _conversation(self, device: str, args: Mapping[str, Any]) -> dict[str, Any]:
+        on = _flag(args, "on")
         if self.hooks.set_conversation is not None:
-            self.hooks.set_conversation(_flag(args, "on"), _text(args, "reason", _ID_CHARS))
+            self.hooks.set_conversation(on, _text(args, "reason", _ID_CHARS))
+        self._hub.floor.report(device, busy=on)
         return {}
 
     def _quiet(self, args: Mapping[str, Any]) -> dict[str, Any]:
@@ -732,6 +751,11 @@ class LinkedControls:
     and a worker keeps the copy and the brain in step: it applies the session's changes in
     order (waiting for the brain to take each), and reads the brain's state once a second, so a
     switch flipped from a surface reaches the terminal. Mute is per device and not here.
+
+    The same poll carries this terminal's half of the voice floor (ADR 0407): ``report``, when
+    set, says whether it can hear his wake word and how long ago he last used this Mac, and
+    ``floor`` is where the brain's answer puts it, ``mine`` until the brain says otherwise and
+    as soon as this terminal turns conversation mode on itself.
     """
 
     def __init__(self, link: VoiceLink, *, poll_s: float = CONTROLS_POLL_S) -> None:
@@ -744,6 +768,13 @@ class LinkedControls:
         self._thread: threading.Thread | None = None
         self.on_surface_exit: Callable[[], None] | None = None
         """Called when a surface turned conversation off while it was on here."""
+        self.report: Callable[[], dict[str, Any]] | None = None
+        """``{"hears": bool, "idle_s": float | None}`` of this terminal, read once a poll."""
+        self._floor: str = "mine"
+
+    def floor(self) -> str:
+        """This terminal's standing on the voice floor: ``mine``, ``other`` or ``taken``."""
+        return self._floor
 
     def conversation(self) -> bool:
         """Whether conversation mode is on."""
@@ -752,6 +783,8 @@ class LinkedControls:
     def set_conversation(self, on: bool, reason: str) -> None:  # noqa: FBT001 - session callback shape
         """The session turned conversation on (a wake) or off (a dismissal, quiet)."""
         self._conversation = on
+        if on:
+            self._floor = "mine"  # the brain makes it so as it takes the change
         self._changes.put(("conversation", {"on": on, "reason": reason}))
 
     def set_quiet(self, level: str) -> None:
@@ -783,12 +816,20 @@ class LinkedControls:
                 LOGGER.warning("the brain did not take %s %s: %s", op, args, exc)
 
     def _poll(self) -> None:
+        args: dict[str, Any] = {"busy": self._conversation}
+        if self.report is not None:
+            try:
+                args |= self.report()
+            except Exception:  # noqa: BLE001 - the floor cannot stop the controls
+                LOGGER.warning("reading this terminal's floor report failed", exc_info=True)
         try:
-            state = self._link.ask("controls", {}, timeout_s=CONTROLS_TIMEOUT_S)
+            state = self._link.ask("controls", args, timeout_s=CONTROLS_TIMEOUT_S)
         except BrainCallError:
             return
         if not isinstance(state, dict) or not self._changes.empty():
             return
+        if state.get("floor") in STANDINGS:
+            self._floor = state["floor"]
         on = state.get("conversation") is True
         was, self._conversation = self._conversation, on
         if was and not on and self.on_surface_exit is not None:

@@ -669,6 +669,19 @@ def _start_speech(speaking: _Speaking, outbox: EventOutbox) -> _Speech:
     )
 
 
+def _floor_report(speaking: _Speaking, mac: MacPower) -> dict[str, Any]:
+    """This Mac's half of the voice floor (ADR 0407).
+
+    It hears the wake word unless the microphone is muted, and he last used it when he last
+    touched its keyboard or mouse.
+    """
+    presence = mac.presence()
+    return {
+        "hears": speaking.controls is None or not speaking.controls.mic_muted,
+        "idle_s": None if presence is None else presence.idle_s,
+    }
+
+
 def _terminal_ports(turn: LinkedTurn) -> ListenPorts:
     """What a voice terminal's capture session reaches in the brain, and nothing it can leave there.
 
@@ -730,6 +743,7 @@ async def _start_listening(
             mic_muted=lambda: False if speaking.controls is None else speaking.controls.mic_muted,
             conversation=controls.conversation, set_conversation=controls.set_conversation,
             set_quiet=controls.set_quiet, echo_canceller=speech.canceller, ports=ports,
+            floor=controls.floor,
         )
         session = attempt.session
         if session is None:
@@ -758,6 +772,7 @@ async def _start_listening(
         return None
     session, dictation, tries = opened
     controls.on_surface_exit = session.dismiss
+    controls.report = functools.partial(_floor_report, speaking, MacPower())
     controls.start()
     LOGGER.info(
         "this terminal listens%s: wake, VAD and ASR run here; utterances go to the brain",

@@ -1287,6 +1287,7 @@ class DuplexVoiceSession:
         yield_speaking: Callable[[float], None] | None = None,
         pause_speaking: Callable[[bool], None] | None = None,
         ambient: ambient_sounds.AmbientSounds | None = None,
+        floor: Callable[[], str] | None = None,
     ) -> None:
         """Register all bounded subscribers before any hardware starts.
 
@@ -1345,8 +1346,17 @@ class DuplexVoiceSession:
 
         ADR 0151: ``ambient`` is fed the diagnostic lane's frames, started and stopped with
         this session.
+
+        ADR 0407: ``floor()`` is where this device stands on the voice floor
+        (:mod:`jarvis.surface.voice_floor`). ``taken``: another device is in a conversation, so a
+        wake hit is dropped and conversation mode goes off here. ``other``: another device
+        answers the wake word, so a wake hit is listened to unseen, nothing shown and
+        conversation mode left off, and only a ``turn`` verdict from the brain shows it, which
+        the brain gives when the other device did not wake. Unset is ``mine``.
         """
         self._ambient = ambient
+        self._floor = floor
+        self._unseen: set[str] = set()  # turns of a wake hit another device answers (ADR 0407)
         self._ingress = ingress
         self._wake_engine = wake_engine
         self._pipeline = pipeline
@@ -1650,15 +1660,23 @@ class DuplexVoiceSession:
             )
 
     def _conversation_open(self) -> bool:
-        """Conversation mode is on and nothing blocks the mic (mute, GPT-Live)."""
+        """Conversation mode is on, this device has the floor and nothing blocks the mic."""
         try:
             return (
                 self._conversation is not None
                 and self._conversation()
                 and not (self._mic_muted is not None and self._mic_muted())
+                and self._standing() == "mine"
             )
         except Exception:  # noqa: BLE001 - an unreadable switch is off, never always-listening
             return False
+
+    def _standing(self) -> str:
+        """Where this device stands on the voice floor (ADR 0407); unset or unreadable is mine."""
+        try:
+            return "mine" if self._floor is None else self._floor()
+        except Exception:  # noqa: BLE001 - an unreadable floor leaves this device as it was
+            return "mine"
 
     def _keep_conversation_armed(self, frame: voice_audio.CanonicalAudioFrame) -> None:
         """ADR 0041: arm on every idle frame while conversation mode is open.
@@ -1704,6 +1722,12 @@ class DuplexVoiceSession:
         so it counts from its start.
         """
         now = time.monotonic()
+        if (
+            self._conversation is not None and self._conversation()
+            and self._standing() == "taken"
+        ):
+            # ADR 0407: he began a conversation on another device; this one leaves its own.
+            self._change_conversation(on=False, reason="floor")
         if self._set_conversation is None or not self._conversation_open() or self._speaking():
             self._conversation_busy_at = now
             self._awaiting_answer = False
@@ -1875,6 +1899,11 @@ class DuplexVoiceSession:
         self._act_on_words(turn_id, text, verdict, over_her=over_her)
         if verdict != "turn":  # a barge-in that ended meanwhile does not make them a turn
             raise voice_pipeline.VoicePipelineAbsorbedError(verdict)
+        if turn_id in self._unseen:
+            # ADR 0407: the device that answers the wake word did not wake; this one answers.
+            self._unseen.discard(turn_id)
+            self._broadcast("transcribing", turn_id=turn_id)
+            self._change_conversation(on=True, reason="wake")
         self._conversation_busy_at = time.monotonic()
         self._awaiting_answer = True
         self._conversation_hold_until = 0.0
@@ -2057,6 +2086,10 @@ class DuplexVoiceSession:
                 if self._mic_muted is not None and self._mic_muted():
                     LOGGER.info("wake detection dropped: microphone muted")
                     continue
+                standing = self._standing()
+                if standing == "taken":
+                    LOGGER.info("wake detection dropped: another device is in a conversation")
+                    continue
                 if not self._assembler.armed:
                     outcomes = self._assembler.arm(detection)
                     # ADR-0006 §5: listening begins at arm, before speech onset.
@@ -2069,11 +2102,14 @@ class DuplexVoiceSession:
                     # minted turn id just before that reset, so it is the
                     # reliable reader whenever replay produced one.
                     turn_id = outcomes[0].turn_id if outcomes else self._assembler.turn_id
+                    if standing == "other":
+                        LOGGER.info("wake hit: another device answers it; listening unseen")
+                        self._unseen.add(turn_id)
                     if self._assembler.active:
                         self._mark_in_flight(self._assembler.turn_id, active=True)
                     self._broadcast("listening", turn_id=turn_id)
                     # ADR 0102: the wake word opens conversation mode, as a tap does.
-                    if not self._conversation_open():
+                    if standing == "mine" and not self._conversation_open():
                         self._change_conversation(on=True, reason="wake")
                     for outcome in outcomes:
                         self._handle_capture_outcome(outcome)
@@ -2106,6 +2142,7 @@ class DuplexVoiceSession:
             # ADR-0014 D27: `listening` never auto-fades, so the false wake
             # must be terminalized or it strands the card on screen.
             self._broadcast("empty", turn_id=outcome.turn_id, reason=outcome.reason)
+            self._unseen.discard(outcome.turn_id)
             return
         if isinstance(outcome, UtteranceCaptureFailure):
             self._capture_discontinuities += 1
@@ -2125,6 +2162,7 @@ class DuplexVoiceSession:
                 turn_id=outcome.turn_id,
                 reason="audio_discontinuity_retry_wake",
             )
+            self._unseen.discard(outcome.turn_id)
             self._end_barge_in(outcome.turn_id)
             self._assembler.prepare()
             return
@@ -2164,6 +2202,7 @@ class DuplexVoiceSession:
                 turn_id=outcome.turn_id,
                 reason="asr_commit_queue_full",
             )
+            self._unseen.discard(outcome.turn_id)
         self._assembler.prepare()
 
     def _commit_loop(self) -> None:
@@ -2240,6 +2279,7 @@ class DuplexVoiceSession:
                 LOGGER.exception("realtime wake: ASR commit failed turn_id=%s", utterance.turn_id)
                 self._broadcast("error", turn_id=utterance.turn_id, reason="asr_error")
             finally:
+                self._unseen.discard(utterance.turn_id)
                 # Collected by run_turn; a turn that never reached ASR drops what was prepared.
                 self._assembler.discard_prepared(utterance.utterance_id)
                 self._end_barge_in(utterance.turn_id)
@@ -2291,7 +2331,7 @@ class DuplexVoiceSession:
             self._broadcast("partial", turn_id=turn_id, text=settled + tail)
 
     def _broadcast(self, phase: str, *, turn_id: str, **payload: object) -> None:
-        if self._broadcaster is None:
+        if self._broadcaster is None or turn_id in self._unseen:
             return
         try:
             self._broadcaster.broadcast_voice_sync(phase, turn_id=turn_id, **payload)

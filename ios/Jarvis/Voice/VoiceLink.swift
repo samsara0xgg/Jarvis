@@ -15,6 +15,8 @@ enum LinkEvent: Sendable {
     case reaction(ReactionFrame)
     /// the brain asks for a fresh fix of where he is (`PhoneFrame.located` answers it)
     case locate(requestId: String)
+    /// where this phone stands on the voice floor (ADR 0407): mine, other or taken
+    case floor(String)
     /// a frame for the player (from the host's binary messages)
     case audio(PlayerIn)
     /// an `error` frame the link does not handle itself (bad_ping, bad_frame, no_voice, interrupt_failed)
@@ -221,6 +223,7 @@ final class WebSocketVoiceLink: VoiceLink {
         case .step(let f): out.yield(.step(f))
         case .reaction(let f): out.yield(.reaction(f))
         case .locate(let id): out.yield(.locate(requestId: id))
+        case .floor(let s): out.yield(.floor(s))
         case .hear(let sid, let op, let text): CloudHearing.shared.receive(sid: sid, op: op, text: text)
         case .pong: break
         case .error("retry", _):                      // the host could not write it down: send the same say again

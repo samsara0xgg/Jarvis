@@ -124,7 +124,7 @@ final class VoiceSession {
         foreground = UIApplication.shared.applicationState != .background
         hop(UIApplication.didEnterBackgroundNotification) { $0.foreground = false; $0.refreshArming() }
         hop(UIApplication.willEnterForegroundNotification) { $0.foreground = true; $0.refreshArming(); $0.prewarm() }
-        hop(UIApplication.didBecomeActiveNotification) { if TalkRequest.pending { $0.requestTalk() } }
+        hop(UIApplication.didBecomeActiveNotification) { TouchSeen.install(); if TalkRequest.pending { $0.requestTalk() } }
         hop(TalkRequest.notification) { $0.requestTalk() }
         hop(VoicePrefs.changed) { if $0.state == .thinking || $0.state == .speaking { $0.cancel() } }       // 她出不出声: the line is opened again under the new answer, so the turn in flight ends here
         audio.onMic = { [weak self, feed] buf, level in
@@ -256,6 +256,7 @@ final class VoiceSession {
     /// or music); otherwise an idle session lets go of the microphone.
     private func refreshArming() {
         guard #available(iOS 26, *) else { return }
+        PhoneLink.shared.floorState(hears: armed && OtherAudio.why == nil)
         if armed, let why = OtherAudio.why {
             VoiceTrace.note("wake word not armed: \(why)")
             release()
@@ -326,7 +327,14 @@ final class VoiceSession {
         segmentText = p.text
         switch state {
         case .listening: partial = cloudWords.isEmpty ? p.text : cloudWords; language = p.lang; reply = ""   // he has started again: her last answer must not come back when he pauses
-        case .idle: if armed, heardWake(p.heard) { wakeTurn = true; language = p.lang; enterListening(); cloud?.open(); partial = p.text }
+        case .idle:
+            guard armed, heardWake(p.heard) else { break }
+            if PhoneLink.shared.floor != "mine" {           // another device answers him (ADR 0407): this phrase is forgotten
+                VoiceTrace.note("wake word: another device answers it (\(PhoneLink.shared.floor))")
+                if #available(iOS 26, *) { startSegment() }
+                break
+            }
+            wakeTurn = true; language = p.lang; enterListening(); cloud?.open(); partial = p.text
         case .thinking, .speaking: if held { partial = p.text } else { overHerWords(p.text) }
         }
     }
@@ -629,6 +637,7 @@ final class VoiceSession {
         if typedTurn || commandSaid == .stop || commandSaid == .goodnight { goIdle(releasing: false); return }
         // the talk took the sound from another app (a Discord call): it goes back now, not after a window he did not ask for
         if audio.tookFrom != nil { goIdle(releasing: true); return }
+        if PhoneLink.shared.floor == "taken" { VoiceTrace.note("no follow-up: another device is in a conversation"); goIdle(releasing: false); return }   // ADR 0407
         // a short window to answer without tapping; its own silence timer ends it
         endTurn()
         enterListening()
@@ -670,6 +679,7 @@ final class VoiceSession {
         guard s != state else { return }
         log.debug("voice \(String(describing: self.state)) -> \(String(describing: s))")
         state = s
+        PhoneLink.shared.floorState(voice: s != .idle, hears: armed && OtherAudio.why == nil)
     }
 
     // MARK: the host
@@ -686,6 +696,8 @@ final class VoiceSession {
         case .step: break                                   // the board has it (PhoneLink)
         case .reaction: break                               // PhoneLink keeps them (Brain/Reactions)
         case .locate: break                                 // PhoneLink answers it (Map/Locate)
+        case .floor(let standing):                          // PhoneLink keeps it; a conversation begun on another device ends this one's waiting window
+            if standing == "taken", state == .listening, inConversation, segmentText.isEmpty { VoiceTrace.note("another device began a conversation: idle"); goIdle(releasing: false) }
         case .audio(let f):
             audio.core?.ingest(f)
             // what the host streams, once per change, so a turn whose answer never plays shows which side dropped it
