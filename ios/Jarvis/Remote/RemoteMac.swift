@@ -19,12 +19,17 @@ import UIKit
     private static let passwordAccount = "remote-mac-password"
 
     private init() {
-        if let link = Keychain.get(Self.linkAccount) { _ = adopt(link) }
-        Task { while true { await probe(); try? await Task.sleep(for: .seconds(30)) } }
+        Task { while true { reload(); await probe(); try? await Task.sleep(for: .seconds(30)) } }
+    }
+
+    /// A launch in the background (a location wake) can come before the Keychain is readable after a restart and find no pairing,
+    /// which then showed the pair card although the pairing was kept: it looks again until it finds one.
+    private func reload() {
+        if !isPaired, let link = Keychain.get(Self.linkAccount) { _ = adopt(link) }
     }
 
     /// Opens the remote view over everything, from wherever the app is.
-    static func open() { shared.present() }
+    static func open() { shared.reload(); shared.present() }
 
     /// Takes a pairing link; false if the text is not one.
     func pair(_ text: String) -> Bool {
