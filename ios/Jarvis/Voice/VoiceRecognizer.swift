@@ -240,10 +240,11 @@ final class DualRecognizer: @unchecked Sendable {
         for l in lanes { await l.cancel() }
     }
 
-    /// Install the models for both locales (first run downloads them) and reserve them. `progress` is 0...1.
-    /// Returns the languages whose model is still not installed afterwards; throws if that is both.
+    /// Install the models for both locales (first run downloads them) and reserve them. `progress` is 0...1, told on the main actor
+    /// only while a download runs, and never after this returns. Returns the languages whose model is still not installed
+    /// afterwards; throws if that is both.
     @discardableResult
-    static func ensureAssets(progress: @escaping @Sendable (Double) -> Void) async throws -> [VoiceLang] {
+    static func ensureAssets(progress: @escaping @MainActor @Sendable (Double) -> Void) async throws -> [VoiceLang] {
         var missing: [VoiceLang] = []
         for lang in VoiceLang.allCases {
             let locale = await SpeechTranscriber.supportedLocale(equivalentTo: lang.locale) ?? lang.locale
@@ -251,7 +252,7 @@ final class DualRecognizer: @unchecked Sendable {
             let t = SpeechTranscriber(locale: locale, transcriptionOptions: [], reportingOptions: [], attributeOptions: [])
             do {
                 if await AssetInventory.status(forModules: [t]) < .installed, let req = try await AssetInventory.assetInstallationRequest(supporting: [t]) {
-                    let poll = Task {
+                    let poll = Task { @MainActor in
                         while !Task.isCancelled { progress(req.progress.fractionCompleted); try? await Task.sleep(nanoseconds: 250_000_000) }
                     }
                     defer { poll.cancel() }
@@ -266,7 +267,6 @@ final class DualRecognizer: @unchecked Sendable {
             VoiceTrace.note("assets \(locale.identifier): \(installed ? "installed" : "missing")")
             if !installed { missing.append(lang) }
         }
-        progress(1)
         if missing.count == VoiceLang.allCases.count { throw NSError(domain: "Jarvis.voice", code: 1, userInfo: [NSLocalizedDescriptionKey: "中文和英文语音模型都没装好"]) }
         return missing
     }

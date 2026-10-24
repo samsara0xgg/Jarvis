@@ -237,10 +237,9 @@ final class VoiceSession {
         assetsTriedAt = now
         let t = Task { @MainActor () -> String? in
             guard SpeechTranscriber.isAvailable else { return "这台设备不能在本地识别语音" }
-            modelProgress = 0
-            defer { modelProgress = nil }
+            defer { modelProgress = nil }                       // shown only while a model downloads, not while one is checked
             do {
-                let missing = try await DualRecognizer.ensureAssets { p in Task { @MainActor in VoiceSession.shared.modelProgress = p } }
+                let missing = try await DualRecognizer.ensureAssets { p in VoiceSession.shared.modelProgress = p }
                 assetsReady = missing.isEmpty
                 missingNote = missing.first?.modelMissingText
                 return nil
