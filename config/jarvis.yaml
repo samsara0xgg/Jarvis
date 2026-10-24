@@ -313,6 +313,24 @@ mac_ship:
   # mac_ship 开着时默认开；关掉写 enabled: false。
   claude_code_days:
     enabled: true
+  # ADR 0387 — 两个号的 Claude Code 原始记录（每个配置目录的 projects/ 和 history.jsonl，链接不跟）
+  # 原样分段发给大脑（来源 claude-code-log）：.jsonl 发新写完的整行，别的文件安静满 60 秒后整份发；
+  # 每轮最多 per_pass_mb，最旧的先发。keep 是 10/23 存下的快照，各发一次（和现有记录开头结尾一样的
+  # .jsonl 交给现有记录发）。cloud：云端会话加密推到私有仓库 repo，Mac 用运行目录
+  # mac-ship/cloud-log-identity.txt 的钥匙解开再发；钥匙文件不在就不拉。mac_ship 开着时默认开。
+  claude_code_log:
+    enabled: true
+    dirs:
+      - {account: a, dir: "~/.claude"}
+      - {account: b, dir: "~/.claude-b"}
+    per_pass_mb: 256
+    keep:
+      - {account: a, dir: "~/.jarvis/claude-keep/2026-10-23/a-projects", under: projects}
+      - {account: a, dir: "~/.jarvis/claude-keep/2026-10-23/a-jobs-archive", under: jobs-archive}
+      - {account: b, dir: "~/.jarvis/claude-keep/2026-10-23/b-projects", under: projects}
+    cloud:
+      repo: samsara0xgg/jarvis-cloud-log
+      # identity: "~/.jarvis/mac-ship/cloud-log-identity.txt"
   # ADR 0304 — 把这台 Mac 上 Screen Time「跨设备共享」同步来的 iPhone/iPad 前台应用，每 15 分钟一次
   # 按「一次一个应用」发给大脑（来源 device-apps）；需要给 JarvisScreenTime.app 完全磁盘访问权限，
   # 没给就只记一条日志、什么也不做。应用名从 Apple 公开的 lookup 查，缓存在运行目录 mac-ship/app-names.json。

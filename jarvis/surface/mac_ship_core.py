@@ -43,6 +43,10 @@ CREATE TABLE IF NOT EXISTS sessions (
     shipped_sha TEXT NOT NULL, shipped_ms INTEGER NOT NULL, seen_sha TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS repos (cwd TEXT PRIMARY KEY, toplevel TEXT NOT NULL, origin TEXT);
+CREATE TABLE IF NOT EXISTS code_log (
+    path TEXT PRIMARY KEY, size INTEGER NOT NULL, mtime_ns INTEGER NOT NULL,
+    offset INTEGER NOT NULL, head TEXT NOT NULL, tail TEXT NOT NULL
+);
 """
 
 Op = tuple[str, tuple[Any, ...]]
@@ -144,6 +148,10 @@ SET_SESSION: Final = (
     "INSERT OR REPLACE INTO sessions "
     "(path, size, mtime_ns, offset, record, desk, shipped_sha, shipped_ms, seen_sha) "
     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+)
+SET_CODE_LOG: Final = (
+    "INSERT OR REPLACE INTO code_log (path, size, mtime_ns, offset, head, tail) "
+    "VALUES (?, ?, ?, ?, ?, ?)"
 )
 
 

@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from jarvis.state import code_log
 from jarvis.state.shipments import MAX_FILE_BYTES, MAX_SHIPMENT_BYTES, ShipRefused, answer
 from jarvis.surface.inherent_server.guards import bearer_token, capped_body
 
@@ -67,13 +68,15 @@ def register_import_routes(app: FastAPI, deps: InherentDeps) -> None:
 
     @app.put("/inherent/imports/{source}/files/{relpath:path}")
     async def put_imports_file(source: str, relpath: str, request: Request) -> JSONResponse:
-        """ADR 0294: one picture of a paired terminal, kept whole or not at all.
+        """ADR 0294, 0303, 0387: one file of a paired terminal, kept whole or not at all.
 
-        201 when new, 200 when the path already holds the same bytes; the terminal advances
-        only once the answer's ``sha256`` matches its own.
+        A picture, a day report, or a piece of a Claude Code transcript (up to 64 MiB). 201
+        when new, 200 when the path already holds the same bytes; the terminal advances only
+        once the answer's ``sha256`` matches its own.
         """
         name = _shipper(request)
-        data = await capped_body(request, MAX_FILE_BYTES)
+        cap = code_log.MAX_PIECE_GZ if source == code_log.SOURCE else MAX_FILE_BYTES
+        data = await capped_body(request, cap)
         try:
             kept = await asyncio.to_thread(intake.receive_file, source, relpath, data)
         except ShipRefused as exc:
