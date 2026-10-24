@@ -1,5 +1,6 @@
 import AppKit
 import Network
+import IOKit.pwr_mgt
 
 // Jarvis Remote: his iPad sees this Mac's main display and drives it, over the tailnet only (ADR 0406).
 //   JarvisRemote        serve on port 5960
@@ -63,6 +64,11 @@ if CommandLine.arguments.dropFirst().first == "pair" {
 // A session that crashed before its end() left displays switched off or curtained; a fresh launch heals that before anything else.
 CGDisplayRestoreColorSyncSettings()
 CGRestorePermanentDisplayConfiguration()
+
+// Keep the Mac awake for its whole life, so it stays reachable from the iPad when the screen is locked (it is always on mains).
+// The display may still sleep; only system sleep is held. Released when the process ends.
+var stayAwake: IOPMAssertionID = 0
+IOPMAssertionCreateWithName(kIOPMAssertionTypePreventUserIdleSystemSleep as CFString, IOPMAssertionLevel(kIOPMAssertionLevelOn), "Jarvis Remote keeps this Mac reachable" as CFString, &stayAwake)
 
 // Ask for both grants at launch, while he is at the Mac, not at the first connection from the iPad.
 if !CGPreflightScreenCaptureAccess() { CGRequestScreenCaptureAccess() }
