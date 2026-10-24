@@ -7,9 +7,10 @@ import IOKit.pwr_mgt
 // The wire, both ways: [type: UInt8][length: UInt32 big-endian][payload]. The iPad's RemoteWire.swift mirrors it.
 enum Wire {
     // iPad → Mac
-    static let hello: UInt8 = 0x01      // JSON {"token", "curtain": Bool}
+    static let hello: UInt8 = 0x01      // JSON {"token", "curtain": Bool, "acks": Bool}
     static let input: UInt8 = 0x02      // JSON, see Input.handle
     static let keyframe: UInt8 = 0x03   // empty: the decoder lost its place
+    static let got: UInt8 = 0x04        // empty: one frame arrived (sent only by an iPad whose hello says "acks")
     // Mac → iPad
     static let info: UInt8 = 0x10       // JSON {"w", "h", "locked"}: the stream's pixel size
     static let params: UInt8 = 0x11     // HEVC parameter sets (VPS, SPS, PPS), each [UInt16 big-endian length][bytes]
@@ -42,15 +43,24 @@ final class Session: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
     private var needKey = true
     private var inFlight = 0            // bytes handed to the connection and not yet taken by TCP
     private var behind = false          // a frame came while the link was full; the newest goes once it drains
-    // ~0.15 s of video at the bitrate: past this the link is behind, and new screens wait instead of queueing
+    // An iPad without acks: past this many bytes waiting to enter TCP the link is behind. TCP's own buffer (up to 4 MB) sits under it,
+    // which on a slow link is seconds of lag.
     private static let fullLink = 1_500_000
+    // An iPad that acks: the frames on their way to it, oldest first. Past ~0.1 s of video at the bitrate the link is behind,
+    // so what he sees is never more than that old, whatever the buffers in between hold.
+    private var acks = false
+    private var unacked: [Int] = []
+    private var unackedBytes = 0
+    private var delivered = 0           // bytes the iPad acked this second: what the link really carries
+    private var held: Bool { acks ? unackedBytes > rate / 80 : inFlight >= Session.fullLink }
     private var size = (0, 0)
     private var locked: Bool?
     private var lockWatch: DispatchSourceTimer?
     // the bitrate follows the link: down by a third in a second the link fell behind, up a little after three clear ones
     private static let topRate = 150_000_000, floorRate = 4_000_000, sharpRate = 60_000_000
-    private var rate = Session.topRate
+    private var rate = 40_000_000       // a start the tailnet carries; it climbs from here
     private var stalls = 0
+    private var sentFrames = 0, sentBytes = 0, captured = 0
     private var clear = 0
 
     private var curtain: [NSWindow] = []
@@ -104,6 +114,7 @@ final class Session: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
             }
             authed = true
             let wantCurtain = json["curtain"] as? Bool ?? true
+            acks = json["acks"] as? Bool ?? false
             DispatchQueue.main.async { [self] in
                 if let old = Session.live { old.q.async { old.end() } }
                 Session.live = self
@@ -114,6 +125,12 @@ final class Session: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
         switch type {
         case Wire.input: input.handle(json)
         case Wire.keyframe: needKey = true; reencodeLast()
+        case Wire.got:
+            guard !unacked.isEmpty else { return }
+            let n = unacked.removeFirst()
+            unackedBytes -= n
+            delivered += n
+            if behind && !held { behind = false; reencodeLast() }
         default: break
         }
     }
@@ -129,7 +146,7 @@ final class Session: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
         conn.send(content: Wire.pack(type, payload), completion: .contentProcessed { [self] _ in
             q.async {
                 self.inFlight -= payload.count
-                if self.behind && self.inFlight < Session.fullLink { self.behind = false; self.reencodeLast() }
+                if self.behind && !self.held { self.behind = false; self.reencodeLast() }
             }
         })
     }
@@ -204,12 +221,18 @@ final class Session: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
         lockWatch = t
     }
 
-    /// Once a second: a second with stalls cuts the bitrate, three clear seconds raise it. The quantiser cap that keeps text sharp
+    /// Once a second: a second with stalls cuts the bitrate (to just under what the iPad acked, when it acks), three clear seconds raise it. The quantiser cap that keeps text sharp
     /// would override a low bitrate, so it holds only while the link can afford it.
     private func adapt() {
         let was = rate
+        // one line a second while the screen moves: what the capture gave, what went, how much, and how often the link was full
+        if captured > 0 {
+            print("1s: captured \(captured) sent \(sentFrames) \(sentBytes * 8 / 1_000_000) Mbit delivered \(delivered * 8 / 1_000_000) Mbit stalls \(stalls) unacked \(unackedBytes / 1000) kB rate \(rate / 1_000_000)")
+        }
+        let carried = delivered * 8
+        captured = 0; sentFrames = 0; sentBytes = 0; delivered = 0
         if stalls > 0 {
-            rate = max(rate * 2 / 3, Session.floorRate)
+            rate = max(acks ? min(rate, max(carried * 85 / 100, rate / 2)) : rate * 2 / 3, Session.floorRate)
             clear = 0
         } else {
             clear += 1
@@ -254,7 +277,8 @@ final class Session: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
               let raw = info[.status] as? Int, SCFrameStatus(rawValue: raw) == .complete,
               let pixels = sb.imageBuffer else { return }
         lastPixels = pixels
-        if inFlight >= Session.fullLink { behind = true; stalls += 1; return }
+        captured += 1
+        if held { behind = true; stalls += 1; return }
         encode(pixels, at: sb.presentationTimeStamp)
     }
 
@@ -295,6 +319,9 @@ final class Session: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
         let n = CMBlockBufferGetDataLength(block)
         payload.append(Data(count: n))
         payload.withUnsafeMutableBytes { _ = CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: n, destination: $0.baseAddress! + 1) }
+        sentFrames += 1
+        sentBytes += payload.count
+        if acks { unacked.append(payload.count); unackedBytes += payload.count }
         send(Wire.frame, payload)
     }
 

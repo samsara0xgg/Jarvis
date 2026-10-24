@@ -9,7 +9,7 @@ final class RemoteSession {
     enum State: Equatable { case connecting, live(locked: Bool), refused, closed }
 
     private enum Wire {
-        static let hello: UInt8 = 0x01, input: UInt8 = 0x02, keyframe: UInt8 = 0x03
+        static let hello: UInt8 = 0x01, input: UInt8 = 0x02, keyframe: UInt8 = 0x03, got: UInt8 = 0x04
         static let info: UInt8 = 0x10, params: UInt8 = 0x11, frame: UInt8 = 0x12, refused: UInt8 = 0x13
     }
 
@@ -40,7 +40,7 @@ final class RemoteSession {
             guard let self else { return }
             switch s {
             case .ready:
-                self.send(Wire.hello, try! JSONSerialization.data(withJSONObject: ["token": token, "curtain": curtain]))
+                self.send(Wire.hello, try! JSONSerialization.data(withJSONObject: ["token": token, "curtain": curtain, "acks": true]))
                 self.receive()
             case .failed, .waiting: self.close()
             default: break
@@ -104,6 +104,7 @@ final class RemoteSession {
             }
             format = Self.format(sets)
         case Wire.frame:
+            send(Wire.got, Data())   // every frame, shown or not: the Mac paces itself by these
             guard let format, body.count > 1 else { return }
             enqueue(body.subdata(in: body.startIndex + 1 ..< body.endIndex), format)
         case Wire.refused:
