@@ -158,7 +158,7 @@ struct PadHome: View {
     /// over every page: her card, her, the number on her, the bar at the foot (跨端UI标准 §1)
     @ViewBuilder private func over(width w: Double, height h: Double, top: Double) -> some View {
         if ui.page != .talk {
-            HerWordsCard(engine: engine, ui: ui, compact: true).frame(width: W, height: H)
+            HerWordsCard(engine: engine, ui: ui).frame(width: W, height: H)
                 .offset(x: (w - W) / 2, y: top + Self.herY + padHerSize / 2 + 1 - HerWordsCard.top)
         }
         PadHer(engine: engine).position(x: w / 2, y: top + Self.herY)

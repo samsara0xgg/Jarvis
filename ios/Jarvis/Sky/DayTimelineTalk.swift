@@ -84,7 +84,6 @@ struct TLPastRound: Identifiable, Equatable {
 struct HerWordsCard: View {
     let engine: StarEngine
     let ui: StarUI
-    var compact = false                     // the iPad's: the latest round only, and smaller (her words in one line, at the note's size)
     @Environment(\.accessibilityReduceMotion) private var reduce
     @State private var tall = 0.0           // how high her words are laid out, as far as they are said: past `wordsRoom` they scroll, with 去聊天接着说 under them
     @State private var whole: [Int: Double] = [:]       // how high each row of hers is with all its words, said or not: what decides the side they read from
@@ -101,7 +100,7 @@ struct HerWordsCard: View {
 
     var body: some View {
         let on = ui.herCardOn, talk = !ui.panelOpen && ui.tlTalk
-        let now = TLTalk.of(ui.liveTurns), earlier = talk && !compact ? TLTalk.earlier(ui.liveTurns) : []
+        let now = TLTalk.of(ui.liveTurns), earlier = talk ? TLTalk.earlier(ui.liveTurns) : []
         ZStack(alignment: .top) {
             if on && !earlier.isEmpty {
                 Color.clear.contentShape(Rectangle()).frame(width: W, height: H).onTapGesture { engine.releaseTalk() }          // a tap outside the dialog folds it
@@ -113,7 +112,7 @@ struct HerWordsCard: View {
                     Text(kept).font(.system(size: Look.note)).foregroundStyle(Look.ink2).lineLimit(2).multilineTextAlignment(.center)
                 }
             }
-            .padding(.horizontal, 16).padding(.vertical, compact ? 7 : 10)
+            .padding(.horizontal, 16).padding(.vertical, 10)
             .frame(maxWidth: width)
             .background(Look.card.opacity(0.55), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
             .jarvisGlass(RoundedRectangle(cornerRadius: 20, style: .continuous))
