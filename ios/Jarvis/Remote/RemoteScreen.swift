@@ -322,6 +322,14 @@ final class RemoteCanvas: UIView, UIGestureRecognizerDelegate {
 
     required init?(coder: NSCoder) { fatalError() }
 
+    // iPadOS reads three fingers left and right as undo and redo, which swallowed the desktop swipes
+    override var editingInteractionConfiguration: UIEditingInteractionConfiguration { .none }
+
+    // a pinch is two fingers: with three it took the swipe and zoomed instead
+    override func gestureRecognizerShouldBegin(_ g: UIGestureRecognizer) -> Bool {
+        g === pinch ? g.numberOfTouches == 2 : super.gestureRecognizerShouldBegin(g)
+    }
+
     // two fingers can scroll and pinch at once; the scroll stands still while the pinch moves the picture
     func gestureRecognizer(_ a: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith b: UIGestureRecognizer) -> Bool {
         (a === pinch && b === scroll) || (a === scroll && b === pinch)
@@ -497,6 +505,7 @@ private final class KeyField: UIView, UIKeyInput {
     var smartDashesType = UITextSmartDashesType.no
 
     override var canBecomeFirstResponder: Bool { true }
+    override var editingInteractionConfiguration: UIEditingInteractionConfiguration { .none }
     var hasText: Bool { true }
     func insertText(_ text: String) { canvas?.typed(text) }
     func deleteBackward() { canvas?.tapKey(RemoteKeys.delete) }
