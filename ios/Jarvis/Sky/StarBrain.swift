@@ -107,7 +107,9 @@ extension StarEngine {
             case .taken(let id):
                 record = id
                 if let id, let i = self.ui.liveTurns.firstIndex(where: { $0.id == his }) { self.ui.liveTurns[i].recordId = id }
-            case .refused(let m): return fail(m)
+            case .refused(let m):
+                if self.ui.following != nil { self.follow(nil) }          // a topic the brain does not know refuses the say (422 / bad_say): its bar goes
+                return fail(m)
             case .lost(let m):
                 self.markSend(his, .failed)
                 settle()

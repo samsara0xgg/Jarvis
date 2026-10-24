@@ -229,7 +229,7 @@ final class WebSocketVoiceLink: VoiceLink {
     /// The host answers a refused file with an `error` frame that names no utterance: it is the say that carried files.
     private func failPending(withFiles why: LinkError) {
         for (id, p) in pending {
-            guard case .say(_, _, _, _, _, _, _, _, let files, _) = p.frame, !files.isEmpty else { continue }
+            guard case .say(_, _, _, _, _, _, _, _, let files, _, _) = p.frame, !files.isEmpty else { continue }
             pending.removeValue(forKey: id)
             p.c.resume(throwing: why)
         }
@@ -253,7 +253,7 @@ final class WebSocketVoiceLink: VoiceLink {
         let frame = PhoneFrame.say(utteranceId: utteranceId, text: text, language: language?.code, confidence: confidence, spoken: spoken,
                                    overHer: overHer, conversation: conversation,
                                    about: about.flatMap { try? JSONSerialization.data(withJSONObject: $0, options: [.sortedKeys]) }, attachments: attachments,
-                                   continues: continues)
+                                   continues: continues, topic: TopicFollow.id)
         return try await withCheckedThrowingContinuation { c in
             pending[utteranceId] = (c, frame)
             sendText(frame)

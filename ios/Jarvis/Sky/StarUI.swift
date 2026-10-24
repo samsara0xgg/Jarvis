@@ -103,6 +103,9 @@ final class StarUI {
     var convDays: [TalkDay] = []        // the conversation of record, by day (Brain/TalkStream)
     var olderMore = false               // the brain has rows older than the first one listed
     var scrollTo: String?               // a row of the stream the panel is asked to show
+    var trail: ChatTrail?               // a hit or a topic followed through its places on 聊天 (Sky/ChatSearch.swift)
+    var lit: Set<String> = []           // the rows of the stream its place lights up
+    var following: ChatTopic?           // the topic he goes on with (接着聊): what he sends carries its id (`TopicFollow`)
     var tapback: TalkRow?               // the row whose reactions bar is up (Sky/StarTapback)
     var tapbackPicker = false           // the bar is asking for any emoji, with the system keyboard
     // talking

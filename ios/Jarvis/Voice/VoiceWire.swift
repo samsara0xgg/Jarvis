@@ -176,7 +176,8 @@ enum PhoneFrame: Equatable, Sendable {
     case say(utteranceId: String, text: String, language: String?, confidence: Double?, spoken: Bool, overHer: Bool = false, conversation: Bool = false,
              about: Data? = nil,                        // the item he has open (ADR 0214), as JSON
              attachments: [String] = [],                // ids from POST /inherent/attachments; typed words only
-             continues: String? = nil)                  // the utterance id of the spoken say these words go on from (ADR 0271); never its words
+             continues: String? = nil,                  // the utterance id of the spoken say these words go on from (ADR 0271); never its words
+             topic: String? = nil)                      // the topic he goes on with (接着聊, Sky/ChatSearch.swift)
     case barge
     case cancel
     case ping(tNs: Int64)
@@ -185,7 +186,7 @@ enum PhoneFrame: Equatable, Sendable {
         var o: [String: Any]
         switch self {
         case .hello(let voice): o = ["type": "hello", "voice": voice]
-        case .say(let id, let text, let lang, let conf, let spoken, let overHer, let conversation, let about, let attachments, let continues):
+        case .say(let id, let text, let lang, let conf, let spoken, let overHer, let conversation, let about, let attachments, let continues, let topic):
             o = ["type": "say", "utterance_id": id, "text": text, "spoken": spoken]
             if !attachments.isEmpty { o["attachments"] = attachments }
             if let lang { o["language"] = lang }
@@ -193,6 +194,7 @@ enum PhoneFrame: Equatable, Sendable {
             if overHer { o["over_her"] = true }                 // only meaningful with spoken
             if conversation { o["conversation"] = true }
             if let continues { o["continues"] = continues }
+            if let topic { o["topic"] = topic }
             if let about, let a = try? JSONSerialization.jsonObject(with: about) { o["about"] = a }
         case .located(let id, let outcome):
             o = ["type": "located", "request_id": id]
@@ -218,7 +220,7 @@ enum PhoneFrame: Equatable, Sendable {
             self = .say(utteranceId: id, text: text, language: o["language"] as? String, confidence: (o["confidence"] as? NSNumber)?.doubleValue, spoken: spoken,
                          overHer: o["over_her"] as? Bool ?? false, conversation: o["conversation"] as? Bool ?? false,
                          about: (o["about"] as? [String: Any]).flatMap { try? JSONSerialization.data(withJSONObject: $0, options: [.sortedKeys]) },
-                         attachments: o["attachments"] as? [String] ?? [], continues: o["continues"] as? String)
+                         attachments: o["attachments"] as? [String] ?? [], continues: o["continues"] as? String, topic: o["topic"] as? String)
         case "located":
             guard let id = o["request_id"] as? String else { return nil }
             if let why = o["error"] as? String { self = .located(requestId: id, outcome: .error(why)); return }

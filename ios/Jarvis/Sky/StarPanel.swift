@@ -56,12 +56,13 @@ struct TalkRowView: View, Equatable {
     let row: TalkRow
     var stepsOpen = false
     var cards = false                   // as the conversation's page lays it out (`TalkPage`): her words on a dark card, his in a filled bubble
+    var lit = false                     // a place of a hit or a topic followed (Sky/ChatSearch.swift): its card or bubble has a light rim
     var dropAbout: () -> Void = {}
     var toggleSteps: () -> Void = {}
     var retry: () -> Void = {}
     var openLink: (AnswerLink) -> Void = { _ in }
     @Environment(\.accessibilityReduceMotion) private var reduce
-    static func == (a: Self, b: Self) -> Bool { a.row == b.row && a.stepsOpen == b.stepsOpen && a.cards == b.cards }
+    static func == (a: Self, b: Self) -> Bool { a.row == b.row && a.stepsOpen == b.stepsOpen && a.cards == b.cards && a.lit == b.lit }
     /// her words end this far short of the row's edge, with or without a reaction on them, so a badge on their corner never covers a character and no line wraps differently for it
     private static let badgeRoom = 20.0
 
@@ -72,7 +73,7 @@ struct TalkRowView: View, Equatable {
     /// Her typing line, then her words in the same place (the line fades into them), and under them what she did to get there.
     private var hers: some View {
         VStack(alignment: .leading, spacing: cards ? 6 : 4) {
-            if cards { words.modifier(HerCard(reactions: row.reactions)) } else { words }
+            if cards { words.modifier(HerCard(reactions: row.reactions, lit: lit)) } else { words }
             if !row.places.isEmpty, row.status == nil, !row.failed { PlaceMapCard(places: row.places).padding(.trailing, cards ? TalkPage.across : Self.badgeRoom).transition(.opacity) }
             if let info = row.steps, row.status == nil { StepsLine(info: info, open: stepsOpen, toggle: toggleSteps).padding(.leading, cards ? 6 : 0) }
             // the cards her answer carries that jump to a row of the day or a trip of the map: drawn only when the brain sent `links`
@@ -122,6 +123,7 @@ struct TalkRowView: View, Equatable {
                     .padding(.horizontal, cards ? 16 : 14).padding(.vertical, cards ? 11 : 10)
                     .background(shape.fill(cards ? mine : Color.white.opacity(0.08)))
                     .overlay(shape.stroke(Color.white.opacity(cards ? 0 : 0.06), lineWidth: 0.5))
+                    .overlay(shape.strokeBorder(Color.white.opacity(lit ? 0.85 : 0), lineWidth: 1.5))
                     .overlay(alignment: .topLeading) { ReactionBadges(reactions: row.reactions, his: true) }
                     .frame(maxWidth: cards ? TalkPage.cardWidth : 300, alignment: .trailing)
                     .opacity(row.send == .sending ? 0.55 : 1)
@@ -167,12 +169,13 @@ struct TalkRowView: View, Equatable {
 /// Her side of a row on the conversation's page: on a dark card as wide as her words up to `TalkPage.cardWidth`, the reactions on its corner.
 private struct HerCard: ViewModifier {
     let reactions: RowReactions
+    var lit = false
 
     func body(content: Content) -> some View {
         let shape = RoundedRectangle(cornerRadius: TalkPage.corner, style: .continuous)
         content.padding(.horizontal, 16).padding(.vertical, 12)
             .background(card, in: shape)
-            .overlay(shape.strokeBorder(Color.white.opacity(0.07), lineWidth: 0.5))
+            .overlay(shape.strokeBorder(Color.white.opacity(lit ? 0.85 : 0.07), lineWidth: lit ? 1.5 : 0.5))
             .overlay(alignment: .topTrailing) { ReactionBadges(reactions: reactions, his: false) }
             .frame(maxWidth: TalkPage.cardWidth, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -400,8 +403,8 @@ struct TalkPanel: View {
     @State private var probe = StreamProbe()
     @State private var follow = true                    // the stream keeps to its bottom (he has not scrolled up on purpose)
     @State private var byHand = false                   // a finger is on the stream, or it is still gliding from one
-    @State private var histOpen = false                 // the card of past chats is down from the strip's left button (the phone's page)
-    @State private var past = PastChatsModel()
+    @State private var histOpen = false                 // the card of search and topics is down from the strip's left button (the phone's page)
+    @State private var past = ChatSearchModel()
     @AppStorage(VoicePrefs.key) private var spoken = true      // 她出不出声
     @Environment(\.accessibilityReduceMotion) private var reduce
 
@@ -432,14 +435,17 @@ struct TalkPanel: View {
                 LinearGradient(stops: TalkPage.scrim().map { .init(color: .black.opacity($0.alpha), location: $0.y / H) }, startPoint: .top, endPoint: .bottom)
                     .frame(width: W, height: H).allowsHitTesting(false)
             }
-            stream(top: phone ? 0 : TalkPage.top, bottom: bottom, fade: ui.typing ? 8 : 24, open: 1)
+            stream(top: phone ? 0 : TalkPage.top, bottom: bottom - (phone && (ui.trail != nil || ui.following != nil) ? 44 : 0), fade: ui.typing ? 8 : 24, open: 1)          // the bar over the field takes its room
             if phone { statusEdge; strip }
             if let chip { pageChip(chip, bottom: bottom) }
+            if phone, let t = ui.trail { ChatTrailBar(trail: t, engine: engine).frame(width: W).offset(y: bottom - 40).transition(.opacity) }
+            else if phone, let t = ui.following { TopicFollowBar(topic: t, engine: engine).frame(width: W).offset(y: bottom - 40).transition(.opacity) }
             if phone { pastLayer }
         }
         .frame(width: W, height: H, alignment: .topLeading)
         .opacity(ui.panelOpen ? 1 : 0).allowsHitTesting(ui.panelOpen)
         .animation(.easeOut(duration: ui.panelOpen ? 0.25 : 0.2), value: ui.panelOpen)
+        .animation(.easeOut(duration: 0.2), value: ui.trail == nil && ui.following == nil)
         .onChange(of: ui.panelOpen) { _, on in if !on { ui.chipOpen = false; setPast(false) } else { follow = true } }
     }
 
@@ -454,10 +460,10 @@ struct TalkPanel: View {
         .allowsHitTesting(false)
     }
 
-    /// 以前的聊天 at the left, 她出不出声 at the right; nothing in the middle (跨端UI标准 §2)
+    /// search and her topics at the left, 她出不出声 at the right; nothing in the middle (跨端UI标准 §2)
     private var strip: some View {
         TopStrip {
-            TopGlassButton(symbol: "clock.arrow.circlepath", label: Words.PhoneChat.history) { Haptic.selection(); setPast(!histOpen) }
+            TopGlassButton(symbol: "magnifyingglass", label: Words.PhoneChat.history) { Haptic.selection(); setPast(!histOpen) }
         } middle: {
             EmptyView()
         } right: {
@@ -473,12 +479,12 @@ struct TalkPanel: View {
         if !on { past.reset() }
     }
 
-    /// the card of past chats, dropped from the strip's left button, over a layer that takes the tap that closes it
+    /// the card of search and topics, dropped from the strip's left button, over a layer that takes the tap that closes it
     @ViewBuilder private var pastLayer: some View {
         ZStack(alignment: .topLeading) {
             if histOpen {
                 Color.clear.frame(width: W, height: H).contentShape(Rectangle()).onTapGesture { setPast(false) }
-                PastChatsCard(model: past, engine: engine, close: { setPast(false) })
+                ChatSearchCard(model: past, engine: engine, close: { setPast(false) })
                     .offset(x: 16, y: HomeTop.buttonY + HomeTop.button + 7)
                     .transition(.scale(scale: 0.96, anchor: UnitPoint(x: 0.06, y: 0)).combined(with: .opacity))
             }
@@ -649,9 +655,11 @@ struct TalkPanel: View {
                         Section {
                             ForEach(day.rows) { r in
                                 VStack(alignment: .leading, spacing: page ? 8 : 6) {
-                                    if let s = r.stamp { Text(page && r.id == day.rows.first?.id ? day.title + " " + s : s).font(page ? .system(size: 12, weight: .medium).monospacedDigit() : AT.mono(11)).foregroundStyle(muted).frame(maxWidth: .infinity, alignment: page ? .center : r.his ? .trailing : .leading) }
-                                    TalkRowView(row: r, stepsOpen: ui.stepsOpen.contains(r.id), cards: page, dropAbout: { engine.dropAbout() }, toggleSteps: { engine.toggleSteps(r.id) }, retry: { engine.sendAgain(row: r.id) },
+                                    if page { if r.stamp != nil && r.id != days.first?.rows.first?.id { Color.clear.frame(height: 14) } }          // one conversation with no dates: a long gap is a little more room (跨端UI标准 §5)
+                                    else if let s = r.stamp { Text(s).font(page ? .system(size: 12, weight: .medium).monospacedDigit() : AT.mono(11)).foregroundStyle(muted).frame(maxWidth: .infinity, alignment: page ? .center : r.his ? .trailing : .leading) }
+                                    TalkRowView(row: r, stepsOpen: ui.stepsOpen.contains(r.id), cards: page, lit: ui.lit.contains(r.id), dropAbout: { engine.dropAbout() }, toggleSteps: { engine.toggleSteps(r.id) }, retry: { engine.sendAgain(row: r.id) },
                                                 openLink: { engine.openLink($0) }).equatable()
+
                                 }
                                 .opacity((shown[r.id] ?? 0) + (1 - (shown[r.id] ?? 0)) * open)
                                 .id(r.id)

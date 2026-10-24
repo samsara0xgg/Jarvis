@@ -92,6 +92,7 @@ extension BrainClient {
         var o: [String: Any] = ["text": text, "attachments": attachments]
         if let about { o["about"] = about.json }
         if let utterance { o["utterance_id"] = utterance }
+        if let topic = TopicFollow.id { o["topic"] = topic }          // the topic he goes on with (Sky/ChatSearch.swift)
         return try JSONSerialization.data(withJSONObject: o)
     }
 
