@@ -57,7 +57,6 @@ struct PadFlightView: View {
 
 private let ink = SetColor.ink
 private let muted = SetColor.muted
-private let faint = SetColor.faint
 private let amber = Color(red: 1, green: 201 / 255, blue: 143 / 255)
 
 struct PadStage: View {
@@ -141,24 +140,11 @@ struct PadStage: View {
         if !rows.isEmpty || !cards.isEmpty {
             label(Words.Pad.waiting(rows.count + cards.count), color: amber)
             VStack(alignment: .leading, spacing: 12) {
-                ForEach(rows) { e in
-                    VStack(alignment: .leading, spacing: 10) {
-                        HStack(spacing: 10) {
-                            MarkShape(kd: .wait).frame(width: 14, height: 14)
-                            Text(e.title).font(.system(size: 16, weight: .medium)).foregroundStyle(amber)
-                            if let d = e.detail { Text(d).font(.system(size: 13)).foregroundStyle(muted).lineLimit(1) }
-                            Spacer(minLength: 0)
-                            Text(e.time).font(AT.mono(12)).foregroundStyle(faint)
-                        }
-                        TLOpenView(e: e, tl: tl, engine: engine, mapWidth: width - 2 * side - 32)
-                    }
-                    .padding(16)
-                    .background(RoundedRectangle(cornerRadius: 16).fill(Color.white.opacity(0.04)))
-                    .overlay(RoundedRectangle(cornerRadius: 16).stroke(amber.opacity(0.18), lineWidth: 0.5))
-                }
-                ForEach(cards) { c in WaitingCardView(card: c).environment(\.cardCompact, true) }
+                if !rows.isEmpty { VStack(alignment: .leading, spacing: 0) { ForEach(rows) { e in TLOpenView(e: e, tl: tl, engine: engine) } } }          // a line each, its buttons at the right
+                ForEach(cards) { c in WaitingCardView(card: c) }
             }
-            .padding(.top, 10)
+            .environment(\.cardCompact, true)
+            .padding(.top, 6)
         }
     }
 

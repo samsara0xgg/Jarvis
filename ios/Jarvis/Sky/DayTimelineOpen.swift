@@ -43,10 +43,11 @@ struct TLOpenView: View {
     @State private var words = ""       // and what he has written in it
     @FocusState private var writingFocus: Bool
     @Environment(\.accessibilityReduceMotion) private var reduce
+    @Environment(\.cardCompact) private var compact          // in the iPad's 等你 under the stage, with the brain's cards: one line, its buttons at the right
 
     var body: some View {
         Group {
-            if e.kind == .segment && !e.commute { segment } else { other }          // a stretch on the way opens to its trip
+            if compact { waitingLine } else if e.kind == .segment && !e.commute { segment } else { other }          // a stretch on the way opens to its trip
         }
         .padding(.bottom, inPlace ? 12 : 0)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -438,11 +439,33 @@ struct TLOpenView: View {
         }
     }
 
+    // MARK: what waits, in one line
+
+    /// its icon, its title and a line under it (when, and what it came from), and what can be done with it at the right; what the brain says to a press under it
+    private var waitingLine: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 14) {
+                if !e.symbol.isEmpty {
+                    Image(systemName: e.symbol).font(.system(size: 14, weight: .medium)).foregroundStyle(e.color.map { $0.color } ?? iconColor)
+                        .frame(width: 32, height: 32).background(Circle().fill(Color.white.opacity(0.06)))
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(e.title).font(.system(size: 16, weight: .medium)).foregroundStyle(Look.ink).lineLimit(1)
+                    Text([e.time, e.detail ?? ""].filter { !$0.isEmpty }.joined(separator: " · ")).font(.system(size: 13)).foregroundStyle(Look.ink3).lineLimit(1)
+                }
+                Spacer(minLength: 10)
+                if interactive { buttons.fixedSize() }
+            }
+            .frame(minHeight: 56)
+            if interactive, let note = tl.notes[e.id] { Text(note).font(.system(size: 12.5)).foregroundStyle(SetColor.red.opacity(0.92)).fixedSize(horizontal: false, vertical: true).padding(.leading, 46).transition(.opacity) }
+        }
+    }
+
     // MARK: what can be done with it
 
     /// What can be done with it, as chips: what the row opened is for first, in the light fill. Asking her is the long press's, and 这段在干嘛 is the last line of that menu.
     @ViewBuilder private var buttons: some View {
-        let doing = e.actions.filter { ($0 != .ask || upcoming) && $0 != .sayWhat }.sorted { rank($0) < rank($1) }          // 问她 is the long press's, and a chip of its own on what is still to come
+        let doing = e.actions.filter { ($0 != .ask || upcoming && !compact) && $0 != .sayWhat }.sorted { rank($0) < rank($1) }          // 问她 is the long press's, and a chip of its own on what is still to come (not in one line)
         if !doing.isEmpty {
             TLFlow(spacing: 6) {
                 ForEach(doing, id: \.self) { a in
