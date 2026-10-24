@@ -36,11 +36,8 @@ final class PageShots: XCTestCase {
     }
 
     func testChatScrolled() {
-        let app = open("时间线:聊天:长")
-        let w = app.windows.firstMatch
-        sleep(2)
-        w.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3)).press(forDuration: 0.05, thenDragTo: w.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.62)))
-        sleep(2)
+        _ = open("时间线:聊天:长:中间")
+        sleep(4)
         shot("3f-chat-scrolled")
     }
 

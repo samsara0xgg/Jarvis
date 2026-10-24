@@ -360,6 +360,7 @@ extension StarEngine {
         case "聊天":                                                               // the conversation's page of the bar at the foot, with a day and a half of talk on it (`:聊天:空` none)
             if parts.count < 3 || parts[2] != "空" { talkPageRounds(cal, long: parts.count > 2 && parts[2] == "长") }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [self] in showPage(.talk) }
+            if parts.count > 3, parts[3] == "中间" { DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) { [self] in ui.scrollTo = "c-3" } }          // `:聊天:长:中间` scrolled up to the middle of it
             if parts.count > 2, parts[2] == "话题" {          // made-up topics in the search card (the brain does not serve them yet), for the card's look
                 ChatSearchModel.sceneTopics = [
                     ChatTopic(id: "t1", name: "这周的安排", line: "二面明天下午三点", recap: "明天下午三点线上二面，两点半提醒你准备。小测周三十点在 ECS 123。还没定：周末爬山要看天气。",
