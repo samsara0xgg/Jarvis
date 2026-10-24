@@ -1,7 +1,12 @@
-"""ADR 0244: what he did and is doing is one read-only tool: now, a day, a span, one project."""
+"""ADR 0244: what he did and is doing is one read-only tool: now, a day, a span, one project.
+
+ADR 0391: one day also lists its rows (stretches, stays, outings) with their ids, so her answer
+can link to the ones it is about; the rows she was shown are logged for the turn's answer.
+"""
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from collections import Counter
 from contextlib import closing
@@ -9,12 +14,12 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final
 
 from jarvis.execution import speakable
-from jarvis.execution.tools import Tool, ToolError
+from jarvis.execution.tools import Tool, ToolError, _turn_of
 from jarvis.shared import CallerPrincipal
 from jarvis.state.daily_contract import DailyError, encoded
 from jarvis.state.daily_report import summary_section
 from jarvis.state.daily_store import saved_briefing
-from jarvis.state.event_log import open_runtime_event_log
+from jarvis.state.event_log import emit_event, iter_events_for_turn, open_runtime_event_log
 from jarvis.state.ledger import (
     CALL_FLOOR_S,
     TOP_FLOOR_S,
@@ -26,20 +31,27 @@ from jarvis.state.ledger import (
 from jarvis.state.work_state import current_state
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping, Sequence
+    from collections.abc import Callable, Iterable, Mapping, Sequence
     from datetime import date, tzinfo
     from pathlib import Path
 
     from jarvis.execution.tools import ToolContext
     from jarvis.shared.clock import Clock
 
+    type DayRows = Callable[[date, int], list[dict[str, Any]]]
+    """``(day, now_ms)`` -> the day's rows, ``{kind, id, date, start_ms, end_ms, title, what}``."""
+
+LOGGER = logging.getLogger(__name__)
+
+ROWS_EVENT: Final = "day.rows_read"
+"""ADR 0391: the rows of a day ``my_day`` showed her, for the links of the turn's answer."""
 _DESCRIPTION: Final = (
     "Use for what Allen did or is doing: now, a day, a span of days or one project; what was "
     "said is conversation, mail is mail. No arguments: today so far and what he is doing now "
     "(the latest work analysis, with its age). date: a past day's saved report, else computer "
-    "time, top projects and apps, commits, calls, places. to: a span up to 31 days, per day and "
-    "in total. about: only one project or app (Jarvis, WeChat, co-op), by day and by window. "
-    "Says which parts could not be read when his computer is not connected."
+    "time, top projects and apps, commits, calls, places. One day also lists its rows (what he "
+    "did, stays, outings) with ids. to: a span up to 31 days, per day and in total. about: only "
+    "one project or app (Jarvis, WeChat, co-op). Says which parts could not be read."
 )
 _SCHEMA: Final[Mapping[str, Any]] = {
     "type": "object",
@@ -200,11 +212,12 @@ def _gone(missing: Sequence[str]) -> str:
 class _MyDay:
     """The tool's handler: today and what he is doing, a day, a span, one project."""
 
-    def __init__(self, src: LedgerSources, clock: Clock) -> None:
+    def __init__(self, src: LedgerSources, clock: Clock, rows: DayRows | None = None) -> None:
         self._src = src
         self._clock = clock.now
+        self._day_rows = rows
 
-    def run(self, args: Mapping[str, Any], _ctx: object) -> dict[str, Any]:
+    def run(self, args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
         """Dispatch on the arguments; a store that cannot be read is worded for the model."""
         if unknown := sorted(set(args) - set(_SCHEMA["properties"])):
             msg = (
@@ -242,7 +255,24 @@ class _MyDay:
         except (sqlite3.Error, DailyError, OSError) as exc:
             msg = f"His day cannot be read just now ({exc}); tell him so."
             raise ToolError(msg, code="unavailable") from exc
-        return _fit(answer)
+        rows = self._timeline(answer, first, now) if first == last and not about else []
+        answer = _fit(answer)
+        _announce(ctx, rows[: len(answer.get("timeline", ()))])
+        return answer
+
+    def _timeline(self, answer: dict[str, Any], day: date, now: datetime) -> list[dict[str, Any]]:
+        """Put ``day``'s rows on ``answer`` as ``timeline`` lines; the rows, none if unread."""
+        if self._day_rows is None:
+            return []
+        now_ms = int(now.timestamp() * 1000)
+        try:
+            rows = self._day_rows(day, now_ms)
+        except (sqlite3.Error, OSError, ValueError, KeyError):
+            LOGGER.warning("my_day: the rows of %s could not be read", day, exc_info=True)
+            return []
+        if rows:
+            answer["timeline"] = [_line(row, self._src.zone, now_ms) for row in rows]
+        return rows
 
     def _figures(
         self, first: date, last: date, now: datetime, about: str = "",
@@ -415,6 +445,46 @@ class _MyDay:
         }, figures)
 
 
+def _line(row: Mapping[str, Any], zone: tzinfo, now_ms: int) -> str:
+    """``9:30 am-11:10 am stay: Corner Cafe (id stay-cafe)``; one still going ends ``now``."""
+    start = speakable.clock(datetime.fromtimestamp(row["start_ms"] / 1000, zone))
+    end = (
+        "now" if row["end_ms"] >= now_ms
+        else speakable.clock(datetime.fromtimestamp(row["end_ms"] / 1000, zone))
+    )
+    title = f": {speakable.cut(str(row['title']), 60)}" if row.get("title") else ""
+    return f"{start}-{end} {row['what']}{title} (id {row['id']})"
+
+
+def _announce(ctx: ToolContext, rows: Sequence[Mapping[str, Any]]) -> None:
+    """Log the rows she was shown, so the turn's answer may link to them (ADR 0391)."""
+    if not rows:
+        return
+    turn = _turn_of(ctx.action_id)
+    emit_event(
+        ctx.conn,
+        type=ROWS_EVENT,
+        payload={
+            "turn_id": turn or "",
+            "action_id": ctx.action_id,
+            "rows": [
+                {k: row[k] for k in ("kind", "id", "date", "start_ms", "end_ms", "title")}
+                for row in rows
+            ],
+        },
+        correlation={"turn_id": turn} if turn else {"action_id": ctx.action_id},
+    )
+
+
+def turn_rows(conn: sqlite3.Connection, turn_id: str) -> dict[str, dict[str, Any]]:
+    """The rows ``my_day`` showed her this turn, by id; a row shown twice keeps its latest."""
+    found: dict[str, dict[str, Any]] = {}
+    for event in iter_events_for_turn(conn, turn_id, (ROWS_EVENT,)):
+        for row in event.payload.get("rows", []):
+            found[str(row["id"])] = dict(row)
+    return found
+
+
 def _text(args: Mapping[str, Any], name: str) -> str:
     value = args.get(name)
     return value.strip() if isinstance(value, str) else ""
@@ -440,11 +510,14 @@ def _fit(answer: dict[str, Any]) -> dict[str, Any]:
     return answer
 
 
-def build_my_day_tool(sources: LedgerSources) -> tuple[Tool, ...]:
-    """``my_day`` over the ledger's sources (memory.db, the Event Log, TimeSink or its terminal)."""
+def build_my_day_tool(sources: LedgerSources, rows: DayRows | None = None) -> tuple[Tool, ...]:
+    """``my_day`` over the ledger's sources (memory.db, the Event Log, TimeSink or its terminal).
+
+    ``rows`` folds a day's rows for its ``timeline`` (ADR 0391); without it a day has none.
+    """
 
     def run(args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
-        return _MyDay(sources, ctx.clock).run(args, ctx)
+        return _MyDay(sources, ctx.clock, rows).run(args, ctx)
 
     return (
         Tool(
@@ -465,4 +538,4 @@ def build_my_day_tool(sources: LedgerSources) -> tuple[Tool, ...]:
     )
 
 
-__all__ = ["build_my_day_tool", "work_state_now"]
+__all__ = ["ROWS_EVENT", "build_my_day_tool", "turn_rows", "work_state_now"]

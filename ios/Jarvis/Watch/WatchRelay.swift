@@ -27,6 +27,7 @@ final class WatchRelay: NSObject, WCSessionDelegate {
     private var talk: WatchTalk?
     private var finishing = false
     private var backgroundTask = UIBackgroundTaskIdentifier.invalid
+    private var lineForTalk = false                         // the talk opened the phone's line (Qwen hears through it, ADR 0404); it lets it go at the end
     private struct Feed { var talk: WatchTalk?; var early: [(UUID, Data)] = [] }
     private nonisolated let feeding = OSAllocatedUnfairLock(initialState: Feed())
 
@@ -181,6 +182,8 @@ final class WatchRelay: NSObject, WCSessionDelegate {
         trace("talk start")
         guard Self.stub || BrainLink.shared.hasToken else { return fail(id, Words.Relay.notPaired) }
         guard WatchTalk.canListen else { return fail(id, Words.Relay.cannotListen) }
+        lineForTalk = PhoneLink.shared.link == nil
+        PhoneLink.shared.ensure()
         let t = WatchTalk(id: id, send: { [weak self] in self?.tell($0) }, paused: { [weak self] in Task { @MainActor in self?.finishTalk(id) } })
         talk = t; finishing = false
         feeding.withLock { f in
@@ -201,6 +204,7 @@ final class WatchRelay: NSObject, WCSessionDelegate {
     private func endTalk() {
         talk = nil; finishing = false
         feeding.withLock { $0.talk = nil }
+        if lineForTalk { lineForTalk = false; PhoneLink.shared.settle() }
         if backgroundTask != .invalid { UIApplication.shared.endBackgroundTask(backgroundTask); backgroundTask = .invalid }
     }
 

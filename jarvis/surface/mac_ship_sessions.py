@@ -3,9 +3,10 @@
 One record per session file, revised as the file grows. A record holds what the log says about
 the session as a whole (where, on which branch and repo, with which models, how long, what it
 cost, what it was called, what Claude Code's own recap of it says) and nothing of what was said:
-no prompt, no assistant text, no tool input or output is ever copied. A file is read once from
-its start and afterwards from the byte offset it was read to, whole lines only; the running
-record is kept in the shipper's state, so a restart resumes.
+no prompt, no assistant text, no tool input or output is ever copied. The one line taken from a
+message is a project thread's own name, the ``Thread title:`` line its opening brief starts with
+(ADR 0403). A file is read once from its start and afterwards from the byte offset it was read
+to, whole lines only; the running record is kept in the shipper's state, so a restart resumes.
 
 A growing session's record is shipped at most once per ``REVISION_MS`` (30 minutes) and always
 once the file has been quiet that long.
@@ -46,6 +47,8 @@ _TITLE_KEYS: Final = {
 _TITLE_FIELDS: Final = {
     "custom-title": "custom_title", "ai-title": "ai_title", "agent-name": "agent_name",
 }
+_THREAD_TITLE: Final = "Thread title:"
+_THREAD_TITLE_CAP: Final = 200
 
 
 def _fresh(account: str, session_id: str, path: Path) -> dict[str, Any]:
@@ -56,7 +59,7 @@ def _fresh(account: str, session_id: str, path: Path) -> dict[str, Any]:
         "user_prompts": 0, "assistant_messages": 0, "tool_uses": 0,
         "turn_count": 0, "turn_duration_ms": 0, "cost_state": None,
         "custom_title": [], "ai_title": [], "agent_name": [], "pr_links": [], "away_summaries": [],
-        "_last_assistant": None,
+        "thread_title": None, "_last_assistant": None,
     }
 
 
@@ -85,6 +88,25 @@ def _is_prompt(entry: dict[str, Any]) -> bool:
     )
 
 
+def _thread_title(record: dict[str, Any], entry: dict[str, Any]) -> str | None:
+    """The name a harness-made entry before his first prompt opens with, if it opens with one."""
+    if entry.get("type") != "user" or not entry.get("isMeta") or record["user_prompts"]:
+        return None
+    message = entry.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if isinstance(content, list):
+        content = next(
+            (b.get("text") for b in content if isinstance(b, dict) and b.get("type") == "text"),
+            None,
+        )
+    if not isinstance(content, str):
+        return None
+    first = content.lstrip().split("\n", 1)[0]
+    if not first.startswith(_THREAD_TITLE):
+        return None
+    return first.removeprefix(_THREAD_TITLE).strip()[:_THREAD_TITLE_CAP] or None
+
+
 def _take(record: dict[str, Any], entry: dict[str, Any]) -> None:  # noqa: C901 - one switch over the log's line types
     """Fold one log line into ``record``; only fields, counts and titles, never a body."""
     kind = entry.get("type")
@@ -99,6 +121,7 @@ def _take(record: dict[str, Any], entry: dict[str, Any]) -> None:  # noqa: C901 
     _add(record["entrypoints"], entry.get("entrypoint"))
     _add(record["session_kinds"], entry.get("sessionKind"))
     record["is_sidechain"] = record["is_sidechain"] or entry.get("isSidechain") is True
+    record["thread_title"] = record.get("thread_title") or _thread_title(record, entry)
     message = entry.get("message")
     if kind == "user" and _is_prompt(entry):
         record["user_prompts"] += 1
@@ -288,7 +311,8 @@ def scan(  # noqa: PLR0913 - one pass: roots, titles, state, batch, clock
                 out.note([op])
                 continue
             titles = [*public["custom_title"][-1:], *public["ai_title"][-1:],
-                      *public["agent_name"][-1:], *([title[0]] if title else [])]
+                      *public["agent_name"][-1:], *([title[0]] if title else []),
+                      *([public["thread_title"]] if public.get("thread_title") else [])]
             first = _moment(public["first_timestamp"])
             out.add({
                 "key": f"session:{account}:{session_id}:{sha}", "kind": "session", "zone": "UTC",

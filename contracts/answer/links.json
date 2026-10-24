@@ -1,0 +1,27 @@
+{
+  "route": "surface.response_emitted (the /phone/ws row frame, GET /inherent/conversation)",
+  "direction": "brain -> client",
+  "description": "The rows of his day her answer is about, on the answer's `surface.response_emitted` payload and on her row of `GET /inherent/conversation`; absent when there are none. At most 3, in her order. `kind` `row` is an item or span id of `GET /inherent/day` for `date`; `outing` is an outing id of `GET /inherent/footprint` for `date`. `start_ms` and `end_ms` are always set (a row still going ends at the time it was read): when the id is no longer on the page, open the row covering `start_ms`. `title` is at most 20 characters, in his language as she wrote it.",
+  "now_ms": 1792013400000,
+  "exact": ["date", "kind"],
+  "example": {
+    "links": [
+      {
+        "date": "2026-10-14",
+        "end_ms": 1791993900000,
+        "id": "stay-cafe",
+        "kind": "row",
+        "start_ms": 1791992100000,
+        "title": "街角咖啡馆"
+      },
+      {
+        "date": "2026-10-14",
+        "end_ms": 1791992100000,
+        "id": "outing-1791991200000",
+        "kind": "outing",
+        "start_ms": 1791991200000,
+        "title": "走去咖啡馆"
+      }
+    ]
+  }
+}

@@ -807,8 +807,8 @@ def _code_items(
             "end_ms": end,
             "state": _state(start, end, now_ms),
             "title": _newest(
-                f.get("custom_title"), f.get("desktop_title"), f.get("ai_title"),
-                f.get("agent_name"),
+                f.get("custom_title"), f.get("desktop_title"), f.get("thread_title"),
+                f.get("ai_title"), f.get("agent_name"),
             ),
             "project": PurePosixPath(f.get("git_toplevel") or f.get("cwd") or "").name,
             "prompts": int(f.get("user_prompts") or 0),

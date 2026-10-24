@@ -117,12 +117,12 @@ final class PhoneLink {
     /// A say through the line. The board knows the turn from here: its steps, rows and end are kept while the host answers. Words that may not be a turn at all (his
     /// words over her, a follow-up) are a turn for the board only once the host says so.
     func say(utteranceId: String, text: String, language: VoiceLang?, confidence: Double?, spoken: Bool, overHer: Bool, conversation: Bool,
-             about: [String: Any]?, attachments: [String] = [], continues: String? = nil, timeout: Double) async throws -> SayResult {
+             about: [String: Any]?, attachments: [String] = [], continues: String? = nil, asrEngine: String? = nil, timeout: Double) async throws -> SayResult {
         let l = ensure()
         let judged = overHer || conversation
         if !judged { board.begin(utterance: utteranceId) }
         let r = try await l.say(utteranceId: utteranceId, text: text, language: language, confidence: confidence, spoken: spoken, overHer: overHer,
-                                conversation: conversation, about: about, attachments: attachments, continues: continues, timeout: timeout)
+                                conversation: conversation, about: about, attachments: attachments, continues: continues, asrEngine: asrEngine, timeout: timeout)
         if r.verdict == "turn", let turn = r.turnId {
             if judged { board.begin(utterance: utteranceId) }
             board.bind(utterance: utteranceId, turn: turn)

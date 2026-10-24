@@ -27,6 +27,7 @@ from jarvis.runtime.dashboard import (
 from jarvis.runtime.rides import RIDE_LINE_CHARS, RIDE_LINE_PREFIX
 from jarvis.shared.about import clean_about
 from jarvis.shared.device_link import DeviceCallError
+from jarvis.state import topics
 from jarvis.state.event_log import open_runtime_event_log
 from jarvis.state.memory_db import MemorySettings, PictureFileId, ReceiptsOf, render_context
 from jarvis.state.shares import SHARES_LINE_CHARS, SHARES_LINE_PREFIX
@@ -135,6 +136,41 @@ def about_record(runtime: JarvisRuntime, trigger: Event) -> str | None:
     except Exception:  # a producer must never fail a turn.
         LOGGER.exception("live context: the about record failed, skipped")
         return None
+
+
+def about_row(runtime: JarvisRuntime, trigger: Event) -> dict[str, Any] | None:
+    """ADR 0391: the item this turn's phone has open, as a row its answer may link to."""
+    raw = trigger.payload.get("about")
+    if runtime.about_items is None or raw is None:
+        return None
+    try:
+        return runtime.about_items.row(clean_about(raw))
+    except Exception:  # an answer's links must never fail its turn.
+        LOGGER.exception("answer links: the about row could not be read, skipped")
+        return None
+
+
+def turn_topic(runtime: JarvisRuntime, trigger: Event) -> topics.Topic | None:
+    """ADR 0390: the listed topic this turn's words were sent from; never fails the turn."""
+    raw = trigger.payload.get("topic")
+    if runtime.memory is None or not isinstance(raw, str):
+        return None
+    try:
+        return topics.live_topic(runtime.memory.db_path, raw)
+    except Exception:  # a producer must never fail a turn.
+        LOGGER.exception("live context: the turn's topic could not be read, skipped")
+        return None
+
+
+def file_in_topic(runtime: JarvisRuntime, trigger: Event, record_id: str) -> None:
+    """ADR 0390: file a record of a turn sent from a topic under it; never fails the turn."""
+    raw = trigger.payload.get("topic")
+    if runtime.memory is None or not isinstance(raw, str):
+        return
+    try:
+        topics.file_his(runtime.memory.db_path, raw, [record_id])
+    except Exception:  # the record is kept whatever; only its place in the index is lost.
+        LOGGER.exception("topics: filing %s under %s failed", record_id, raw)
 
 
 _LIVE_LINE_CHARS: Final = 200

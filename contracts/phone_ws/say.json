@@ -2,7 +2,7 @@
   "frame": "say",
   "socket": "/phone/ws",
   "direction": "client -> brain",
-  "description": "Words the phone sends (ADR 0209, 0216): typed (`spoken` false) or heard (`spoken` true). The brain answers `said` with a verdict (see said.json), or `error` with `bad_say` when the frame is not one of these; a refused say writes nothing. `over_her` and `conversation` ask the brain to judge words said over her voice or in the phone's conversation mode; `continues` is the utterance a pause cut off; `about` is the item the phone has open (contracts/about.json). The value is the whole frame.",
+  "description": "Words the phone sends (ADR 0209, 0216): typed (`spoken` false) or heard (`spoken` true). The brain answers `said` with a verdict (see said.json), or `error` with `bad_say` when the frame is not one of these; a refused say writes nothing. `over_her` and `conversation` ask the brain to judge words said over her voice or in the phone's conversation mode; `continues` is the utterance a pause cut off; `about` is the item the phone has open (contracts/about.json); `topic` is the id of the topic he is talking in (ADR 0390, contracts/topics/list.json), and a merged topic's id names the one it went into. The value is the whole frame.",
   "now_ms": 1791993600000,
   "valid": [
     {
@@ -120,6 +120,26 @@
         "utterance_id": "utt_0042",
         "text": "把它推到明天",
         "spoken": true
+      }
+    },
+    {
+      "name": "typed words in a topic",
+      "value": {
+        "type": "say",
+        "text": "把它推到明天",
+        "spoken": false,
+        "utterance_id": "t30",
+        "topic": "t1"
+      }
+    },
+    {
+      "name": "heard words in a merged topic's id",
+      "value": {
+        "type": "say",
+        "text": "把它推到明天",
+        "spoken": true,
+        "utterance_id": "t31",
+        "topic": "t2"
       }
     }
   ],
@@ -321,6 +341,39 @@
         "text": "把它推到明天",
         "spoken": false,
         "about": "reminder-1"
+      },
+      "refusal": "bad_say"
+    },
+    {
+      "name": "a topic that is not an id",
+      "value": {
+        "type": "say",
+        "text": "把它推到明天",
+        "spoken": false,
+        "utterance_id": "t1",
+        "topic": "陶艺课"
+      },
+      "refusal": "bad_say"
+    },
+    {
+      "name": "a topic that is a number",
+      "value": {
+        "type": "say",
+        "text": "把它推到明天",
+        "spoken": false,
+        "utterance_id": "t1",
+        "topic": 1
+      },
+      "refusal": "bad_say"
+    },
+    {
+      "name": "a topic id that names no listed topic",
+      "value": {
+        "type": "say",
+        "text": "把它推到明天",
+        "spoken": false,
+        "utterance_id": "t1",
+        "topic": "t9"
       },
       "refusal": "bad_say"
     }

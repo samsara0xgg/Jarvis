@@ -82,6 +82,9 @@ _L2_OPERATIONAL_INSERTS: dict[str, frozenset[str]] = {
     # ADR 0234: the places he keeps (the view), their versions and the spots already asked
     # about, in memory.db; each write appends a change and updates the view in one transaction.
     "jarvis/state/places.py": frozenset({"places", "place_changes", "place_prompts"}),
+    # ADR 0390: the topics she keeps over the conversation (versions), the lines filed under them
+    # and one row per day the night sorted, in memory.db; append-only.
+    "jarvis/state/topics.py": frozenset({"topic_versions", "topic_lines", "topic_nights"}),
     # ADR 0260: the vectors of what is searchable, rebuilt from the texts at any time.
     "jarvis/state/meaning.py": frozenset({"meaning_vectors"}),
     # ADR 0259: the entries read from the exports he hands over, in memory.db; append-only.

@@ -15,12 +15,16 @@ from typing import TYPE_CHECKING, Any, cast
 
 from jarvis.decision import request_confirmation
 from jarvis.deployment.launchd import supervised
-from jarvis.runtime.daemon.output_watchers import add_places, add_reactions, add_steps
+from jarvis.runtime.daemon.output_watchers import (
+    add_places_and_links,
+    add_reactions,
+    add_steps,
+)
 from jarvis.runtime.daemon.restart import restart_when_idle, restarting
 from jarvis.runtime.doing_day import page_reach, read_day_doing
 from jarvis.runtime.job_mail import served_notices, settle_notice
 from jarvis.shared import lang
-from jarvis.state import footprint, phone_track, places, things
+from jarvis.state import footprint, phone_track, places, things, topics
 from jarvis.state.daily_report import resolve_zone
 from jarvis.state.day_highlights import day_notes
 from jarvis.state.day_line import DaySources, day_window, fold_day
@@ -30,7 +34,7 @@ from jarvis.state.event_log import open_runtime_event_log
 from jarvis.state.imports import IMPORTS_DIRNAME, shared_reads
 from jarvis.state.ledger import TURN_WAIT_S, TerminalScreen
 from jarvis.state.lifelog import DEFAULT_MIN_FREE_BYTES, LIFELOG_DIRNAME, Lifelog
-from jarvis.state.memory_db import conversation_rows
+from jarvis.state.memory_db import conversation_around, conversation_rows
 from jarvis.state.phone_day import day_summary
 from jarvis.state.reminders import ID_PREFIX
 from jarvis.state.shipments import Shipments
@@ -641,6 +645,14 @@ async def refresh_work_state_now(service: WorkStateService) -> dict[str, Any]:
     return await asyncio.to_thread(service.refresh_in_own_connection, trigger="dashboard")
 
 
+def _dress_rows(runtime: JarvisRuntime, memory_db: Path, rows: list[dict[str, object]]) -> None:
+    """What a row of the conversation carries beside its words, read from the log and the topics."""
+    add_steps(runtime.runtime_paths.event_log, rows)
+    add_places_and_links(runtime.runtime_paths.event_log, rows)
+    add_reactions(runtime.runtime_paths.event_log, rows)
+    topics.tag_rows(memory_db, rows)
+
+
 def read_conversation(
     runtime: JarvisRuntime, after: int, limit: int, before: int,
 ) -> dict[str, Any]:
@@ -653,10 +665,28 @@ def read_conversation(
         window_memory.db_path, since=since, after=after, before=before, limit=limit,
         attachments=runtime.attachments,
     )
-    add_steps(runtime.runtime_paths.event_log, rows)
-    add_places(runtime.runtime_paths.event_log, rows)
-    add_reactions(runtime.runtime_paths.event_log, rows)
+    _dress_rows(runtime, window_memory.db_path, rows)
     return {"since": since, "rows": rows, "has_more": has_more}
+
+
+def read_conversation_around(
+    runtime: JarvisRuntime, record_id: str, limit: int,
+) -> dict[str, Any] | None:
+    """ADR 0390: the page around one message, or ``None`` when no message has that id."""
+    window_memory = runtime.memory
+    if window_memory is None:
+        return None
+    found = conversation_around(
+        window_memory.db_path, record_id, limit=limit, attachments=runtime.attachments,
+    )
+    if found is None:
+        return None
+    rows, has_older, has_newer = found
+    _dress_rows(runtime, window_memory.db_path, rows)
+    return {
+        "since": runtime.config.session.history_since, "rows": rows, "has_more": has_older,
+        "has_newer": has_newer,
+    }
 
 
 def _read_turn_timings(event_log_path: Path, since_ms: int, limit: int) -> dict[str, Any]:

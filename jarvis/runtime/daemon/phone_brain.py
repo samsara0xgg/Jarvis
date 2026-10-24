@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 from jarvis.runtime import JarvisRuntime, device_voice
 from jarvis.runtime.daemon.listen_ports import local_listen_ports, make_cancel_voice_runs
 from jarvis.runtime.daemon.output_watchers import PhoneRows, SpokenRows
+from jarvis.runtime.daemon.submissions import resolve_topic
 from jarvis.runtime.daemon.voice_wiring import VoiceKnobs, minimax_client, tts_volume_kwargs
 from jarvis.runtime.dictation import local_polisher
 from jarvis.runtime.phone_voice import PhoneSpeech
@@ -214,6 +215,11 @@ def build_phone_hub(
         check_attachments=(
             None if runtime.attachments is None else runtime.attachments.check_for_turn
         ),
+        resolve_topic=(
+            None if runtime.memory is None
+            else functools.partial(resolve_topic, runtime.memory.db_path)
+        ),
+        hearing=None if runtime.terminal_hub is None else runtime.terminal_hub.hearing,
     )
     if runtime.locator is not None:
         # ADR 0281: a phone with a live conversation socket is asked for a fix over it.

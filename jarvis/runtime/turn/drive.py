@@ -35,6 +35,8 @@ from jarvis.runtime.config import RuntimeBootstrapError
 from jarvis.runtime.turn.cancel import SUPERSEDE_WINDOW_S
 from jarvis.runtime.turn.context import (
     about_record,
+    about_row,
+    file_in_topic,
     history_pictures,
     history_receipts,
     live_lines,
@@ -42,6 +44,7 @@ from jarvis.runtime.turn.context import (
     max_tool_iterations,
     snapshot_reader,
     turn_device,
+    turn_topic,
     voice_service_tier,
     warm_next_prefix,
     whereabouts_lines,
@@ -53,6 +56,7 @@ from jarvis.runtime.turn.finish import (
     record_attachments,
     record_reaction,
     record_words,
+    turn_links,
     turn_places,
     turn_times,
 )
@@ -224,6 +228,9 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             audio_path=audio_ref if isinstance(audio_ref, str) else None,
             attachments=record_attachments(runtime.attachments, user_intent_event.payload),
         )
+    if memory is not None and continuation is None and not card_button:
+        # ADR 0390: words sent from a topic are filed under it as soon as their row is there.
+        file_in_topic(runtime, user_intent_event, memory_exclude_id)
     # ADR 0268: the same words again from the same device, while the turn that heard them first
     # is still answering, are kept as his row but start no second answer: this turn is cancelled
     # as superseded by that one the moment its run opens.
@@ -408,6 +415,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             connected_apps=connected_apps,
             turn_device=turn_device(runtime, effective_turn_id),
             about_record=about_record(runtime, user_intent_event),
+            topic=turn_topic(runtime, user_intent_event),
             live_context=(
                 *live_lines(runtime.live_context),
                 *whereabouts_lines(runtime, effective_turn_id),
@@ -689,6 +697,9 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             written_apart=written_apart,
             times=turn_times(runtime.conn, effective_turn_id),
             places=turn_places(runtime.conn, effective_turn_id),
+            links=turn_links(
+                runtime.conn, effective_turn_id, partial(about_row, runtime, user_intent_event),
+            ),
         )
         rendered = capture.getvalue()
         sys.stdout.write(rendered)
@@ -723,6 +734,7 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
                     source="jarvis",
                     text=answer,
                 )
+                file_in_topic(runtime, user_intent_event, render_event.event_uid)
             if reaction is not None and not card_button:
                 record_reaction(runtime, memory.db_path, memory_exclude_id, reaction, render_event)
             if (

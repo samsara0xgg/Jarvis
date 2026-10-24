@@ -392,7 +392,7 @@ def test_a_session_is_one_code_item_titled_projected_and_clipped_to_the_day(
                 top="/Users/me/Projects/jarvis-b/.claude/worktrees/bridge-cse_01FK",
             )), "fields": {
                 **tree["fields"], "git_origin": "https://github.com/samsara0xgg/Jarvis.git",
-                "user_prompts": 0,
+                "user_prompts": 0, "thread_title": "语音识别出错", "ai_title": ["ai guess"],
             }},
             _session(
                 "s-side",
@@ -439,6 +439,8 @@ def test_a_session_is_one_code_item_titled_projected_and_clipped_to_the_day(
     assert (items["code-s-tree"]["prompts"], items["code-s-tree"]["remote_session"]) == (
         0, "cse_01FK",
     )
+    # named by the thread's opening brief, before Claude Code's own guess (ADR 0403)
+    assert items["code-s-tree"]["title"] == "语音识别出错"
     assert items["code-s-ai"]["account"] == "b"
     assert items["code-s-agent"]["title"] == "a2"
     assert "detail" not in items["code-s-none"]

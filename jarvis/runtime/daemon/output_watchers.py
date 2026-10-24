@@ -29,7 +29,7 @@ from jarvis.state.event_log import (
     turn_intent_channel,
     turn_origin,
 )
-from jarvis.state.turn_steps import answer_places, answer_steps
+from jarvis.state.turn_steps import answer_lists, answer_steps
 from jarvis.surface import terminal_voice
 
 if TYPE_CHECKING:
@@ -793,27 +793,29 @@ def add_steps(event_log: Path, rows: list[dict[str, object]]) -> None:
         row.update(found.get(str(row["id"]), {}))
 
 
-def add_places(event_log: Path, rows: list[dict[str, object]]) -> None:
-    """ADR 0279: put the places of her answer on its row, so history redraws the map card.
+def add_places_and_links(event_log: Path, rows: list[dict[str, object]]) -> None:
+    """ADR 0279, 0391: put her answer's places and links on its row, so history redraws them.
 
-    ``places`` is what the answer's ``surface.response_emitted`` carried; a row without any gets
-    no key. A log that cannot be read leaves the page without places, never without rows.
+    ``places`` and ``links`` are what the answer's ``surface.response_emitted`` carried; a row
+    gets each key only when it had some. A log that cannot be read leaves the page without them,
+    never without rows.
     """
     ids = [str(row["id"]) for row in rows if row["source"] == "jarvis"]
     if not ids:
         return
     conn = open_runtime_event_log(event_log)
     try:
-        found = answer_places(conn, ids)
+        found = answer_lists(conn, ids)
     except sqlite3.Error:
-        LOGGER.warning("conversation: the places of its answers could not be read", exc_info=True)
+        LOGGER.warning(
+            "conversation: the places and links of its answers could not be read", exc_info=True,
+        )
         return
     finally:
         with contextlib.suppress(sqlite3.Error):
             conn.close()
     for row in rows:
-        if places := found.get(str(row["id"])):
-            row["places"] = places
+        row.update(found.get(str(row["id"]), {}))
 
 
 def add_reactions(event_log: Path, rows: list[dict[str, object]]) -> None:

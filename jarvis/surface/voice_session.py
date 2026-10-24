@@ -529,6 +529,10 @@ class UtteranceAssembler:
         self._settled_cut = 0
         self._settled_inbox: tuple[str, int, str] | None = None
         self._settled_lock = threading.Lock()
+        # ADR 0402: a streaming recognizer's words so far, filled like the settled inbox; from
+        # the first of them they are the captions and SenseVoice's snapshots stop.
+        self._running_inbox: tuple[str, str] | None = None
+        self._running = False
         self._partial = config.partial_asr
         self._frame_ms = frame_samples * 1_000.0 / sample_rate_hz
 
@@ -661,6 +665,14 @@ class UtteranceAssembler:
         """
         with self._settled_lock:
             self._settled_inbox = (utterance_id, audio_bytes, text)
+
+    def hear_running(self, utterance_id: str, words: str) -> None:
+        """A streaming recognizer heard ``words`` of ``utterance_id`` so far (ADR 0402).
+
+        Safe from any thread; the newest call wins, as with :meth:`settle`.
+        """
+        with self._settled_lock:
+            self._running_inbox = (utterance_id, words)
 
     def discard_prepared(self, utterance_id: str) -> None:
         """Drop what final ASR prepared for a committed utterance that is not going to hear it."""
@@ -1076,6 +1088,9 @@ class UtteranceAssembler:
         if self._degraded:
             return
         self._take_settled()
+        self._take_running()
+        if self._running:
+            return
         self._pull_revisions()
         self._frames_since_snapshot += 1
         if self._frames_since_snapshot >= self._interval_frames:
@@ -1095,6 +1110,17 @@ class UtteranceAssembler:
         self._settled_cut = cut_bytes
         self._frames_since_snapshot = self._interval_frames  # the tail is decoded on this tick
         self._show_caption("")
+
+    def _take_running(self) -> None:
+        """From a streaming recognizer's first words on, the captions are its words."""
+        with self._settled_lock:
+            heard, self._running_inbox = self._running_inbox, None
+        if heard is None or heard[0] != self._utterance_id:
+            return
+        words = voice_asr.caption_text(heard[1])
+        if words:
+            self._running = True
+            self._show_caption(words)
 
     def _show_caption(self, tail: str) -> None:
         settled = self._settled_text
@@ -1217,8 +1243,10 @@ class UtteranceAssembler:
         self._shown_partial = ("", "")
         self._settled_text = ""
         self._settled_cut = 0
+        self._running = False
         with self._settled_lock:
             self._settled_inbox = None
+            self._running_inbox = None
         self._stable_prefix = ""
         self._degraded = False
         self._set_phase(None, "")
@@ -1405,6 +1433,9 @@ class DuplexVoiceSession:
         listen = getattr(pipeline, "on_prepared_text", None)
         if config.partial_asr.captions and not config.partial_asr.enabled and callable(listen):
             self._captions_settle = bool(listen(self._assembler.settle))
+        running = getattr(pipeline, "on_running_text", None)
+        if config.partial_asr.captions and not config.partial_asr.enabled and callable(running):
+            running(self._assembler.hear_running)
         self._detections: queue.Queue[WakeDetection] = queue.Queue(
             maxsize=config.detection_queue_capacity,
         )

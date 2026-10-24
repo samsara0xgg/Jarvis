@@ -15,8 +15,9 @@ utterance ended. Both ends live here: :class:`BrainHearing` with :class:`QwenEar
     brain -> terminal   {"type": "hear", "sid": "...", "op": "done", "text": "..."}
     brain -> terminal   {"type": "hear", "sid": "...", "op": "failed", "error": {...}}
 
-``pcm`` is 16 kHz mono int16. ``text`` is every word heard so far, sent each time it changes;
-``done`` carries the final words after a ``finish``. The words are written as said: fillers and
+``pcm`` is 16 kHz mono int16. ``text`` is every word heard so far, sent each time it changes,
+and the terminal's captions from the first of them (ADR 0402); ``done`` carries the final words
+after a ``finish``. The words are written as said: fillers and
 repeats stay, and no model polishes them before the turn's model reads them.
 
 Qwen writes its final words only after ``finish``, and its words at the end of the audio matched
@@ -30,6 +31,7 @@ import asyncio
 import base64
 import concurrent.futures
 import contextlib
+import functools
 import json
 import logging
 import re
@@ -343,6 +345,7 @@ class RemoteHearing:
         self._link = link
         self._lock = threading.Lock()
         self._done: dict[str, concurrent.futures.Future[str]] = {}
+        self._on_text: dict[str, Callable[[str], None]] = {}
         link.hearing = self
 
     @property
@@ -350,11 +353,16 @@ class RemoteHearing:
         """The brain is connected and hears."""
         return self._link.brain_hears
 
-    def open(self, terms: Sequence[str]) -> str:
-        """Start a stream; returns its id. The brain's answer arrives at :meth:`finish`."""
+    def open(self, terms: Sequence[str], on_text: Callable[[str], None] | None = None) -> str:
+        """Start a stream; returns its id. The brain's answer arrives at :meth:`finish`.
+
+        ``on_text`` gets the words so far each time they change, on the link's thread.
+        """
         sid = uuid.uuid4().hex
         with self._lock:
             self._done[sid] = concurrent.futures.Future()
+            if on_text is not None:
+                self._on_text[sid] = on_text
         self._link.post({"type": "hear", "sid": sid, "op": "open", "terms": list(terms)})
         return sid
 
@@ -387,16 +395,20 @@ class RemoteHearing:
         """Forget ``sid``; with ``tell`` the brain stops it too."""
         with self._lock:
             self._done.pop(sid, None)
+            self._on_text.pop(sid, None)
         if tell:
             self._link.post({"type": "hear", "sid": sid, "op": "abort"})
 
     def receive(self, frame: Mapping[str, Any]) -> None:
         """One ``hear`` frame from the brain."""
+        sid = str(frame.get("sid"))
         with self._lock:
-            done = self._done.get(str(frame.get("sid")))
+            done, on_text = self._done.get(sid), self._on_text.get(sid)
         if done is None or done.done():
             return
-        if frame.get("op") == "done":
+        if frame.get("op") == "text" and on_text is not None:
+            on_text(str(frame.get("text") or ""))
+        elif frame.get("op") == "done":
             done.set_result(str(frame.get("text") or ""))
         elif frame.get("op") == "failed":
             error = frame.get("error")
@@ -407,6 +419,7 @@ class RemoteHearing:
         """The link dropped: every stream in flight fails."""
         with self._lock:
             pending, self._done = list(self._done.values()), {}
+            self._on_text = {}
         for done in pending:
             if not done.done():
                 done.set_exception(HearingError("the brain link dropped"))
@@ -416,10 +429,12 @@ class CloudFinalRecognizer:
     """A voice turn's words from Qwen through the brain; SenseVoice keeps the rest.
 
     ``realtime.final_asr: cloud`` (ADR 0400). The capture session streams each utterance from
-    speech onset (:meth:`stream`) and the commit collects Qwen's words (:meth:`recognize_prepared`).
-    SenseVoice still hears every committed utterance, for its language, emotion and audio event,
-    the live captions, and the words themselves whenever Qwen's are missing: the brain does not
-    hear, the stream failed or timed out, or Qwen wrote nothing. ``asr_engine`` says which.
+    speech onset (:meth:`stream`) and the commit collects Qwen's words (:meth:`recognize_prepared`);
+    Qwen's words so far go to :meth:`on_running_text`'s listener as they come, for the captions
+    (ADR 0402). SenseVoice still hears every committed utterance, for its language, emotion and
+    audio event, the captions until Qwen's first words, and the words themselves whenever Qwen's
+    are missing: the brain does not hear, the stream failed or timed out, or Qwen wrote nothing.
+    ``asr_engine`` says which.
     """
 
     def __init__(
@@ -432,6 +447,14 @@ class CloudFinalRecognizer:
         self._terms = terms
         self._lock = threading.Lock()
         self._streams: dict[str, tuple[str, bytearray]] = {}
+        self._on_words: Callable[[str, str], None] | None = None
+
+    def on_running_text(self, listener: Callable[[str, str], None]) -> None:
+        """Hand ``listener(utterance_id, words)`` Qwen's words so far of each streamed utterance.
+
+        Called on the link's thread each time they change; a clip heard whole has none.
+        """
+        self._on_words = listener
 
     def stream(self, utterance_id: str, pcm: bytes) -> None:
         """More of ``utterance_id``'s audio, in capture order; called on the capture thread."""
@@ -440,7 +463,9 @@ class CloudFinalRecognizer:
             if held is None:
                 if not self._hearing.available:
                     return
-                held = self._streams[utterance_id] = (self._open(), bytearray())
+                listener = self._on_words
+                on_text = None if listener is None else functools.partial(listener, utterance_id)
+                held = self._streams[utterance_id] = (self._open(on_text), bytearray())
                 # An utterance that never committed leaves its stream behind: the oldest go.
                 while len(self._streams) > MAX_SESSIONS - 1:
                     stale = next(iter(self._streams))
@@ -476,15 +501,15 @@ class CloudFinalRecognizer:
         return self._settle(sid, audio_pcm, None)
 
     def partial_text(self, audio_pcm: bytes) -> str:
-        """SenseVoice's snapshot decode: the captions and the semantic endpoint."""
+        """SenseVoice's snapshot decode: the captions until Qwen's words, the semantic endpoint."""
         return self._sensevoice.partial_text(audio_pcm)
 
     def prewarm(self) -> None:
         """Load SenseVoice before the microphone opens."""
         self._sensevoice.prewarm()
 
-    def _open(self) -> str:
-        return self._hearing.open(qwen_terms(self._terms()))
+    def _open(self, on_text: Callable[[str], None] | None = None) -> str:
+        return self._hearing.open(qwen_terms(self._terms()), on_text)
 
     def _settle(self, sid: str | None, audio_pcm: bytes, why: str | None) -> TranscriptionResult:
         heard = self._sensevoice.recognize(audio_pcm)

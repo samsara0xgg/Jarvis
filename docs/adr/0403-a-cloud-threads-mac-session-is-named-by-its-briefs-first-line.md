@@ -1,0 +1,46 @@
+# ADR 0403 — A cloud thread's Mac session is named by its brief's first line
+
+**Status:** Accepted
+**Date:** 2026-10-24
+**Supersedes:** none
+
+## Context
+
+- ADR 0294 ships each Claude Code session as fields only: no prompt, answer or tool text leaves
+  the Mac. The day line names a `code` item by `custom_title`, `desktop_title`, `ai_title` or
+  `agent_name`.
+- A project thread on claude.ai that runs on his Mac does so through `claude remote-control`, in a
+  worktree named `bridge-cse_<id>`. On 2026-10-24 a read-only check of such a transcript found
+  none of those titles, no Desktop record, and no name anywhere on the Mac: the first entry is the
+  coordinator's opening brief (`isMeta`), the next is his message in an envelope that carries ids
+  only. The thread's name lives on claude.ai alone, and there is no supported read-only way to
+  fetch it. The timeline showed these sessions blank.
+- He wants the session's own name on the timeline, at the time, not a day later ("没有办法当时就
+  做吗"). The coordinator writes every new thread's brief and agreed to start it with one line
+  `Thread title: <title>`; he approved that convention in the thread on 2026-10-24.
+
+## Decision
+
+The Mac shipper takes one line of text from a session: the first line of a meta (harness-made)
+user entry that comes before any prompt of his, when that line starts with `Thread title:`. The
+rest of it, at most 200 characters, is the field `thread_title`; nothing else of the brief, and
+nothing from any later entry, is copied. The day line names a `code` item by it after
+`custom_title` and `desktop_title` and before `ai_title` and `agent_name`.
+
+## Alternatives rejected
+
+- **Read the name from claude.ai with Claude Code's login.** The only route is an undocumented
+  endpoint called with his account's token; the Mac would hold a credential use the brain has no
+  business making, and the endpoint can change without notice.
+- **A nightly letter mapping `cse_` ids to names (ADR 0295 route).** Names arrive a day late, and
+  he dropped it once threads are named at the start.
+- **Ship the whole brief and let the brain pick the name out.** The brief is written for the
+  thread and quotes his messages; ADR 0294 keeps message text on the Mac.
+
+## Consequences
+
+- Threads started before the convention, and any session whose brief does not open with the line,
+  stay unnamed. A session already read past its first entry is not read again from the start.
+- A thread renamed later keeps the name it was started with.
+- The convention lives with whoever writes the brief; if it stops writing the line, sessions go
+  back to blank, with no error.

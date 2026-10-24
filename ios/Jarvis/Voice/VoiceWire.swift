@@ -177,7 +177,10 @@ enum PhoneFrame: Equatable, Sendable {
              about: Data? = nil,                        // the item he has open (ADR 0214), as JSON
              attachments: [String] = [],                // ids from POST /inherent/attachments; typed words only
              continues: String? = nil,                  // the utterance id of the spoken say these words go on from (ADR 0271); never its words
-             topic: String? = nil)                      // the topic he goes on with (接着聊, Sky/ChatSearch.swift)
+             topic: String? = nil,                      // the topic he goes on with (接着聊, Sky/ChatSearch.swift)
+             asrEngine: String? = nil)                  // what heard spoken words (ADR 0404): qwen, or why not
+    /// one utterance's audio to the brain's Qwen (ADR 0404): `open` with hot words, `audio` with 16 kHz mono Int16, then `finish` (or `abort`)
+    case hear(sid: String, op: String, terms: [String] = [], pcm: Data? = nil)
     case barge
     case cancel
     case ping(tNs: Int64)
@@ -186,8 +189,9 @@ enum PhoneFrame: Equatable, Sendable {
         var o: [String: Any]
         switch self {
         case .hello(let voice): o = ["type": "hello", "voice": voice]
-        case .say(let id, let text, let lang, let conf, let spoken, let overHer, let conversation, let about, let attachments, let continues, let topic):
+        case .say(let id, let text, let lang, let conf, let spoken, let overHer, let conversation, let about, let attachments, let continues, let topic, let engine):
             o = ["type": "say", "utterance_id": id, "text": text, "spoken": spoken]
+            if let engine { o["asr_engine"] = engine }
             if !attachments.isEmpty { o["attachments"] = attachments }
             if let lang { o["language"] = lang }
             if let conf { o["confidence"] = conf }
@@ -204,6 +208,10 @@ enum PhoneFrame: Equatable, Sendable {
                 if let snapshot { o["snapshot"] = snapshot }
             case .error(let why): o["error"] = why
             }
+        case .hear(let sid, let op, let terms, let pcm):
+            o = ["type": "hear", "sid": sid, "op": op]
+            if op == "open" { o["terms"] = terms }
+            if let pcm { o["pcm"] = pcm.base64EncodedString() }
         case .barge: o = ["type": "barge"]
         case .cancel: o = ["type": "cancel"]
         case .ping(let t): o = ["type": "ping", "t_ns": t]
@@ -220,7 +228,11 @@ enum PhoneFrame: Equatable, Sendable {
             self = .say(utteranceId: id, text: text, language: o["language"] as? String, confidence: (o["confidence"] as? NSNumber)?.doubleValue, spoken: spoken,
                          overHer: o["over_her"] as? Bool ?? false, conversation: o["conversation"] as? Bool ?? false,
                          about: (o["about"] as? [String: Any]).flatMap { try? JSONSerialization.data(withJSONObject: $0, options: [.sortedKeys]) },
-                         attachments: o["attachments"] as? [String] ?? [], continues: o["continues"] as? String, topic: o["topic"] as? String)
+                         attachments: o["attachments"] as? [String] ?? [], continues: o["continues"] as? String, topic: o["topic"] as? String,
+                         asrEngine: o["asr_engine"] as? String)
+        case "hear":
+            guard let sid = o["sid"] as? String, let op = o["op"] as? String else { return nil }
+            self = .hear(sid: sid, op: op, terms: o["terms"] as? [String] ?? [], pcm: (o["pcm"] as? String).flatMap { Data(base64Encoded: $0) })
         case "located":
             guard let id = o["request_id"] as? String else { return nil }
             if let why = o["error"] as? String { self = .located(requestId: id, outcome: .error(why)); return }
@@ -238,7 +250,10 @@ enum PhoneFrame: Equatable, Sendable {
 /// host -> phone
 enum HostFrame: Equatable, Sendable {
     /// judges: the host judges over-her and follow-up says (a `verdict` on every `said`); old hosts omit it
-    case ready(device: String, voice: Bool, sampleRate: Int, judges: Bool)
+    /// hear: the brain has Qwen, so `PhoneFrame.hear` streams are heard (ADR 0404); older hosts omit it
+    case ready(device: String, voice: Bool, sampleRate: Int, judges: Bool, hear: Bool = false)
+    /// a `hear` stream's words: `text` (all heard so far, each time they change), `done` (the final words after `finish`), `failed` (`text` is why)
+    case hear(sid: String, op: String, text: String)
     /// verdict: turn | backchannel | unclear | echo | stop | wait | dismissed | quiet:<level>; turnId is nil unless it is a turn;
     /// recordId is the conversation record of his typed words, so a row of his can be reacted to before the conversation is read (ADR 0256; older hosts omit it)
     case said(utteranceId: String, turnId: String?, verdict: String, recordId: String? = nil)
@@ -255,7 +270,10 @@ enum HostFrame: Equatable, Sendable {
     var json: Data {                                    // the host's side; here for the round-trip check
         var o: [String: Any]
         switch self {
-        case .ready(let d, let v, let r, let j): o = ["type": "ready", "device": d, "voice": v, "sample_rate": r, "judges": j]
+        case .ready(let d, let v, let r, let j, let h): o = ["type": "ready", "device": d, "voice": v, "sample_rate": r, "judges": j, "hear": h]
+        case .hear(let sid, let op, let text):
+            o = ["type": "hear", "sid": sid, "op": op]
+            if op == "failed" { o["error"] = ["message": text] } else { o["text"] = text }
         case .said(let u, let t, let v, let rec):
             o = ["type": "said", "utterance_id": u, "turn_id": t ?? NSNull(), "verdict": v]
             if let rec { o["record_id"] = rec }
@@ -276,7 +294,11 @@ enum HostFrame: Equatable, Sendable {
         switch type {
         case "ready":
             guard let d = o["device"] as? String, let v = o["voice"] as? Bool, let r = (o["sample_rate"] as? NSNumber)?.intValue else { return nil }
-            self = .ready(device: d, voice: v, sampleRate: r, judges: o["judges"] as? Bool ?? false)
+            self = .ready(device: d, voice: v, sampleRate: r, judges: o["judges"] as? Bool ?? false, hear: o["hear"] as? Bool ?? false)
+        case "hear":
+            guard let sid = o["sid"] as? String, let op = o["op"] as? String else { return nil }
+            let why = (o["error"] as? [String: Any])?["message"] as? String
+            self = .hear(sid: sid, op: op, text: op == "failed" ? why ?? "" : o["text"] as? String ?? "")
         case "said":
             guard let u = o["utterance_id"] as? String else { return nil }
             self = .said(utteranceId: u, turnId: o["turn_id"] as? String, verdict: o["verdict"] as? String ?? "turn", recordId: o["record_id"] as? String)
@@ -326,7 +348,9 @@ func demoVoiceWire() {
                                .say(utteranceId: "u3", text: "等一下", language: "zh", confidence: 0.8, spoken: true, overHer: true, conversation: true),
                                .say(utteranceId: "u4", text: "这个几点", language: "zh", confidence: 0.9, spoken: true, about: Data(#"{"id":"r1","kind":"reminder","start_ms":1,"title":"t"}"#.utf8)),
                                .say(utteranceId: "u5", text: "", language: nil, confidence: nil, spoken: false, attachments: ["a1", "b2"]),
-                               .say(utteranceId: "u6", text: "往39路的地方走", language: "zh", confidence: nil, spoken: true, overHer: true, continues: "u1"), .barge, .cancel, .ping(tNs: 1_234_567_890_123)]
+                               .say(utteranceId: "u6", text: "往39路的地方走", language: "zh", confidence: nil, spoken: true, overHer: true, continues: "u1"), .barge, .cancel, .ping(tNs: 1_234_567_890_123),
+                               .say(utteranceId: "u7", text: "135E", language: "zh", confidence: 0.9, spoken: true, asrEngine: "qwen"),
+                               .hear(sid: "c1", op: "open", terms: ["Jarvis"]), .hear(sid: "c1", op: "audio", pcm: Data([1, 0, 255, 127])), .hear(sid: "c1", op: "finish")]
     for f in phone { assert(PhoneFrame(f.json) == f, "\(f)") }
     // the flags go on the wire only when true
     let plain = (try? JSONSerialization.jsonObject(with: PhoneFrame.say(utteranceId: "u", text: "x", language: nil, confidence: nil, spoken: true).json)) as? [String: Any]
@@ -340,6 +364,8 @@ func demoVoiceWire() {
     assert(row.turnId == "T1" && row.text == "好的" && row.phase == "final")
     let host: [HostFrame] = [.ready(device: "phone", voice: true, sampleRate: 32_000, judges: true), .ready(device: "phone", voice: false, sampleRate: 32_000, judges: false),
                              .said(utteranceId: "u1", turnId: "T1", verdict: "turn"), .said(utteranceId: "u4", turnId: nil, verdict: "quiet:night"), .row(row), .pong(tNs: 5, hostNs: 9), .error(code: "retry", message: "again"),
+                             .ready(device: "phone", voice: true, sampleRate: 32_000, judges: true, hear: true),
+                             .hear(sid: "c1", op: "text", text: "135"), .hear(sid: "c1", op: "done", text: "135E"), .hear(sid: "c1", op: "failed", text: "refused"),
                              .step(StepFrame(turnId: "T1", step: 1, tool: "transit", label: "查公交 · 去 UVic", state: .running, startedMs: 1_700_000_000_000, endedMs: nil)),
                              .step(StepFrame(turnId: "T1", step: 1, tool: "transit", label: "查公交 · 去 UVic", state: .failed, startedMs: 1_700_000_000_000, endedMs: 1_700_000_004_000))]
     for f in host { assert(HostFrame(f.json) == f, "\(f)") }
