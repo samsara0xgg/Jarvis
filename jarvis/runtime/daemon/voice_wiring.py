@@ -357,7 +357,7 @@ def _cloud_recognizer(
         LOGGER.warning("realtime.final_asr: cloud is a terminal's; hearing with SenseVoice")
         return sensevoice
     vocab = Path(str((runtime.config.raw.get("dictation") or {}).get("vocab_path", "")))
-    LOGGER.info("voice turns hear with Qwen through the brain; SenseVoice keeps the captions")
+    LOGGER.info("voice turns and their captions hear with Qwen through the brain")
     return CloudFinalRecognizer(
         sensevoice=sensevoice, hearing=hearing, terms=functools.partial(load_user_terms, vocab),
     )

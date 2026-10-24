@@ -13,6 +13,7 @@ from jarvis.surface.terminal_hearing import BrainHearing, QwenEars
 from jarvis.surface.terminal_speaker import Journal, VoiceLink
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
 
@@ -26,13 +27,19 @@ class QwenTask:
 
 
 class FakeQwen:
-    """Qwen's duplex protocol on fake connections: a task's words are its audio, read as text.
+    """Qwen's duplex protocol on fake connections: a task's words are ``words(its audio)``.
 
-    ``fails`` makes every task end in ``task-failed``.
+    By default the audio read as text. ``fails`` makes every task end in ``task-failed``;
+    ``running`` sends the words so far after each piece of audio, as Qwen does while it hears.
     """
 
-    def __init__(self, *, fails: bool = False) -> None:
+    def __init__(
+        self, *, fails: bool = False, running: bool = False,
+        words: Callable[[bytes], str] = lambda audio: audio.decode("ascii"),
+    ) -> None:
         self.fails = fails
+        self.running = running
+        self.words = words
         self.tasks: list[QwenTask] = []
         self.connections = 0
 
@@ -51,6 +58,9 @@ class _Connection:
         if isinstance(message, bytes):
             assert self._task is not None
             self._task.audio += message
+            if self._qwen.running:
+                words = self._qwen.words(bytes(self._task.audio))
+                self._event("result-generated", sentence={"sentence_id": 1, "text": words})
             return
         header = json.loads(message)["header"]
         if header["action"] == "run-task":
@@ -63,7 +73,7 @@ class _Connection:
             if self._qwen.fails:
                 self._event("task-failed", error_code="InvalidParameter", error_message="refused")
                 return
-            words = self._task.audio.decode("ascii")
+            words = self._qwen.words(bytes(self._task.audio))
             self._event("result-generated", sentence={"sentence_id": 1, "text": words})
             self._event("task-finished")
 

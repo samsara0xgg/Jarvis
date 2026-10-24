@@ -176,6 +176,15 @@ class VoicePipeline:
         register(listener)
         return True
 
+    def on_running_text(self, listener: Callable[[str, str], None]) -> None:
+        """Hand ``listener`` a streaming recognizer's words so far of each utterance (ADR 0402).
+
+        A recognizer that does not stream never calls it; the listener runs on its thread.
+        """
+        register = getattr(self._recognizer, "on_running_text", None)
+        if callable(register):
+            register(listener)
+
     def stream_final(self, utterance_id: str, audio_bytes: bytes) -> None:
         """More of ``utterance_id``'s audio as he speaks, for a recognizer that streams (ADR 0400).
 
