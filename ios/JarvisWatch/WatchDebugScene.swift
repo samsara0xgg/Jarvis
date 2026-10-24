@@ -3,9 +3,9 @@ import SwiftUI
 
 /// Debug only: `-watchScene <name>` puts the app in one state with a made-up day (WatchDaySample), for screenshots: the home (rest, waiting, aod), a talk
 /// (listen, think, answer), a card (reminder, leave), a page (today, ride, and today scrolled to its end), 设置 (and scrolled to its end),
-/// and the complications' gallery.
+/// and the complications' gallery. `cycle` steps a talk listen → think → answer every 3 s, for her face changes.
 enum WatchScene: String {
-    case home, waiting, aod, listen, think, answer, reminder, leave, today, ride, complications
+    case home, waiting, aod, listen, think, answer, reminder, leave, today, ride, complications, cycle
     case todayEnd = "today-end", settings, settingsMore = "settings-more"
 
     static var current: WatchScene? { UserDefaults.standard.string(forKey: "watchScene").flatMap(WatchScene.init(rawValue:)) }
@@ -27,6 +27,14 @@ enum WatchScene: String {
         case .think: m.talk = .thinking(heard: WatchDay.sampleHeard)
         case .answer: m.talk = .answer(spoken: WatchDay.sampleSpoken, written: WatchDay.sampleWritten, card: WatchDay.sampleCard)
         case .settings, .settingsMore: UserDefaults.standard.set(true, forKey: WatchSettings.taps)          // the board's taps on
+        case .cycle:
+            Task { @MainActor in
+                while true {
+                    for t: WatchModel.Talk in [.listening(heard: WatchDay.sampleHeard), .thinking(heard: WatchDay.sampleHeard), .answer(spoken: WatchDay.sampleSpoken, written: WatchDay.sampleWritten, card: nil)] {
+                        m.talk = t; try? await Task.sleep(for: .seconds(3))
+                    }
+                }
+            }
         default: break
         }
     }
@@ -64,9 +72,9 @@ struct WatchComplicationGallery: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(alignment: .top, spacing: 8) {
-                    card("circular", w: 52, h: 52) { CircularComplication(day: day, now: now) { HerSprite(face: .rest, size: 30) } }
+                    card("circular", w: 52, h: 52) { CircularComplication(day: day, now: now) { HerSprite(face: .rest, size: 30, paused: true) } }
                     card("corner", w: 100, h: 52) {
-                        HStack { CornerComplication(day: day) { HerSprite(face: .rest, size: 30) }.frame(width: 40, height: 40); Text(complicationLine(day)).font(.system(size: 12)).foregroundStyle(WatchTheme.ink) }
+                        HStack { CornerComplication(day: day) { HerSprite(face: .rest, size: 30, paused: true) }.frame(width: 40, height: 40); Text(complicationLine(day)).font(.system(size: 12)).foregroundStyle(WatchTheme.ink) }
                     }
                 }
                 card("rectangular", w: 160, h: 56) { RectangularComplication(day: day) }
