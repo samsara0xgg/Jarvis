@@ -334,7 +334,62 @@ struct StarChrome: View {
             .offset(x: 30, y: 846 - ui.attach.rise - ui.kbLift)
     }
 
-    // MARK: the composer: type to her, or tap the mic. A + at the left, what is attached above the words, a field that grows to five lines.
+    /// the composer, at its place over the bar on 聊天 (`StarUI.composerOut`); it goes up with the keyboard and with what is attached
+    private var composer: some View {
+        let out = ui.composerOut
+        return ChatComposer(engine: engine, ui: ui, focused: $focused)
+            .opacity(ui.tl.renaming == nil ? 1 : 0).allowsHitTesting(ui.tl.renaming == nil)        // a place being renamed has the keyboard: the composer does not rise over its field
+            .animation(.easeOut(duration: 0.15), value: ui.tl.renaming == nil)
+            .opacity(out ? 1 : 0).offset(y: out || reduce ? 0 : 16).allowsHitTesting(out).accessibilityHidden(!out)
+            .animation(.easeOut(duration: out ? 0.25 : 0.2), value: out)
+            .offset(x: 20, y: H - StarUI.restGap - ChatComposer.fieldBox - ui.attach.rise - ui.footLift)
+    }
+}
+
+// MARK: - the composer
+
+/// Type to her, or tap the mic: a + at the left, what is attached above the words, a field that grows to five lines, and the chips of what he may ask over it. Where it stands and when
+/// it shows are its host's (the phone's chrome, the iPad's 聊天 page); `focused` is the field's keyboard, which the host also watches.
+struct ChatComposer: View {
+    let engine: StarEngine
+    @Bindable var ui: StarUI
+    @Binding var focused: Bool
+    var width: Double = W - 40
+
+    /// how tall the composer's box is with one line (the words' own 48 and 2 pt over and under)
+    static let fieldBox = 52.0
+
+    var body: some View {
+        let at = ui.attach
+        return VStack(spacing: 0) {
+            AttachStrip(model: at)
+            ZStack(alignment: .bottom) {
+                AttachField(text: $ui.text, focused: $focused, model: at, send: sendComposer).padding(.bottom, 2)          // one line is 48 tall, the box 52
+                    .onChange(of: ui.text) { _, t in if let c = AttachField.clip(t) { ui.text = c; engine.trouble("太长了，只留了前 2 万字") } }
+                HStack(spacing: 0) {
+                    AttachPlusButton(model: at).scaleEffect(40.0 / 36)          // a 40 pt circle
+                    Spacer(minLength: 0)
+                    MicButton(state: at.hasItems ? .send : ui.mic, size: 42) { composerTap() }.padding(.bottom, -1)
+                }.padding(.horizontal, 6).padding(.bottom, 6)
+            }
+            .frame(width: width, height: at.fieldH + 4)
+        }
+        .frame(width: width, height: Self.fieldBox + at.rise, alignment: .bottom)
+        .composerCard(focused: focused)
+        .overlay(alignment: .topLeading) {
+            WrapLayout(spacing: 8) {
+                ForEach(Array(engine.talks.enumerated()), id: \.offset) { _, t in
+                    Button { engine.send(t.q) } label: { suggestion(t.q) }.buttonStyle(PressScale())
+                }
+            }
+            .frame(width: width, alignment: .leading)
+            .fixedSize(horizontal: false, vertical: true)
+            .alignmentGuide(.top) { $0[.bottom] + 58 }
+            .opacity(ui.chipsOn && !at.hasItems && !at.isOpen ? 1 : 0).offset(y: ui.chipsOn && !at.hasItems && !at.isOpen ? 0 : 8)
+            .allowsHitTesting(ui.chipsOn && !at.hasItems && !at.isOpen)
+            .animation(.easeOut(duration: 0.3), value: ui.chipsOn && !at.hasItems && !at.isOpen)
+        }
+    }
 
     /// words and attachments go together; with no words, the attachments are named
     private func sendComposer() {
@@ -357,45 +412,6 @@ struct StarChrome: View {
             .padding(.horizontal, 14).frame(height: 34).background(Color(red: 18 / 255, green: 22 / 255, blue: 52 / 255).opacity(0.66), in: Capsule())
             .overlay(Capsule().stroke(Color.white.opacity(0.1), lineWidth: 0.5))
     }
-
-    private var composer: some View {
-        let at = ui.attach, out = ui.composerOut          // on the timeline only on 聊天 (`StarUI.composerOut`)
-        return VStack(spacing: 0) {
-            AttachStrip(model: at)
-            ZStack(alignment: .bottom) {
-                AttachField(text: $ui.text, focused: $focused, model: at, send: sendComposer).padding(.bottom, 2)          // one line is 48 tall, the box 52
-                    .onChange(of: ui.text) { _, t in if let c = AttachField.clip(t) { ui.text = c; engine.trouble("太长了，只留了前 2 万字") } }
-                HStack(spacing: 0) {
-                    AttachPlusButton(model: at).scaleEffect(40.0 / 36)          // a 40 pt circle
-                    Spacer(minLength: 0)
-                    MicButton(state: at.hasItems ? .send : ui.mic, size: 42) { composerTap() }.padding(.bottom, -1)
-                }.padding(.horizontal, 6).padding(.bottom, 6)
-            }
-            .frame(width: W - 40, height: at.fieldH + 4)
-        }
-        .frame(width: W - 40, height: Self.fieldBox + at.rise, alignment: .bottom)
-        .composerCard(focused: focused)
-        .overlay(alignment: .topLeading) {
-            WrapLayout(spacing: 8) {
-                ForEach(Array(engine.talks.enumerated()), id: \.offset) { _, t in
-                    Button { engine.send(t.q) } label: { suggestion(t.q) }.buttonStyle(PressScale())
-                }
-            }
-            .frame(width: W - 40, alignment: .leading)
-            .fixedSize(horizontal: false, vertical: true)
-            .alignmentGuide(.top) { $0[.bottom] + 58 }
-            .opacity(ui.chipsOn && !at.hasItems && !at.isOpen ? 1 : 0).offset(y: ui.chipsOn && !at.hasItems && !at.isOpen ? 0 : 8)
-            .allowsHitTesting(ui.chipsOn && !at.hasItems && !at.isOpen)
-            .animation(.easeOut(duration: 0.3), value: ui.chipsOn && !at.hasItems && !at.isOpen)
-        }
-        .opacity(ui.tl.renaming == nil ? 1 : 0).allowsHitTesting(ui.tl.renaming == nil)        // a place being renamed has the keyboard: the composer does not rise over its field
-        .animation(.easeOut(duration: 0.15), value: ui.tl.renaming == nil)
-        .opacity(out ? 1 : 0).offset(y: out || reduce ? 0 : 16).allowsHitTesting(out).accessibilityHidden(!out)
-        .animation(.easeOut(duration: out ? 0.25 : 0.2), value: out)
-        .offset(x: 20, y: H - StarUI.restGap - Self.fieldBox - at.rise - ui.footLift)
-    }
-    /// how tall the composer's box is with one line (the words' own 48 and 2 pt over and under)
-    private static let fieldBox = 52.0
 }
 
 // MARK: - small pieces
