@@ -21,6 +21,7 @@ import pytest
 import yaml
 
 from jarvis.runtime.daemon import output_watchers, voice_wiring
+from jarvis.shared import lang
 from jarvis.shared.realtime import Wave4ResponseFlags
 from jarvis.shared.realtime_trace import realtime_trace_snapshot, reset_realtime_trace
 from jarvis.state.event_log import emit_event, open_event_log
@@ -33,9 +34,11 @@ from jarvis.surface.voice_ledger import (
     PlaybackLedger,
     StalePlaybackGeneration,
 )
-from jarvis.surface.voice_media import pipeline as media_pipeline
+from jarvis.surface.voice_media import journal as media_journal
 from jarvis.surface.voice_media.contract import MediaSubmitOutcome, StreamingMediaStartupError
-from jarvis.surface.voice_media.pipeline import CUT_FADE_MS, YIELD_RAMP_MS, StreamingTTSPipeline
+from jarvis.surface.voice_media.gain import CUT_FADE_MS, YIELD_RAMP_MS
+from jarvis.surface.voice_media.pipeline import StreamingTTSPipeline
+from jarvis.surface.voice_media.shutdown_clock import ShutdownClock
 from tests.support.hold import HANG_S, never_waits_for
 from tests.support.media import (
     Behavior,
@@ -956,7 +959,7 @@ def test_terminal_debt_blocks_every_successor_until_durable(
 
     try:
         with (
-            patch.object(media_pipeline, "terminalize_playback", side_effect=_faulted_terminalize),
+            patch.object(media_journal, "terminalize_playback", side_effect=_faulted_terminalize),
             CallbackPump(player),
         ):
             first = emit_response(
@@ -1056,7 +1059,7 @@ def test_checkpoint_persists_during_later_provider_feed_and_retries(  # noqa: PL
             text=["first checkpoint. ", "blocked second."],
         )
         with (
-            patch.object(media_pipeline, "emit_event", side_effect=_transient_checkpoint),
+            patch.object(media_journal, "emit_event", side_effect=_transient_checkpoint),
             CallbackPump(player),
         ):
             asyncio.run(submit_response(pipeline, rows))
@@ -1705,7 +1708,7 @@ def test_isolation_completes_even_when_its_own_durable_row_cannot_be_appended(
         with (
             CallbackPump(player),
             patch.object(player, "settle_interrupted_generation", return_value=None),
-            patch.object(media_pipeline, "emit_event", side_effect=_faulted_emit),
+            patch.object(media_journal, "emit_event", side_effect=_faulted_emit),
         ):
             rows = emit_response(
                 conn,
@@ -2202,7 +2205,7 @@ def test_a_break_after_a_good_answer_says_the_cached_network_lost_line_not_the_t
             )
             asyncio.run(submit_response(pipeline, first))
             assert pipeline.wait_until_idle(timeout_s=3.0)
-            wait_until(lambda: bool(pipeline._network_lost_pcm))  # noqa: SLF001
+            wait_until(lambda: pipeline._network_lost.line(lang.language()) is not None)  # noqa: SLF001
             pump.blocks.clear()
             second = emit_response(
                 conn, response_id="RLINE-2", group_id="GLINE-2", turn_id="TLINE-2",
@@ -2254,8 +2257,9 @@ def test_a_kept_network_lost_line_is_read_from_disk_not_synthesized_again(
             )
             asyncio.run(submit_response(pipeline, first))
             assert pipeline.wait_until_idle(timeout_s=3.0)
-            wait_until(lambda: bool(pipeline._network_lost_pcm))  # noqa: SLF001
-            line = next(iter(pipeline._network_lost_pcm.values()))  # noqa: SLF001
+            wait_until(lambda: pipeline._network_lost.line(lang.language()) is not None)  # noqa: SLF001
+            line = pipeline._network_lost.line(lang.language())  # noqa: SLF001
+            assert line is not None
         finally:
             assert pipeline.close()
             conn.close()
@@ -2472,7 +2476,7 @@ def test_macos_say_late_spawn_debt_blocks_successor_until_reaped(  # noqa: PLR09
     assert actions.index("spawn-return:old") < actions.index("kill:old")
     assert actions.index("kill:old") < actions.index("reaped:old")
     assert actions.index("reaped:old") < actions.index("spawn:new")
-    assert not pipeline._fallback_janitors  # noqa: SLF001
+    assert not pipeline._say_fallback.janitors_pending()  # noqa: SLF001
 
 
 def test_media_owner_startup_failures_and_bounded_shutdown(  # noqa: PLR0915
@@ -2687,7 +2691,7 @@ def test_media_owner_stuck_startup_is_daemon_isolated_and_late_closed(
 
 
 def _publish_deadlines_together(
-    pipeline: StreamingTTSPipeline,
+    clock: ShutdownClock,
     *,
     short_s: float,
     long_s: float,
@@ -2701,7 +2705,7 @@ def _publish_deadlines_together(
 
     def _publish(timeout_s: float) -> None:
         publish.wait()
-        pipeline._request_shutdown_deadline(timeout_s)  # noqa: SLF001
+        clock.lower_to(time.monotonic() + timeout_s)
         if timeout_s == short_s:
             short_published_by.append(time.monotonic())
 
@@ -2715,34 +2719,23 @@ def _publish_deadlines_together(
     for thread in threads:
         thread.join(timeout=HANG_S)
         assert not thread.is_alive()
-    with pipeline._deadline_lock:  # noqa: SLF001
-        return pipeline._shutdown_deadline, short_published_by[0]  # noqa: SLF001
+    return clock.deadline, short_published_by[0]
 
 
-def test_shutdown_deadline_is_concurrent_monotonic_min(tmp_path: Path) -> None:
+def test_shutdown_deadline_is_concurrent_monotonic_min() -> None:
     """A later long request cannot overwrite an earlier shutdown deadline."""
-    db_path = tmp_path / "deadline-min.db"
     short_s = 2.0
     # Which request lands last is up to the scheduler, and only the long one landing last can
-    # overwrite the short one, so the race is run on a fresh pipeline each round.
+    # overwrite the short one, so the race is run on a fresh clock each round.
     for _ in range(16):
-        pipeline = StreamingTTSPipeline(
-            provider=FakeProvider(candidate_count=1),
-            player=make_player(),
-            conn_factory=lambda: open_event_log(db_path),
-            boot_high_water_id=0,
-            config=replace(media_config(), shutdown_timeout_s=0.5),
-            start_player=False,
-        )
         chosen, short_published_by = _publish_deadlines_together(
-            pipeline,
+            ShutdownClock(),
             short_s=short_s,
             long_s=8.0,
         )
         # The short request computed its deadline before it returned, so the deadline in force
         # is no later than that, whichever of the two was published last.
         assert chosen <= short_published_by + short_s
-        assert pipeline.close(wait_timeout_s=HANG_S)
 
 
 class _FakeOutputStream:

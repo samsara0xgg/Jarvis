@@ -1,0 +1,64 @@
+{
+  "id": "search-deep-knows-where-and-when",
+  "tool": "web_search",
+  "said": "我附近哪里买得到好的燕麦奶，认真查一下",
+  "at": "2026-10-21T09:30:00-07:00",
+  "zone": "America/Vancouver",
+  "state": null,
+  "here": {
+    "lat": 51.0486,
+    "lng": -114.0708,
+    "age_s": 900,
+    "place": "Downtown"
+  },
+  "args": {
+    "query": "where to buy good barista oat milk near me",
+    "depth": "deep"
+  },
+  "recording": "search-deep-knows-where-and-when.recording.json",
+  "expect": {
+    "result": [
+      {
+        "path": "brief",
+        "op": "eq",
+        "value": "The barista edition steams best."
+      }
+    ],
+    "requests": [
+      {
+        "url": "api.anthropic.com/v1/messages",
+        "count": 1,
+        "body": [
+          {
+            "path": "tools[0].user_location.type",
+            "op": "eq",
+            "value": "approximate"
+          },
+          {
+            "path": "tools[0].user_location.country",
+            "op": "eq",
+            "value": "CA"
+          },
+          {
+            "path": "tools[0].user_location.timezone",
+            "op": "eq",
+            "value": "America/Edmonton"
+          },
+          {
+            "path": "tools[0].user_location.city",
+            "op": "absent"
+          },
+          {
+            "path": "system",
+            "op": "matches",
+            "value": "^Today is Wednesday, 2026-10-21\\. "
+          }
+        ]
+      }
+    ],
+    "receipt": {
+      "status": "done",
+      "reads_only": true
+    }
+  }
+}

@@ -1,0 +1,98 @@
+{
+  "id": "plumbing-mail-yes-sends-the-draft-once-and-the-card-is-gone",
+  "layer": "plumbing",
+  "at": "2026-10-21T11:00:00-07:00",
+  "zone": "America/Vancouver",
+  "state": null,
+  "turns": [
+    {
+      "said": "write Sam that Thursday works, then send it",
+      "script": [
+        {
+          "tool_calls": [
+            {
+              "name": "mail",
+              "arguments": {
+                "action": "draft",
+                "to": "Sam",
+                "subject": "Lunch",
+                "body": "Thursday works."
+              }
+            }
+          ]
+        },
+        {
+          "tool_calls": [
+            {
+              "name": "mail",
+              "arguments": {
+                "action": "send",
+                "draft": "r1"
+              }
+            }
+          ]
+        }
+      ],
+      "card": {
+        "tool": "mail",
+        "letter": true,
+        "args": {
+          "to": [
+            "Sam Lee <sam@example.com>"
+          ],
+          "subject": "Lunch",
+          "body": "Thursday works."
+        }
+      }
+    },
+    {
+      "said": "yes",
+      "after_s": 20,
+      "script": [
+        {
+          "text": "Sent."
+        }
+      ],
+      "card": null
+    }
+  ],
+  "recording": "plumbing-mail-yes-sends-the-draft-once-and-the-card-is-gone.recording.json",
+  "expect": {
+    "model_requests": [
+      2,
+      1
+    ],
+    "text_must": [
+      "Sent"
+    ],
+    "events_after": {
+      "must": [
+        "confirmation.accepted",
+        {
+          "type": "action.result_observed",
+          "payload_matches": "mail:"
+        }
+      ],
+      "must_not": [
+        "confirmation.rejected"
+      ]
+    },
+    "gmail": [
+      {
+        "tool": "gmail_createDraft",
+        "count": 1
+      },
+      {
+        "tool": "gmail_sendDraft",
+        "args": {
+          "draftId": "r1"
+        },
+        "count": 1
+      },
+      {
+        "tool": "gmail_modify",
+        "count": 0
+      }
+    ]
+  }
+}

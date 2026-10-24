@@ -20,12 +20,24 @@ An item (JSON, one per file) holds his words and the moment, place and data they
   ``mac_events.db`` / ``memory.db`` (copied before the boot) and/or ``mac_events.sql`` /
   ``memory.sql`` (run after it). Rows made at or after ``at`` are deleted from the copied
   databases first (:func:`cut_at`); the run prints the tables that cut could not handle.
+- ``job_mail``: optional, the job hunt he has at ``at`` (the recording's ``settings`` must turn
+  ``job_mail`` on, and the sandbox has no Gmail): ``{mails: [...], applications: [...],
+  read_at?, failing_since?}``. A mail is a ``job_mail`` row (``message_id``, ``received_at``,
+  ``kind``, ``company``, ``role``, ``sender_name``, ``sender_domain``, ``subject``, and for an
+  interview ``event_at``, ``event_later_at``, ``event_text``); an application is one he told her
+  or added (``company``, ``role``, ``applied_at``, ``status``, ``source``, ``hidden``). They are
+  written through the ledger's own functions. ``read_at`` is when job mail was last read and
+  ``failing_since`` when reading began to fail (absent: not read since the sandbox started). A
+  ``job_mail.json`` of this shape in the item's ``state`` directory is read first.
 - ``ride``: optional, a followed bus ride he is on at ``at``:
   ``{route, trip_id, stops: [{seq, stop_id, name, lat, lng}]}``; the follower's timetable for the
   trip is those stops.
-- ``setup``: earlier calls, ``[{tool, args}]``, made through the same dispatcher.
+- ``setup``: earlier calls, ``[{tool, args, after_s?}]``, made through the same dispatcher;
+  ``after_s`` lets that many seconds of the frozen clock pass after the call.
+- ``fake_clock``: optional, true to have the runtime's clock follow the frozen wall time.
 - ``recording``: path (relative to the item's directory) of what each provider answered, or null.
-  A provider call the recording lacks fails the item.
+  A provider call the recording lacks fails the item. A request the recording holds more than once
+  is answered by each in order, the last one every time after: a read that works, then fails.
 - ``expect``:
   - ``summary_must[]`` / ``summary_must_not[]``: regexes on the result's ``summary`` (an
     error's text).
@@ -41,8 +53,31 @@ An item (JSON, one per file) holds his words and the moment, place and data they
     ``{"status": "needs_choice"}``.
   - ``error_kind``: the kind the call must fail with (``needs_him``, ``impossible``,
     ``retry_other_args`` or ``dont_retry``); without it an error fails the item.
+  - ``requests[]``: what the providers were sent. ``{url, nth?, count?, body[]}``: among the
+    requests whose URL holds ``url``, there are ``count`` of them, and the ``nth`` (0 the first,
+    -1 the last) has a JSON body that passes each ``{path, op, value?}`` of ``body`` (the same
+    checks as ``result``).
+  - ``block_d_submitted``: true when the result's "At least N submitted" must be the N block D
+    states in its own submitted line, rendered over the sandbox's data at ``at``.
+  - ``gmail[]``: ``{tool, count?, args?, query?}``; the calls the mail tool made to the invented
+    mailbox (a recording's ``mailbox``, ``scripts/tool_exam_mailbox.py``). Those of ``tool`` whose
+    arguments hold every ``args`` entry and whose ``query`` matches the regex must number
+    ``count`` (default: at least one; ``0`` for none).
   - ``checker``: name of a reference checker in ``scripts/tool_exam_checkers.py`` that derives the
     facts from the recording.
+
+A recording's HTTP entry is found by its method, URL and request body: exactly, or as the same
+JSON; ``"any_body": true`` answers any body (a model chooses its own query), ``"body_has"`` and
+``"body_lacks"`` list texts the body must hold or must not (a second request of a pair is told
+from the first by what it carries). ``"headers": {"location": ...}`` gives the headers a page
+needs besides its content type. httpx requests are answered from it like ``urlopen`` ones.
+
+An entry may be a stream (``"content_type": "text/event-stream"`` with the events as its body): it
+reaches the SDK's async client, which the tool reads on its own thread. ``"hang_s": N`` makes the
+stream go silent once its body is read, after letting N seconds pass on the frozen clock, which is
+how an item shows a deadline passing while a server says nothing. An item with ``"fake_clock":
+true`` has the runtime's own clock stand on that frozen wall time, so its waits end when the
+frozen time passes and not when real time does.
 
 Every result also passes :func:`assert_tool_result`, the spec's rules for a result and an error.
 The ``baseline.json`` beside the items lists the ids that fail; a run fails when an item outside it
@@ -55,6 +90,7 @@ memory that no key value is in the bytes it writes; it never prints one.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import base64
 import contextlib
 import hashlib
@@ -84,6 +120,7 @@ from typing import TYPE_CHECKING, Any, Self
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
+import httpx
 import time_machine
 import yaml
 from mcp import types as mcp_types
@@ -92,16 +129,21 @@ from jarvis.deployment import load_env_file
 from jarvis.execution.mcp_tools import McpServers
 from jarvis.execution.tools import ActionLifecycle, release_turn_actions
 from jarvis.shared import ActionRequest, CallerPrincipal
+from jarvis.shared.clock import SystemClock, pin_local_time
+from jarvis.shared.receipts import call_risk
+from jarvis.state import job_ledger
 from jarvis.state.event_log import emit_event
+from jarvis.state.ledger import LedgerSources, job_hunt_text
 from jarvis.state.ride_progress import StopTime
 from jarvis.state.rides import Ride
 from jarvis.state.rides import write_start as write_ride_start
 from tests.support.runtime_config import boot_runtime
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator, Sequence
+    from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Sequence
 
     from jarvis.runtime import JarvisRuntime
+    from tests.support.gmail_fake import Gmail
 
 REPO = Path(__file__).resolve().parent.parent
 ITEMS = Path("~/.jarvis/evals/tool-exam/tool-items").expanduser()
@@ -195,9 +237,12 @@ _SECRET_NAME = re.compile(r"KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH", r
 _SECRET_PARAM = re.compile(
     r"^(key|api[-_]?key|apikey|token|access[-_]?token|sig|signature|auth)$", re.IGNORECASE
 )
-_KEPT_HEADERS = frozenset({"content-type"})
+_KEPT_HEADERS = frozenset({"location"})
+"""Response headers a recording keeps besides the content type: what a redirect needs."""
 _SCRUBBED = "<scrubbed>"
 _MIN_SECRET = 6
+_RECORDED_ADDRESS = "93.184.216.34"
+"""A globally routable address, which the egress guard allows; nothing is ever sent to it."""
 
 
 class RecordingMiss(OSError):  # noqa: N818 - reads as the fact it states
@@ -225,6 +270,18 @@ def secret_values() -> dict[str, str]:
 
 def _hash(data: bytes | None) -> str:
     return hashlib.sha256(data or b"").hexdigest()[:16]
+
+
+def _json_hash(data: bytes | None) -> str | None:
+    """A hash of the JSON ``data`` holds with its keys sorted and no spacing, or None if not JSON.
+
+    Two requests that say the same thing in another key order or spacing hash alike.
+    """
+    try:
+        decoded = json.loads(data or b"")
+    except ValueError:
+        return None
+    return _hash(json.dumps(decoded, sort_keys=True, separators=(",", ":")).encode())
 
 
 def _request_of(url: object, data: object) -> tuple[str, str, bytes]:
@@ -275,7 +332,11 @@ class Recording:
         self.data: dict[str, Any] = {"version": 1, "settings": {}, "env": [], "http": [], "mcp": []}
         self.data.update(data or {})
         for entry in self.data["http"]:  # a hand-written entry gives its request body, not a hash
-            entry.setdefault("body_sha", _hash(entry.get("request", "").encode()))
+            request = entry.get("request", "").encode()
+            entry.setdefault("body_sha", _hash(request))
+            if (same_json := _json_hash(request)) is not None:
+                entry.setdefault("json_sha", same_json)
+        self._asked: dict[tuple[str, str, str], int] = {}
 
     @classmethod
     def load(cls, path: Path) -> Recording:
@@ -293,11 +354,36 @@ class Recording:
         return list(self.data["env"])
 
     def http(self, method: str, url: str, body: bytes) -> dict[str, Any] | None:
-        """The recorded HTTP exchange for this request, or None."""
-        want = (method.upper(), scrub_url(url), _hash(body))
-        return next(
-            (e for e in self.data["http"] if (e["method"], e["url"], e["body_sha"]) == want), None
-        )
+        """The recorded HTTP exchange for this request, or None.
+
+        A request recorded more than once gets each exchange in turn as it is asked again, and the
+        last one from then on.
+        """
+        want = (method.upper(), scrub_url(url))
+        raw, same_json = _hash(body), _json_hash(body)
+        text = body.decode("utf-8", "replace")
+        found: list[dict[str, Any]] = [
+            e
+            for e in self.data["http"]
+            if (e["method"], e["url"]) == want
+            and (
+                e.get("any_body")
+                or raw == e["body_sha"]
+                or (same_json is not None and same_json == e.get("json_sha"))
+            )
+            and all(t in text for t in e.get("body_has", ()))
+            and not any(t in text for t in e.get("body_lacks", ()))
+        ]
+        if not found:
+            return None
+        key = (*want, raw)
+        asked = self._asked.get(key, 0)
+        self._asked[key] = asked + 1
+        return found[min(asked, len(found) - 1)]
+
+    def hosts(self) -> set[str]:
+        """The host names of the recorded HTTP exchanges."""
+        return {h for e in self.data["http"] if (h := urllib.parse.urlsplit(e["url"]).hostname)}
 
     def mcp(self, server: str, tool: str, args: Mapping[str, Any]) -> dict[str, Any] | None:
         """The recorded MCP tool call, or None."""
@@ -359,7 +445,7 @@ class _Listed:
 
 
 class _Transport:
-    """Patches the provider boundaries: ``urlopen`` and the MCP client's listing and tool call.
+    """Patches the provider boundaries: ``urlopen``, httpx and the MCP client's listing and call.
 
     ``replay`` answers from the recording and fails any call it lacks; ``record`` makes the call
     and stores the answer. Everything else that opens a socket is refused while replaying, except
@@ -379,10 +465,14 @@ class _Transport:
         self.live = live
         self.listed = dict(listed or {})
         self.misses: list[str] = []
+        self.requests: list[dict[str, Any]] = []
+        """Every HTTP request made, in order: ``{method, url, body}`` (the body decoded if JSON)."""
         self.secrets: dict[str, str] = secret_values()
         self._real_urlopen = urllib.request.urlopen
         self._stack = contextlib.ExitStack()
         self._open = threading.local()
+        self.clock: Any = None
+        """The frozen clock, set once the sandbox is up: a ``hang_s`` entry lets time pass on it."""
 
     def __enter__(self) -> Self:
         real_call, real_direct = McpServers._call, McpServers.call  # noqa: SLF001
@@ -409,20 +499,55 @@ class _Transport:
             return server in self.listed
 
         self._stack.enter_context(patch.object(urllib.request, "urlopen", self._urlopen))
+        self._stack.enter_context(
+            patch.object(httpx.HTTPTransport, "handle_request", self._httpx_handler())
+        )
+        self._stack.enter_context(
+            patch.object(
+                httpx.AsyncHTTPTransport, "handle_async_request", self._httpx_async_handler()
+            )
+        )
         self._stack.enter_context(patch.object(McpServers, "_call", call))
         if not self.live:  # a call outside a model turn skips the "connected" check when replayed
             self._stack.enter_context(patch.object(McpServers, "call", direct))
             self._stack.enter_context(patch.object(McpServers, "_open", opened))
             self._stack.enter_context(patch.object(McpServers, "_list", listing))
             self._stack.enter_context(patch.object(McpServers, "has_login", logged_in))
-            for owner, name in ((socket.socket, "connect"), (socket, "getaddrinfo")):
-                self._stack.enter_context(
-                    patch.object(owner, name, self._gate(getattr(owner, name)))
-                )
+            self._stack.enter_context(
+                patch.object(socket.socket, "connect", self._gate(socket.socket.connect))
+            )
+            self._stack.enter_context(
+                patch.object(socket, "getaddrinfo", self._resolver(socket.getaddrinfo))
+            )
         return self
 
     def __exit__(self, *_exc: object) -> None:
         self._stack.close()
+
+    def _httpx_handler(self) -> Callable[[httpx.HTTPTransport, httpx.Request], httpx.Response]:
+        """What httpx's transport does while this one is open: recorded, but open to the model."""
+        real_handle = httpx.HTTPTransport.handle_request
+
+        def handle(transport: httpx.HTTPTransport, request: httpx.Request) -> httpx.Response:
+            if getattr(self._open, "model", False):  # the exam's own model request goes out
+                return real_handle(transport, request)
+            return self._httpx(request, lambda: real_handle(transport, request))
+
+        return handle
+
+    def _httpx_async_handler(
+        self,
+    ) -> Callable[[httpx.AsyncHTTPTransport, httpx.Request], Awaitable[httpx.Response]]:
+        """What httpx's async transport does while this one is open: the same, recorded."""
+        real_handle = httpx.AsyncHTTPTransport.handle_async_request
+
+        async def handle(
+            transport: httpx.AsyncHTTPTransport, request: httpx.Request,
+        ) -> httpx.Response:
+            await request.aread()
+            return await self._httpx_async(request, lambda: real_handle(transport, request))
+
+        return handle
 
     def _gate(self, real: Callable[..., Any]) -> Callable[..., Any]:
         """``real`` inside :meth:`model_call` on this thread; refused everywhere else."""
@@ -433,6 +558,24 @@ class _Transport:
             return _refuse()
 
         return gated
+
+    def _resolver(self, real: Callable[..., Any]) -> Callable[..., Any]:
+        """Name lookup while replaying: a host the recording holds answers with a public address.
+
+        The egress guard resolves a page's host before it asks (ADR 0360); the request itself is
+        answered from the recording and never leaves, so the address only has to be one the guard
+        allows. Any other name is refused, as every other socket call is; the model's request on
+        its own thread resolves for real.
+        """
+
+        def resolve(host: Any, *args: Any, **kw: Any) -> Any:  # noqa: ANN401 - as socket's own
+            if getattr(self._open, "model", False):
+                return real(host, *args, **kw)
+            if host in self.recording.hosts():
+                return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (_RECORDED_ADDRESS, 0))]
+            return _refuse()
+
+        return resolve
 
     @contextmanager
     def model_call(self) -> Iterator[None]:
@@ -449,6 +592,7 @@ class _Transport:
 
     def _urlopen(self, url: object, data: object = None, *args: object, **kw: object) -> _Reply:
         method, full, body = _request_of(url, data)
+        self._note(method, full, body)
         if self.live:
             return self._record(url, data, args, kw, method, full, body)
         entry = self.recording.http(method, full, body)
@@ -469,6 +613,78 @@ class _Transport:
                 io.BytesIO(payload),
             )
         return _Reply(payload, entry["status"], entry.get("content_type", ""), full)
+
+    def _note(self, method: str, full: str, body: bytes) -> None:
+        """Keep the request as made, for what ``expect.requests`` says it must hold."""
+        try:
+            shown: Any = json.loads(body) if body else {}
+        except ValueError:
+            shown = body.decode("utf-8", "replace")
+        self.requests.append({"method": method, "url": scrub_url(full), "body": shown})
+
+    def _httpx(self, request: httpx.Request, real: Callable[[], httpx.Response]) -> httpx.Response:
+        """One httpx request: answered from the recording, or made and stored when recording."""
+        request.read()
+        method, full, body = request.method, str(request.url), request.content
+        self._note(method, full, body)
+        if self.live:
+            reply = real()
+            payload = reply.read()
+            ctype = reply.headers.get("content-type", "")
+            headers = {k: v for k in _KEPT_HEADERS if (v := reply.headers.get(k))}
+            self._store(method, full, body, dict(request.headers), reply.status_code, payload,
+                        ctype, headers)
+            return httpx.Response(
+                reply.status_code, content=payload, request=request,
+                headers={**headers, "content-type": ctype} if ctype else headers,
+            )
+        return self._replayed(request)
+
+    def _replayed(self, request: httpx.Request) -> httpx.Response:
+        """The recorded answer to an httpx request, or the miss that fails the item."""
+        method, full, body = request.method, str(request.url), request.content
+        entry = self.recording.http(method, full, body)
+        if entry is None:
+            shown = body.decode("utf-8", "replace")[:400]
+            self.misses.append(f"{method} {scrub_url(full)} body#{_hash(body)} {shown}")
+            msg = f"the recording has no answer for {method} {scrub_url(full)}"
+            raise RecordingMiss(msg)
+        payload = (
+            base64.b64decode(entry["body_b64"]) if "body_b64" in entry else entry["body"].encode()
+        )
+        headers = {**entry.get("headers", {})}
+        if entry.get("content_type"):
+            headers["content-type"] = entry["content_type"]
+        if entry.get("hang_s") is not None:
+            stream = _Hang(payload, lambda: self._time_passes(float(entry["hang_s"])))
+            return httpx.Response(entry["status"], headers=headers, stream=stream, request=request)
+        return httpx.Response(entry["status"], content=payload, headers=headers, request=request)
+
+    def _time_passes(self, seconds: float) -> None:
+        """Let ``seconds`` pass on the frozen clock, as a server that says nothing lets them."""
+        if self.clock is None:
+            msg = "an entry with hang_s needs the sandbox's frozen clock"
+            raise RuntimeError(msg)
+        self.clock.shift(seconds)
+
+    async def _httpx_async(
+        self, request: httpx.Request, real: Callable[[], Awaitable[httpx.Response]],
+    ) -> httpx.Response:
+        """One async httpx request: answered from the recording, or made and stored."""
+        method, full, body = request.method, str(request.url), request.content
+        self._note(method, full, body)
+        if not self.live:
+            return self._replayed(request)
+        reply = await real()
+        payload = await reply.aread()
+        ctype = reply.headers.get("content-type", "")
+        headers = {k: v for k in _KEPT_HEADERS if (v := reply.headers.get(k))}
+        self._store(method, full, body, dict(request.headers), reply.status_code, payload,
+                    ctype, headers)
+        return httpx.Response(
+            reply.status_code, content=payload, request=request,
+            headers={**headers, "content-type": ctype} if ctype else headers,
+        )
 
     def _record(  # noqa: PLR0913 - the call as made and what it was reduced to
         self,
@@ -511,6 +727,7 @@ class _Transport:
         status: int,
         payload: bytes,
         ctype: str,
+        kept: Mapping[str, str] | None = None,
     ) -> None:
         raw_request = full + body.decode("utf-8", "replace") + "".join(headers.values())
         for name, value in self.secrets.items():
@@ -527,6 +744,10 @@ class _Transport:
         }
         if body:
             entry["request"] = _scrub(body.decode("utf-8", "replace"), self.secrets)
+        if (same_json := _json_hash(body)) is not None:
+            entry["json_sha"] = same_json
+        if kept:
+            entry["headers"] = dict(kept)
         try:
             entry["body"] = _scrub(payload.decode("utf-8"), self.secrets)
         except UnicodeDecodeError:
@@ -555,6 +776,57 @@ class _Transport:
             raise RecordingMiss(msg)
         result: dict[str, Any] = entry["result"]
         return result
+
+
+class _Hang(httpx.AsyncByteStream):
+    """A response body that arrives whole and then goes quiet, never ending on its own.
+
+    The quiet comes after a short real pause, so the thread that reads the stream has taken
+    what arrived before ``silence`` lets the frozen time pass.
+    """
+
+    PAUSE_S = 0.25
+
+    def __init__(self, body: bytes, silence: Callable[[], None]) -> None:
+        self._body, self._silence = body, silence
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        yield self._body
+        await asyncio.sleep(self.PAUSE_S)
+        self._silence()
+        await asyncio.Event().wait()  # until the reader cancels the request
+
+    async def aclose(self) -> None:
+        """Nothing is held open."""
+
+
+@contextmanager
+def fake_clock(item: Item) -> Iterator[None]:
+    """For an item with ``fake_clock``: the runtime's clock stands on the frozen wall time.
+
+    Its monotonic time is the frozen time, and a wait ends when the event is set or the frozen
+    time reaches the deadline, polled in short real slices. Time then moves only when the item
+    says so (a ``hang_s`` entry), so a minute's deadline is passed without a minute of waiting.
+    """
+    if not item.raw.get("fake_clock"):
+        yield
+        return
+
+    def monotonic(_clock: SystemClock) -> float:
+        return time.time()
+
+    def wait(_clock: SystemClock, event: threading.Event, timeout: float | None) -> bool:
+        end = None if timeout is None else time.time() + max(timeout, 0.0)
+        while not event.wait(0.002):
+            if end is not None and time.time() >= end:
+                break
+        return event.is_set()
+
+    with (
+        patch.object(SystemClock, "monotonic", monotonic),
+        patch.object(SystemClock, "wait", wait),
+    ):
+        yield
 
 
 def _refuse(*_a: object, **_k: object) -> None:
@@ -648,9 +920,11 @@ class Box:
     root: Path
     item: Item
     clock: Any
-    """The frozen clock; ``clock.shift(seconds=n)`` lets time pass between two calls."""
+    """The frozen clock; ``clock.shift(n)`` lets ``n`` seconds pass between two calls."""
     uncut: list[str] = field(default_factory=list)
     """The tables of the copied databases the cut at ``at`` could not handle."""
+    gmail: Gmail | None = None
+    """The invented mailbox the recording's ``mailbox`` made, answering as the ``gmail`` server."""
 
 
 @contextmanager
@@ -668,6 +942,7 @@ def _environment(
     saved = {k: os.environ.get(k) for k in set_env}
     os.environ.update(set_env)
     time.tzset()
+    pin_local_time()  # ADR 0398: a host older than the package reads the package's file for it
     try:
         yield
     finally:
@@ -810,11 +1085,27 @@ def sandbox(
             for script in sql:
                 runtime.conn.executescript(script.read_text(encoding="utf-8"))
             _place_him(runtime, item.raw.get("here"), moment)
-            yield Box(runtime, root, item, clock, uncut)
+            _seat_job_mail(runtime, _job_mail_spec(item), moment)
+            gmail = _seat_mailbox(runtime, recording, moment)
+            yield Box(runtime, root, item, clock, uncut, gmail)
     finally:
         if runtime is not None:
             runtime.conn.close()
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _seat_mailbox(
+    runtime: JarvisRuntime, recording: Recording | None, moment: datetime,
+) -> Gmail | None:
+    """The recording's invented ``mailbox`` as the connected ``gmail`` server (ADR 0362)."""
+    spec = recording.data.get("mailbox") if recording else None
+    if not spec:
+        return None
+    from scripts.tool_exam_mailbox import build, connect  # noqa: PLC0415
+
+    gmail = build(spec, moment)
+    connect(runtime, gmail)
+    return gmail
 
 
 def _seat_ride(runtime: JarvisRuntime, ride: Mapping[str, Any] | None, moment: datetime) -> None:
@@ -855,6 +1146,52 @@ def _place_him(runtime: JarvisRuntime, here: Mapping[str, Any] | None, moment: d
     )
 
 
+JOB_FIXTURE = "job_mail.json"
+"""The file of a state directory that holds a job hunt, in the shape of an item's ``job_mail``."""
+
+
+def _job_mail_spec(item: Item) -> dict[str, Any]:
+    """The job hunt an item seats: its state directory's ``job_mail.json``, then its own."""
+    spec: dict[str, Any] = {"mails": [], "applications": []}
+    state = _state_dir(item)
+    parts = [item.raw.get("job_mail") or {}]
+    if state is not None and (state / JOB_FIXTURE).is_file():
+        parts.insert(0, json.loads((state / JOB_FIXTURE).read_text(encoding="utf-8")))
+    for part in parts:
+        spec["mails"] += part.get("mails", [])
+        spec["applications"] += part.get("applications", [])
+        spec.update({k: part[k] for k in ("read_at", "failing_since") if k in part})
+    return spec
+
+
+def _seat_job_mail(runtime: JarvisRuntime, spec: Mapping[str, Any], moment: datetime) -> None:
+    """Write the job hunt through the ledger's own functions, and set when mail was last read."""
+    asked = bool(spec["mails"] or spec["applications"] or "read_at" in spec)
+    job = runtime.job_mail
+    if job is None:
+        if asked:
+            msg = "the item seats job mail, and the recording's settings leave job_mail off"
+            raise LookupError(msg)
+        return
+    path = runtime.memory.db_path  # type: ignore[union-attr]
+    for mail in spec["mails"]:
+        job_ledger.upsert_mail(
+            path,
+            {"sender_name": "Recruiting", "confidence": 0.9, "extracted_by": "exam", **mail},
+            moment,
+        )
+    for application in spec["applications"]:
+        fields = {k: v for k, v in application.items() if k != "hidden"}
+        fields.setdefault("source", "said")
+        app_id = job_ledger.add_application(path, moment, **fields)
+        if application.get("hidden"):
+            job_ledger.edit_application(path, moment, app_id, {"hidden": True})
+    # What a poll leaves behind, set directly: the sandbox has no Gmail to poll.
+    for name in ("read_at", "failing_since"):
+        if spec.get(name):
+            setattr(job, f"_{name}", datetime.fromisoformat(spec[name]))
+
+
 def dispatch(box: Box, tool: str, args: Mapping[str, Any], said: str) -> str:
     """One call through the real dispatcher as the model would make it; the result it reads."""
     runtime = box.runtime
@@ -875,7 +1212,7 @@ def dispatch(box: Box, tool: str, args: Mapping[str, Any], said: str) -> str:
         tool_name=tool,
         target_entity_ref=None,
         caller_principal=CallerPrincipal.JARVIS_LLM,
-        risk_level=definitions[tool].risk_level,
+        risk_level=call_risk(definitions[tool], args),
         arguments=args,
         authorization_lease=None,
         run_id=None,
@@ -1039,12 +1376,54 @@ def state_failures(box: Box, checks: Sequence[Mapping[str, Any]]) -> list[str]:
     return failures
 
 
+def gmail_failures(box: Box, checks: Sequence[Mapping[str, Any]]) -> list[str]:
+    """Where the calls made to the invented mailbox differ from ``expect.gmail``."""
+    if not checks:
+        return []
+    if box.gmail is None:
+        return ["expect.gmail needs a recording with a mailbox"]
+    failures = []
+    for check in checks:
+        given, pattern = check.get("args") or {}, check.get("query")
+        found = [
+            args for args in box.gmail.of(check["tool"])
+            if all(args.get(k) == v for k, v in given.items())
+            and (pattern is None or re.search(pattern, str(args.get("query", ""))))
+        ]
+        want = check.get("count")
+        if (want is None and not found) or (want is not None and len(found) != want):
+            failures.append(
+                f"gmail {check['tool']} {given or ''}{pattern or ''}: expected "
+                f"{'some' if want is None else want} call(s), got {len(found)}"
+            )
+    return failures
+
+
 def _events_since(box: Box, after: int) -> list[tuple[str, str]]:
     rows = box.runtime.conn.execute(
         "SELECT type, payload_json FROM events WHERE id > ? ORDER BY id",
         (after,),
     ).fetchall()
     return [(r[0], r[1]) for r in rows]
+
+
+def _block_d_failures(box: Box, expect: Mapping[str, Any], out: Mapping[str, Any]) -> list[str]:
+    """Whether the result's submitted count is the one block D states over the same data."""
+    if not expect.get("block_d_submitted"):
+        return []
+    zone = ZoneInfo(str(box.item.raw.get("zone") or "UTC"))
+    sources = LedgerSources(
+        box.runtime.memory.db_path,  # type: ignore[union-attr]
+        box.runtime.runtime_paths.event_log, None, zone,
+    )
+    block = job_hunt_text(sources, datetime.fromisoformat(box.item.raw["at"]).astimezone(zone))
+    stated = re.search(r"Applications submitted: at least (\d+)", block)
+    said = re.search(r"At least (\d+) submitted", str(out.get("summary", "")))
+    if stated is None or said is None:
+        return [f"block D states {stated and stated[0]!r}, the summary {said and said[0]!r}"]
+    if stated[1] != said[1]:
+        return [f"block D says at least {stated[1]} submitted, the result says {said[1]}"]
+    return []
 
 
 def _receipt_failures(
@@ -1062,6 +1441,30 @@ def _receipt_failures(
         for key, value in want.items()
         if got.get(key) != value
     ]
+
+
+def _request_failures(
+    want: Sequence[Mapping[str, Any]] | None, seen: Sequence[Mapping[str, Any]],
+) -> list[str]:
+    """Where the requests the providers were sent differ from ``expect.requests``."""
+    failures: list[str] = []
+    for check in want or ():
+        url = check["url"]
+        sent = [r for r in seen if url in r["url"]]
+        if "count" in check and len(sent) != check["count"]:
+            failures.append(f"requests to {url}: expected {check['count']}, got {len(sent)}")
+        if "body" not in check:
+            continue
+        nth = check.get("nth", 0)
+        if not -len(sent) <= nth < len(sent):
+            failures.append(f"request {nth} to {url}: only {len(sent)} were made")
+            continue
+        failures += [
+            f"request {nth} to {url}: {why}"
+            for one in check["body"]
+            if (why := check_result(sent[nth]["body"], one))
+        ]
+    return failures
 
 
 def _check_events(spec: Mapping[str, Any], events: Sequence[tuple[str, str]]) -> list[str]:
@@ -1097,16 +1500,16 @@ def run_item(item: Item, *, recording: Recording | None = None) -> list[str]:
     previous = signal.signal(signal.SIGALRM, alarm)
     signal.alarm(ITEM_TIMEOUT_S)
     try:
-        with transport, sandbox(item, recording) as box:
-            for step in item.raw.get("setup") or ():
-                dispatch(box, step["tool"], step.get("args") or {}, item.raw.get("said", ""))
+        with transport, fake_clock(item), sandbox(item, recording) as box:
+            transport.clock = box.clock
+            _setup(box, item)
             after = int(
                 box.runtime.conn.execute("SELECT COALESCE(MAX(id), 0) FROM events").fetchone()[0]
             )
             raw = dispatch(
                 box, item.raw["tool"], item.raw.get("args") or {}, item.raw.get("said", "")
             )
-            failures += _judge(box, item, expect, raw, after, recording)
+            failures += _judge(box, item, expect, raw, after, recording, transport.requests)
     except (LookupError, TimeoutError, RecordingMiss) as exc:
         failures.append(str(exc))
     finally:
@@ -1116,6 +1519,14 @@ def run_item(item: Item, *, recording: Recording | None = None) -> list[str]:
     return failures
 
 
+def _setup(box: Box, item: Item) -> None:
+    """The item's earlier calls, in order; time passes after a step that says so (``after_s``)."""
+    for step in item.raw.get("setup") or ():
+        dispatch(box, step["tool"], step.get("args") or {}, item.raw.get("said", ""))
+        if step.get("after_s"):
+            box.clock.shift(step["after_s"])
+
+
 def _judge(  # noqa: PLR0913 - one result against everything the item expects
     box: Box,
     item: Item,
@@ -1123,6 +1534,7 @@ def _judge(  # noqa: PLR0913 - one result against everything the item expects
     raw: str,
     after: int,
     recording: Recording | None,
+    seen: Sequence[Mapping[str, Any]] = (),
 ) -> list[str]:
     failures = [f"rule: {p}" for p in result_problems(raw)]
     try:
@@ -1158,8 +1570,11 @@ def _judge(  # noqa: PLR0913 - one result against everything the item expects
         if text.lower() in shown
     ]
     failures += _receipt_failures(expect.get("receipt"), _events_since(box, after))
+    failures += _request_failures(expect.get("requests"), seen)
     failures += state_failures(box, expect.get("state_after", ()))
+    failures += gmail_failures(box, expect.get("gmail", ()))
     failures += _check_events(expect.get("events_after") or {}, _events_since(box, after))
+    failures += _block_d_failures(box, expect, out)
     if name := expect.get("checker"):
         from scripts.tool_exam_checkers import CHECKERS  # noqa: PLC0415
 
@@ -1241,8 +1656,7 @@ def cmd_record(args: argparse.Namespace) -> int:
     recording = Recording({"settings": _snapshot_settings(args.root)})
     transport = _Transport(recording, live=True)
     with transport, sandbox(item, recording, live=True, real_root=args.root.expanduser()) as box:
-        for step in item.raw.get("setup") or ():
-            dispatch(box, step["tool"], step.get("args") or {}, item.raw.get("said", ""))
+        _setup(box, item)
         raw = dispatch(box, item.raw["tool"], item.raw.get("args") or {}, item.raw.get("said", ""))
     target = args.item.with_name(f"{args.item.stem}.recording.json")
     recording.save(target, transport.secrets)

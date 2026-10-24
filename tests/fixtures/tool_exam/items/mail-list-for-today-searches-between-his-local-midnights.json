@@ -1,0 +1,40 @@
+{
+  "id": "mail-list-for-today-searches-between-his-local-midnights",
+  "tool": "mail",
+  "said": "what came in today",
+  "at": "2026-10-21T18:00:00-07:00",
+  "zone": "America/Vancouver",
+  "state": null,
+  "args": {
+    "when": "今天"
+  },
+  "recording": "mail-list-for-today-searches-between-his-local-midnights.recording.json",
+  "expect": {
+    "result": [
+      {
+        "path": "rows",
+        "op": "len",
+        "value": 2
+      },
+      {
+        "path": "rows[*].subject",
+        "op": "eq",
+        "value": "Sale today"
+      }
+    ],
+    "result_must_not_mention": [
+      "Yesterday's note"
+    ],
+    "gmail": [
+      {
+        "tool": "gmail_search",
+        "query": "after:1792566000 before:1792652400"
+      },
+      {
+        "tool": "gmail_search",
+        "query": "category:",
+        "count": 0
+      }
+    ]
+  }
+}

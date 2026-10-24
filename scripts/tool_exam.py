@@ -85,6 +85,7 @@ from jarvis.decision.policy import effective_policy, surface_for
 from jarvis.decision.reaction_markup import split_claims
 from jarvis.decision.turn_guards import TurnCall, call_key, repeated_call
 from jarvis.deployment import RuntimePaths, load_env_file
+from jarvis.execution.mail_gmail import Mailbox
 from jarvis.execution.tools import Tool, ToolContext, ToolRegistry, build_default_registry
 from jarvis.runtime.bootstrap.catalog import register_catalog
 from jarvis.runtime.config import WorkersSettings
@@ -186,10 +187,10 @@ def _exam_registry(config: Mapping[str, Any], recorded_mcp: Path) -> ToolRegistr
                 obsidian_vault_root=base, web_search_provider="tavily", web_search_api_key="x",
                 web_deep_search=stub, vision_client=stub, memory_db_path=base / "memory.db",
                 timesink_db_path=base / "timesink.db", work_state_refresh=stub, night=stub,
-                voice_settings=stub, mail_drafts=stub, weather_lookup=lambda _request: {},
+                voice_settings=stub, weather_lookup=lambda _request: {},
                 transit_api_key="x", transit_places=lambda: {"home": "home"},
                 transit_offers=stub, here=stub,
-                bus_live=lambda *_: None, ride_control=stub, highlight_marker=stub,
+                bus_live=stub, ride_control=stub, highlight_marker=stub,
                 device_link=lambda *_: {},
             ),
             # A brain's terminals declare every operation here (ADR 0225): offer them all.
@@ -201,8 +202,8 @@ def _exam_registry(config: Mapping[str, Any], recorded_mcp: Path) -> ToolRegistr
                 group, {s: sources.get(s, f"mcp-{s}") for s in servers}, one, bare, base,
             ),
             make_late=lambda _plugins: (
-                MagicMock(ledger=dict, add_application=lambda _fields: ""),
-                MagicMock(mail=dict, gmail=lambda *_: {}),
+                MagicMock(jobs_view=dict, add_application=lambda _fields: ""),
+                MagicMock(mailbox=Mailbox(lambda *_: {})),
             ),
             memory_db=base / "memory.db", doing=MagicMock(tidy=lambda: ""),
             ledger=LedgerSources(base / "memory.db", paths.event_log, None, UTC),

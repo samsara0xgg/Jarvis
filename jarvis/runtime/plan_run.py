@@ -56,7 +56,7 @@ from jarvis.execution.tools import ToolContext
 from jarvis.runtime.day_plan import DayPlanSettings, DayPlanSources, make_ask
 from jarvis.runtime.work_state import build_analyst
 from jarvis.shared import lang
-from jarvis.state import places, plan, things
+from jarvis.state import places, plan, plan_budget, things
 from jarvis.state.day_line import day_window
 from jarvis.state.event_log import open_runtime_event_log
 from jarvis.state.memory_db import append_record, message_record, messages_since
@@ -64,7 +64,7 @@ from jarvis.state.plan_facts import DayFacts, evidence, facts_at
 
 if TYPE_CHECKING:
     import sqlite3
-    from collections.abc import Callable, Iterator, Mapping, Sequence
+    from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
     from contextlib import AbstractContextManager
     from datetime import tzinfo
     from pathlib import Path
@@ -86,6 +86,8 @@ FOLLOW_UP_AFTER_MIN: Final[tuple[int, ...]] = (10, 15, 20, 30, 30, 30)
 """Minutes her last words wait unanswered before each follow-up; their number caps them."""
 OPEN_ATTEMPTS: Final[int] = 3
 """How often a day's opening is tried when the model fails, before the day goes without."""
+MAX_OUTINGS: Final[int] = 6
+"""The outings, soonest first, whose own weather the opening is given."""
 HOUR_MS: Final[int] = 3_600_000
 _CALL_TIMEOUT_S: Final[float] = 120.0
 OPEN_PRESET: Final[str] = "sonnet"
@@ -122,6 +124,20 @@ def leg_session(
 
 def _said(name: str) -> str:
     return " ".join(name.casefold().split())
+
+
+def _home_names(kept: Iterable[places.Place]) -> frozenset[str]:
+    """The names home goes by: ``home`` and each kept place of the home role."""
+    return frozenset({"home", *(_said(p.name) for p in kept if p.role == "home")})
+
+
+def _leg_end(answer: Mapping[str, Any]) -> tuple[float, float] | None:
+    """Where a ``plan_leg`` answer says the route ends, if it does."""
+    at: Mapping[str, Any] = answer.get("end_at") or {}
+    try:
+        return float(at["lat"]), float(at["lng"])
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 def _shape(option: dict[str, Any]) -> dict[str, Any]:
@@ -163,7 +179,7 @@ def route_day(
         if item.route is None and not same:
             origin = previous or "home"
             try:
-                answer = plan_leg(origin, item.place, day=day.isoformat(), arrive_by=item.start)
+                answer = plan_leg(origin, item.place, arrive_by=f"{day.isoformat()} {item.start}")
                 done[n] = replace(item, route=_route(origin, answer))
             except Exception as exc:  # noqa: BLE001 - a plan without a leg beats no plan.
                 LOGGER.info("plan: no leg to %s: %s: %s", item.title, type(exc).__name__, exc)
@@ -175,9 +191,7 @@ def make_route_legs(open_leg: OpenLeg, memory_db: Path) -> RouteLegs:
     """The ``route_legs(items, day)`` the 04:00 draft takes (``draft_day``)."""
 
     def route_legs(items: list[plan.PlanItem], day: date) -> list[plan.PlanItem]:
-        home = frozenset({
-            "home", *(_said(p.name) for p in places.read_kept(memory_db) if p.role == "home"),
-        })
+        home = _home_names(places.read_kept(memory_db))
         with open_leg(f"plan-{day}-legs") as plan_leg:
             return items if plan_leg is None else route_day(plan_leg, items, day, home)
 
@@ -318,6 +332,7 @@ class PlanWatch:
             system, user = build_opening_prompt(
                 held, unconfirmed=self._unconfirmed(run), weather=self._weather(run.day)[0],
                 now=run.now, zone=self._zone, draft_failed=run.held is None,
+                outings=self._outings(run),
             )
             message = parse_opening(self._ask_open(system, user))
         except Exception as exc:  # noqa: BLE001 - a model that fails is tried again next minute.
@@ -424,10 +439,55 @@ class PlanWatch:
                     return found, []
         return None, ["weather unreadable"]
 
+    def _outing(
+        self, held: plan.Plan, item: plan.PlanItem, kept: Sequence[places.Place],
+        leg_end: tuple[float, float] | None = None,
+    ) -> dict[str, Any] | None:
+        """The weather of ``item``'s own hours, leave time to end, at its place (ADR 0355).
+
+        The place's position is the kept place's, else where its leg ends; with neither the hours
+        are home's and the answer says so. None when there is no reader or it fails.
+        """
+        read = self._sources.outing_weather
+        span = plan_budget.span_of(held, item, self._zone)
+        if read is None or span is None or not item.place:
+            return None
+        leave = plan_budget.at(held, (item.route or {}).get("leave_at"), self._zone)
+        point = places.position_of(kept, item.place) or leg_end
+        try:
+            found = read(point, min(leave or span[0], span[0]), span[1])
+        except Exception as exc:  # noqa: BLE001 - the forecast is a courtesy.
+            LOGGER.info("plan watch: weather of %s unreadable: %s: %s", item.title,
+                        type(exc).__name__, exc)
+            return None
+        if found is None:
+            return None
+        if point is None:
+            return {"at": "home", "why_home": f"the position of {item.place} is not known", **found}
+        return {"at": item.place, **found}
+
+    def _outings(self, run: _Run) -> list[dict[str, Any]]:
+        """Each timed outing away from home, soonest first, with the weather of its own hours."""
+        held = run.held
+        if held is None or self._sources.outing_weather is None:
+            return []
+        kept = places.read_kept(self._sources.memory_db)
+        home = _home_names(kept)
+        timed = sorted(
+            ((span[0], item) for item in held.items
+             if item.place and not item.done and _said(item.place) not in home
+             and (span := plan_budget.span_of(held, item, self._zone))),
+            key=lambda row: row[0],
+        )
+        found = ((item, self._outing(held, item, kept)) for _, item in timed[:MAX_OUTINGS])
+        return [
+            {"item_id": item.item_id, "place": item.place, "weather": weather}
+            for item, weather in found if weather is not None
+        ]
+
     def _refresh(self, run: _Run, one: Notice) -> Notice:
-        """``outing_soon`` with the weather and the leg read again; a failure leaves None."""
-        weather, notes = self._weather(run.day)
-        leg_now = None
+        """``outing_soon`` with the leg and the outing's own weather read again; None on failure."""
+        leg_now, leg_end, notes = None, None, []
         item = next((i for i in (run.held.items if run.held else ()) if i.item_id == one.item_id),
                     None)
         if item is not None and self._open_leg is not None and item.start:
@@ -436,13 +496,19 @@ class PlanWatch:
                 with self._open_leg(f"plan-{run.day}-{one.key}") as plan_leg:
                     if plan_leg is not None:
                         answer = plan_leg(
-                            origin, item.place, day=run.day.isoformat(), arrive_by=item.start,
+                            origin, item.place, arrive_by=f"{run.day.isoformat()} {item.start}",
                         )
-                        leg_now = _route(origin, answer)
+                        leg_now, leg_end = _route(origin, answer), _leg_end(answer)
             except Exception as exc:  # noqa: BLE001 - she is asked with the old leg alone.
                 LOGGER.info("plan watch: leg unreadable: %s: %s", type(exc).__name__, exc)
         if leg_now is None:
             notes.append("leg unreadable")
+        weather = None
+        if item is not None and run.held is not None:
+            kept = places.read_kept(self._sources.memory_db)
+            weather = self._outing(run.held, item, kept, leg_end)
+        if weather is None:
+            notes.append("weather unreadable")
         facts = {**one.facts, "weather": weather, "leg_now": leg_now}
         if notes:
             facts["notes"] = notes
@@ -595,10 +661,7 @@ class PlanWatch:
         self._routed[run.day] = shape
         if not any(i.place and i.start and i.route is None for i in held.items):
             return
-        home = frozenset({
-            "home", *(_said(p.name) for p in places.read_kept(self._sources.memory_db)
-                      if p.role == "home"),
-        })
+        home = _home_names(places.read_kept(self._sources.memory_db))
         with self._open_leg(f"plan-{run.day}-routes") as plan_leg:
             if plan_leg is None:
                 return

@@ -13,12 +13,12 @@ played by a terminal's real media actor and the brain's log ends with what was h
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import sqlite3
 import time
 from dataclasses import dataclass
-from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
@@ -48,6 +48,8 @@ from jarvis.surface.terminal_speaker import (
     VoiceLink,
 )
 from jarvis.surface.terminal_voice import BrainVoice, encode_event
+from jarvis.surface.voice_media import journal as media_journal
+from jarvis.surface.voice_media import lane as media_lane
 from jarvis.surface.voice_media import pipeline as media_pipeline
 from jarvis.surface.voice_media.pipeline import StreamingTTSPipeline
 from jarvis.surface.voice_tts import (
@@ -81,6 +83,7 @@ from tests.support.terminal import (
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
+    from pathlib import Path
 
 
 PARAMS: dict[str, Any] = {
@@ -800,7 +803,11 @@ def test_playback_rows_are_taken_from_a_voice_terminal_only_and_once(tmp_path: P
 
 def test_the_allowlists_are_what_the_media_actor_writes() -> None:
     """Every row type the media actor emits is forwardable, and observer types are unchanged."""
-    source = Path(media_pipeline.__file__).read_text(encoding="utf-8")
+    source = (
+        inspect.getsource(media_pipeline)
+        + inspect.getsource(media_lane)
+        + inspect.getsource(media_journal)
+    )
     emitted = {kind for kind in PLAYBACK_EVENT_TYPES if f'"{kind}"' in source}
     assert emitted == PLAYBACK_EVENT_TYPES
     assert not PLAYBACK_EVENT_TYPES & OBSERVER_EVENT_TYPES

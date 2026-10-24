@@ -40,7 +40,8 @@ def confirmation_card(slot: PendingConfirmationSlot, device: str | None) -> dict
     """The waiting confirmation as the phone and the Mac read it (ADR 0062, 0321).
 
     A card of several calls keeps this shape: its question text is the calls' lines one to a
-    line, and it has no single tool or arguments to show.
+    line, and it has no single tool or arguments to show. A letter the mail tool completed shows
+    every recipient by name and address, his own marked (ADR 0366), in the keys the clients read.
     """
     first = slot.calls[0]
     tool = str(first.get("tool_name", ""))
@@ -54,7 +55,7 @@ def confirmation_card(slot: PendingConfirmationSlot, device: str | None) -> dict
         "action": slot.template_line if several else lang.action(tool)[0],
         "source": parts[1] if len(parts) == 3 and parts[0] == "mcp" else "",  # noqa: PLR2004
         "letter": not several and lang.letter_to(args) is not None,
-        "args": {} if several else args,
+        "args": {} if several else lang.letter_card(args),
         "device": device,
     }
 

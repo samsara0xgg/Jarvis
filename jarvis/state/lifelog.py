@@ -1,14 +1,16 @@
 """What his phone records through the day, kept as the raw archive (ADR 0238).
 
 A paired phone records while he has the switch on and sends each piece of audio here once it is
-closed; while he rides in a vehicle it also sends pieces of its device motion (ADR 0312). One
+closed; while he rides in a vehicle it also sends pieces of its device motion (ADR 0312), and
+all day pieces of its raw accelerometer (ADR 0378). One
 directory holds the pieces and keeps them for good: no age sweep, not in the export zip, not in
 "clear recordings"; erasing all data removes them only while the directory sits under the
 runtime root. A piece is filed by its kind, the device that sent it and the UTC moment it
 started, as ``<kind>/<device>/<YYYY-MM-DD>/<YYYYMMDDTHHMMSS.fffZ>_<duration>ms_<id>.<ext>``, so
 the archive reads without an index. The format is read from the first bytes, never from what the
-sender claims: for audio the container (the codec inside it is the phone's choice), for motion a
-gzip stream whose text opens with :data:`MOTION_HEADER`.
+sender claims: for audio the container (the codec inside it is the phone's choice), for motion and
+the accelerometer a gzip stream whose text opens with :data:`MOTION_HEADER` or
+:data:`ACCEL_HEADER`.
 
 A piece is written whole or not at all (a temporary file, fsynced, then renamed), so a stored
 name always holds complete bytes and the phone may delete its copy once the answer's SHA-256
@@ -39,6 +41,10 @@ AUDIO_DIRNAME: Final = "audio"
 MOTION_DIRNAME: Final = "motion"
 MOTION_HEADER: Final = b"# jarvis motion "
 """How the text of a motion piece begins; the rest of that line names its version and frame."""
+ACCEL_DIRNAME: Final = "accel"
+ACCEL_HEADER: Final = b"# jarvis accel "
+"""How the text of an accelerometer piece begins; the rest of that line names its version and
+rate."""
 
 MAX_PIECE_BYTES: Final = 32 * 1024 * 1024
 """Ten minutes of stereo at 256 kbps is 19 MB; a phone sends pieces of about ten minutes."""
@@ -88,15 +94,15 @@ def container_ext(data: bytes) -> str | None:
     return None
 
 
-def motion_ext(data: bytes) -> str | None:
-    """``csv.gz`` when ``data`` is gzip whose text opens with :data:`MOTION_HEADER`, or ``None``."""
+def text_ext(data: bytes, header: bytes) -> str | None:
+    """``csv.gz`` when ``data`` is gzip whose text opens with ``header``, or ``None``."""
     if data[:2] != b"\x1f\x8b":
         return None
     try:
-        head = zlib.decompressobj(zlib.MAX_WBITS | 16).decompress(data[:4096], len(MOTION_HEADER))
+        head = zlib.decompressobj(zlib.MAX_WBITS | 16).decompress(data[:4096], len(header))
     except zlib.error:
         return None
-    return "csv.gz" if head == MOTION_HEADER else None
+    return "csv.gz" if head == header else None
 
 
 def piece_name(started_ms: int, duration_ms: int, piece_id: str, ext: str) -> str:
@@ -151,10 +157,22 @@ class Lifelog:
     ) -> StoredPiece:
         """Keep one piece of ``device``'s device motion (ADR 0312), or a :class:`PieceRefused`."""
         _checked(device, piece_id, started_ms, duration_ms, data)
-        ext = motion_ext(data)
+        ext = text_ext(data, MOTION_HEADER)
         if ext is None:
             raise PieceRefused(415, "send motion as gzip text that opens with '# jarvis motion'")
         return self._keep(MOTION_DIRNAME, device, piece_id, started_ms, duration_ms, data, ext)
+
+    def save_accel(
+        self, device: str, piece_id: str, started_ms: int, duration_ms: int, data: bytes,
+    ) -> StoredPiece:
+        """Keep a piece of ``device``'s raw accelerometer (ADR 0378), or a :class:`PieceRefused`."""
+        _checked(device, piece_id, started_ms, duration_ms, data)
+        ext = text_ext(data, ACCEL_HEADER)
+        if ext is None:
+            raise PieceRefused(
+                415, "send the accelerometer as gzip text that opens with '# jarvis accel'",
+            )
+        return self._keep(ACCEL_DIRNAME, device, piece_id, started_ms, duration_ms, data, ext)
 
     def _keep(  # noqa: PLR0913 — the piece's identity, its bytes and where they go
         self, kind: str, device: str, piece_id: str, started_ms: int, duration_ms: int,

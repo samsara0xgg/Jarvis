@@ -1,0 +1,40 @@
+{
+  "id": "fetch-missing-page-is-not-found",
+  "tool": "web_fetch",
+  "said": "这篇文章讲了什么 https://news.example.com/s/ferries",
+  "at": "2026-10-21T09:30:00-07:00",
+  "zone": "America/Vancouver",
+  "state": null,
+  "args": {
+    "url": "https://news.example.com/s/ferries"
+  },
+  "recording": "fetch-missing-page-is-not-found.recording.json",
+  "expect": {
+    "error_kind": "retry_other_args",
+    "summary_must": [
+      "^web_fetch: the page was not found \\(404\\) at news\\.example\\.com/s/ferries; check the address, or find the right page with web_search$"
+    ],
+    "result": [
+      {
+        "path": "code",
+        "op": "eq",
+        "value": "page_not_found"
+      }
+    ],
+    "requests": [
+      {
+        "url": "news.example.com/s/ferries",
+        "count": 1
+      },
+      {
+        "url": "api.tavily.com/extract",
+        "count": 0
+      }
+    ],
+    "receipt": {
+      "status": "failed",
+      "reads_only": true,
+      "failure": "retry_other_args"
+    }
+  }
+}

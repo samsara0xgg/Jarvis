@@ -6,14 +6,18 @@ r"""Replay the writer of the doing lane (ADR 0302) for past days, against given 
         [--config config/jarvis.yaml] [--zone America/Vancouver]
 
 For each day it folds the day line from the event log and memory.db, cuts the waking window,
-gathers the clues, asks the ``doing.preset`` model once (twice when its first answer fails a
-gate; the key comes from the environment, filled from the runtime root's saved keys as the
-brain fills it) and prints the gated spans, one per line. Without
-``--dry-run`` the gated spans are appended to ``memory.db`` as the day's newest run (a final run
-when the day is over as of ``--now``, else a draft), exactly as the daemon's schedule would; with
-it nothing is stored. The event log is only read: the model's cost is accounted in a throwaway
-log that is deleted afterwards. With ``--brief-only`` no model is asked: each day's input to the
-writer is printed as it would be sent. A day with no waking window or no inputs is skipped.
+gathers the clues and the keys of his attention nobody told yet or told to vary, asks the
+``doing.preset`` model once (twice when its first answer fails a gate; the key comes from the
+environment, filled from the runtime root's saved keys as the brain fills it), letting it read
+the shipped screen text as the brain does (ADR 0395), and prints the gated spans, one per line,
+with what the keys that vary served in each (ADR 0396), then what it told of the new keys (ADR
+0393), where his attention went in each span by them, and what the calls cost.
+Without ``--dry-run`` the gated spans are appended to ``memory.db`` as the day's newest run (a
+final run when the day is over as of ``--now``, else a draft), and what it told with them, exactly
+as the daemon's schedule would; with it nothing is stored. The event log is only read: the
+model's cost is accounted in a throwaway log that is deleted afterwards. With ``--brief-only`` no
+model is asked: each day's input to the writer is printed as it would be sent, with its length.
+A day with no waking window or no inputs is skipped.
 """
 
 from __future__ import annotations
@@ -38,15 +42,19 @@ from jarvis.runtime.doing_run import (
     DoingSettings,
     compose_run,
     read_brief,
+    screen_reader,
     store_run,
+    store_told,
 )
 from jarvis.runtime.interview_reminders import local_zone
 from jarvis.runtime.session_compaction import build_compact_client
 from jarvis.shared.pricing import load_pricing_table
 from jarvis.state.day_line import DaySources
 from jarvis.state.event_log import open_event_log
+from scripts.attention_replay import attention_lines, threads_of, told_lines
 
 if TYPE_CHECKING:
+    import sqlite3
     from collections.abc import Mapping, Sequence
     from datetime import tzinfo
 
@@ -55,8 +63,25 @@ if TYPE_CHECKING:
 REPO = Path(__file__).resolve().parents[1]
 
 
+def spent(cost_log: sqlite3.Connection) -> dict[str, float]:
+    """What the calls accounted in ``cost_log`` cost, in dollars, and their tokens by kind."""
+    totals = {"usd": 0.0, "in": 0.0, "cache_read": 0.0, "cache_write": 0.0, "out": 0.0}
+    try:
+        rows = cost_log.execute("SELECT disposition_json FROM cost_accounting_dispositions")
+    except Exception:  # noqa: BLE001 — no call made, no table
+        return totals
+    for (raw,) in rows:
+        one = json.loads(raw)
+        totals["usd"] += float(one.get("cost_usd") or 0.0)
+        totals["in"] += float(one.get("input_tokens") or 0)
+        totals["cache_read"] += float(one.get("cache_read_tokens") or 0)
+        totals["cache_write"] += float(one.get("cache_write_tokens") or 0)
+        totals["out"] += float(one.get("output_tokens") or 0)
+    return totals
+
+
 def readable(spans: Sequence[Mapping[str, Any]], zone: tzinfo) -> list[str]:
-    """One line per span: its times, title, how sure, and the question it asks."""
+    """One line per span: its times, title, how sure, the question it asks, what keys served."""
 
     def clock(ms: int) -> str:
         return f"{datetime.fromtimestamp(ms / 1000, zone):%H:%M}"
@@ -70,6 +95,8 @@ def readable(spans: Sequence[Mapping[str, Any]], zone: tzinfo) -> list[str]:
         )
         if span["question"] is not None:
             line += f" ? {span['question']['text']} {span['question']['options']}"
+        for one in span.get("serves") or []:
+            line += f"\n      {one['key']} -> {one['thread'] or '(cannot tell)'}"
         lines.append(line)
     return lines
 
@@ -79,7 +106,7 @@ def replay(  # noqa: PLR0913 — the days, the stores, the knobs, the model and 
     settings: DoingSettings, client: LLMClient | None, now: datetime, *, dry_run: bool,
     pricing_table: Mapping[str, Mapping[str, float]],
 ) -> list[dict[str, Any]]:
-    """One summary per day, with its gated spans; they are stored unless ``dry_run``.
+    """One summary per day, with its gated spans and what it told; stored unless ``dry_run``.
 
     Without a client no model is asked and each day's summary carries the writer's input instead.
     """
@@ -96,25 +123,40 @@ def replay(  # noqa: PLR0913 — the days, the stores, the knobs, the model and 
                 done.append(line | {"outcome": "skipped (no waking window or no inputs)"})
                 continue
             if client is None:
+                content = build_messages(brief)[0]["content"]
                 done.append(line | {
                     "outcome": "brief only", "segments": len(brief.segments),
-                    "clues": len(brief.clues), "digest": inputs_digest(brief),
-                    "brief": build_messages(brief)[0]["content"],
+                    "clues": len(brief.clues), "new_keys": len(brief.asked),
+                    "varying_keys": len(brief.varies),
+                    "brief_chars": len(content), "digest": inputs_digest(brief), "brief": content,
                 })
                 continue
-            composed = compose_run(brief, settings, client, recorder)
+            before = spent(cost_log)
+            composed = compose_run(brief, settings, client, recorder, screen_reader(sources))
+            after = spent(cost_log)
             line |= {
                 "final": brief.final, "segments": len(brief.segments),
-                "clues": len(brief.clues), "digest": inputs_digest(brief),
-                "model": composed.model, "tokens_in": composed.tokens_in,
-                "tokens_out": composed.tokens_out,
+                "clues": len(brief.clues), "new_keys": len(brief.asked),
+                "varying_keys": len(brief.varies), "screen_reads": composed.reads,
+                "digest": inputs_digest(brief), "model": composed.model,
+                "tokens_in": composed.tokens_in, "tokens_out": composed.tokens_out,
+                **{f"cost_{k}": round(after[k] - before[k], 4) for k in after},
             }
+            told = composed.threads or {}
+            names = {one.key: one.name for one in brief.asked}
+            said = told_lines(told, names) if composed.threads is not None else [
+                f"  not told ({composed.why})",
+            ]
+            if not dry_run:
+                store_told(memory_db, brief, composed)
             if composed.spans is None:
-                done.append(line | {"outcome": f"rejected ({composed.why})"})
+                done.append(line | {"outcome": f"rejected ({composed.why})", "told": said})
                 continue
             stored = "dry run" if dry_run else store_run(memory_db, brief, composed)
             done.append(line | {
                 "outcome": f"gated ({stored})", "spans": readable(composed.spans, sources.zone),
+                "told": said,
+                "attention": attention_lines(composed.spans, sources, threads_of(memory_db, told)),
             })
     return done
 
@@ -174,10 +216,16 @@ def main(argv: list[str] | None = None) -> int:
         pricing_table=table,
     ):
         spans = line.pop("spans", [])
+        told = line.pop("told", [])
+        seen = line.pop("attention", [])
         brief = line.pop("brief", None)
         sys.stdout.write(json.dumps(line, ensure_ascii=False) + "\n")
         for span in spans:
             sys.stdout.write(f"  {span}\n")
+        if told:
+            sys.stdout.write("told:\n" + "\n".join(told) + "\n")
+        if seen:
+            sys.stdout.write("attention:\n" + "\n".join(seen) + "\n")
         if brief is not None:
             sys.stdout.write(brief + "\n")
     if args.dry_run or args.brief_only:

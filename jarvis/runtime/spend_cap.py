@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Final
 from jarvis.decision import attention
 from jarvis.shared import lang
 from jarvis.state import job_ledger as ledger
+from jarvis.state.cost_accounting import spent_since
 from jarvis.state.event_log import open_runtime_event_log
 from jarvis.state.memory_db import local_now
 
@@ -28,10 +29,6 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger(__name__)
 
 ALERT_PREFIX: Final[str] = "spend-cap-"
-_SUM_TODAY: Final[str] = (
-    "SELECT COALESCE(SUM(json_extract(payload_json, '$.cost_usd')), 0) FROM events "
-    "WHERE type = 'cost.recorded' AND ts_epoch_ms >= ?"
-)
 
 
 @dataclass(frozen=True)
@@ -74,7 +71,7 @@ class SpendCap:
         """Recorded dollars from local midnight of ``day`` on (tokens priced at record time)."""
         start = datetime.combine(day, time.min).astimezone()
         with closing(open_runtime_event_log(self._event_log_path)) as conn:
-            return float(conn.execute(_SUM_TODAY, (int(start.timestamp() * 1000),)).fetchone()[0])
+            return spent_since(conn, since_ms=int(start.timestamp() * 1000))
 
     def check(self, now: datetime) -> bool:
         """Raise today's card when the day's spend is over the limit and none exists; True if so."""

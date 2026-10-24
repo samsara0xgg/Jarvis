@@ -28,6 +28,13 @@
    "status": 200,
    "content_type": "application/json",
    "body": "{\"routes\": [{\"legs\": [{\"steps\": [{\"travelMode\": \"WALK\", \"staticDuration\": \"300s\"}, {\"travelMode\": \"TRANSIT\", \"staticDuration\": \"1200s\", \"transitDetails\": {\"stopDetails\": {\"departureStop\": {\"name\": \"Douglas at Hillside\"}, \"arrivalStop\": {\"name\": \"Oak Bay Junction\"}, \"departureTime\": \"2026-10-13T07:12:00Z\", \"arrivalTime\": \"2026-10-13T07:32:00Z\"}, \"headsign\": \"Uvic\", \"transitLine\": {\"nameShort\": \"11\", \"name\": \"Uvic\"}}}, {\"travelMode\": \"WALK\", \"staticDuration\": \"240s\"}], \"endLocation\": {\"latLng\": {\"latitude\": 48.4634, \"longitude\": -123.3117}}}]}, {\"legs\": [{\"steps\": [{\"travelMode\": \"WALK\", \"staticDuration\": \"300s\"}, {\"travelMode\": \"TRANSIT\", \"staticDuration\": \"1200s\", \"transitDetails\": {\"stopDetails\": {\"departureStop\": {\"name\": \"Douglas at Hillside\"}, \"arrivalStop\": {\"name\": \"Oak Bay Junction\"}, \"departureTime\": \"2026-10-13T07:40:00Z\", \"arrivalTime\": \"2026-10-13T08:00:00Z\"}, \"headsign\": \"Uvic\", \"transitLine\": {\"nameShort\": \"14\", \"name\": \"Uvic\"}}}, {\"travelMode\": \"WALK\", \"staticDuration\": \"240s\"}], \"endLocation\": {\"latLng\": {\"latitude\": 48.4634, \"longitude\": -123.3117}}}]}]}"
+  },
+  {
+   "method": "GET",
+   "url": "https://bct.tmix.se/gtfs-realtime/tripupdates.pb?operatorIds=48",
+   "status": 200,
+   "content_type": "application/x-protobuf",
+   "body_b64": "CgUKAzIuMA=="
   }
  ],
  "mcp": []

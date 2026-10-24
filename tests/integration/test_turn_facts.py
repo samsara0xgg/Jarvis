@@ -8,21 +8,26 @@ milliseconds, never the wall clock.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
+from jarvis.state.event_log import latest_id
 from jarvis.state.turn_facts import (
     answer_started,
     answer_stopped_by_him,
+    answer_superseded,
     card_requested_by_turn,
     clarification_asked_at,
     clarifications_asked_in_turn,
     commentary_runs_opened,
     heard_as_barge_pause,
     input_channels,
+    latest_input_row,
+    playback_ended,
     recent_turn_timings,
     spoken_since,
+    turn_cancelled_or_failed,
     turn_dispatched_action,
     turn_ended_or_failed,
     turn_has_run,
@@ -288,3 +293,84 @@ def test_the_newest_turn_timings_oldest_first(tmp_path: Path) -> None:
         log.conn, since_ms=2_000, limit=10)] == ["T3", "T4"]
     newest = recent_turn_timings(log.conn, since_ms=0, limit=1)[0]
     assert (newest.ts_epoch_ms, newest.payload["done_ms"]) == (3_000, 3_000)
+
+
+def test_a_turn_whose_answer_his_next_sentence_took_over(tmp_path: Path) -> None:
+    """Only a run cancelled as ``superseded`` counts, and only for the turn it belongs to."""
+    log = TurnLog(tmp_path)
+    log.run(T, "R1")
+    log.run_ends("response.cancelled", T, "R1", "barge_in")
+    log.run_ends("response.cancelled", "T2", "R9", "superseded")
+    assert not answer_superseded(log.conn, T)
+    log.run_ends("response.cancelled", T, "R2", "superseded")
+    assert answer_superseded(log.conn, T)
+
+
+def test_a_turn_that_had_a_run_cancelled_or_failed(tmp_path: Path) -> None:
+    """A cancelled or failed run, or a failed turn, whatever the reason; a finished one is not."""
+    log = TurnLog(tmp_path)
+    log.run(T, "R1")
+    log.run_ends("response.completed", T, "R1")
+    log.turn_ended(T)
+    assert not turn_cancelled_or_failed(log.conn, T)
+    assert not turn_cancelled_or_failed(log.conn, "T-cut")
+    log.run_ends("response.cancelled", "T-cut", "R2", "user_stop")
+    assert turn_cancelled_or_failed(log.conn, "T-cut")
+    assert not turn_cancelled_or_failed(log.conn, "T-run")
+    log.run_ends("response.failed", "T-run", "R3", "oops")
+    assert turn_cancelled_or_failed(log.conn, "T-run")
+    assert not turn_cancelled_or_failed(log.conn, "T-raised")
+    log.turn_failed("T-raised")
+    assert turn_cancelled_or_failed(log.conn, "T-raised")
+
+
+def _playback_row(log: TurnLog, kind: str, response_id: str) -> None:
+    """The row L5 writes for ``response_id``'s playback: ``kind`` is its name after ``surface.``."""
+    lease = {"session_id": "S1", "response_id": response_id, "turn_id": T}
+    heard = {
+        **lease, "playback_generation_id": "P1", "heard_through_sequence": 0,
+        "submitted_samples": 0,
+    }
+    payloads: dict[str, dict[str, Any]] = {
+        "playback_started": {
+            **lease, "playback_generation_id": "P1", "phase": "final", "channel": "both",
+            "speech_text_hash": "h",
+        },
+        "playback_completed": {**heard, "speech_text_hash": "h"},
+        "playback_interrupted": {**heard, "heard_text_hash": "h", "reason": "barge_in"},
+        "playback_failed": {**heard, "heard_text_hash": "h", "reason": "device_lost"},
+        "speech_dropped": {"response_id": response_id, "turn_id": T, "reason": "no_phone_voice"},
+    }
+    log.put(f"surface.{kind}", payloads[kind], turn_id=T)
+
+
+@pytest.mark.parametrize(
+    "kind",
+    ["playback_completed", "playback_interrupted", "playback_failed", "speech_dropped"],
+)
+def test_an_answers_playback_ends_with_a_terminal_or_a_drop(tmp_path: Path, kind: str) -> None:
+    """A lease's terminal or a dropped answer ends it; a start and others' answers do not."""
+    log = TurnLog(tmp_path)
+    _playback_row(log, "playback_completed", "R-other")
+    _playback_row(log, "playback_started", "R1")
+    assert not playback_ended(log.conn, "R1")
+    _playback_row(log, kind, "R1")
+    assert playback_ended(log.conn, "R1")
+
+
+def test_the_newest_row_of_his_words(tmp_path: Path) -> None:
+    """Typed and heard rows count; a plugin's resume echo, other rows and an empty log do not."""
+    log = TurnLog(tmp_path)
+    assert latest_input_row(log.conn) is None
+    log.run(T, "R1")
+    assert latest_input_row(log.conn) is None
+    log.heard(T)
+    assert latest_input_row(log.conn) == latest_id(log.conn)
+    log.typed("T2", "gpt_live")
+    typed_at = latest_id(log.conn)
+    assert latest_input_row(log.conn) == typed_at
+    log.typed("T3", "plugin_resume")
+    log.run("T3", "R3")
+    assert latest_input_row(log.conn) == typed_at
+    log.put("surface.user_intent", {"transcript": "hi", "turn_id": "T4"}, turn_id="T4")
+    assert latest_input_row(log.conn) == latest_id(log.conn)

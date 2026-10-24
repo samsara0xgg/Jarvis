@@ -14,6 +14,9 @@ surface as the brain renders it: nothing is spoken or shown on the machine the e
 code under test builds the system prompt, the history, the state block and the menu; nothing is
 read from a log.
 ``before`` is not supported: the cut leaves the earlier turns in the history as they were.
+A case may carry ``settings``, laid over the brain's (a turn leaves ``job_mail`` out of them, so a
+case about the job hunt says ``{"job_mail": {"enabled": true}}``), and ``job_mail``, the hunt it
+is said in (see :mod:`scripts.tool_exam_tools`); the poller is not started, only the tool's data.
 
 Providers answer from the case's ``recording`` where it holds the call; a call it lacks fails inside
 the tool as a provider error (the network is closed), and the result line lists those calls as
@@ -51,6 +54,7 @@ import sys
 import tempfile
 import time
 import uuid
+from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -88,7 +92,7 @@ from scripts.tool_exam_tools import (
 
 if TYPE_CHECKING:
     import argparse
-    from collections.abc import Callable, Collection, Mapping
+    from collections.abc import Callable, Collection
 
     from jarvis.execution.tools import FlatHandler, Receipted, ToolContext
     from jarvis.runtime import JarvisRuntime
@@ -109,13 +113,26 @@ def _listed_plugin(plugin_id: str, servers: Collection[str]) -> bool:
     return bool(served) and served <= set(servers)
 
 
+def _laid_over(base: Mapping[str, Any], over: Mapping[str, Any]) -> dict[str, Any]:
+    """``base`` with ``over`` on top, a section in both merged key by key."""
+    merged = dict(base)
+    for key, value in over.items():
+        held = merged.get(key)
+        merged[key] = (
+            _laid_over(held, value)
+            if isinstance(held, Mapping) and isinstance(value, Mapping) else value
+        )
+    return merged
+
+
 def brain_settings(
     directory: Path, source: Path = BRAIN_SETTINGS, servers: Collection[str] = (),
+    over: Mapping[str, Any] | None = None,
 ) -> Path:
     """Write the brain's settings from ``source``, reduced as the module says, to ``directory``.
 
     ``servers`` are the MCP servers whose tools are listed: their plugins and entries stay.
-    Returns ``directory``.
+    ``over`` is the case's own ``settings``, laid on top of what is left. Returns ``directory``.
     """
     if not source.is_file():
         msg = f"no brain settings at {source}; pass --brain-settings"
@@ -131,6 +148,7 @@ def brain_settings(
     }
     mcp = tools.get("mcp") or {}
     mcp["servers"] = {n: entry for n, entry in (mcp.get("servers") or {}).items() if n in servers}
+    data = _laid_over(data, over or {})
     (directory / "settings.yaml").write_text(yaml.safe_dump(data), encoding="utf-8")
     return directory
 
@@ -241,7 +259,7 @@ def run_one(  # noqa: PLR0913, PLR0915 - the case, its model and what meters and
     previous = signal.signal(signal.SIGALRM, alarm)
     signal.alarm(ITEM_TIMEOUT_S * 5)
     try:
-        real_root = brain_settings(scratch, settings, transport.listed)
+        real_root = brain_settings(scratch, settings, transport.listed, case.get("settings"))
         with (
             patch.dict(os.environ, placeholders(real_root, transport.listed)),
             transport,

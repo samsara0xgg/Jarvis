@@ -378,13 +378,16 @@ def test_a_card_raised_without_a_turn_sends_on_his_button(
     ctx = _context(tmp_path, servers, llm)
     try:
         for no_card in ("mcp__echo__echo", "mcp__echo__nothing"):  # read-only, unknown
-            assert request_confirmation(ctx.conn, ctx.tool_registry, no_card, {}, ttl_ms=1) is None
+            assert request_confirmation(
+                ctx.conn, ctx.tool_registry, no_card, {}, ttl_ms=1, runtime_paths=ctx.runtime_paths,
+            ) is None
         asked = request_confirmation(
             ctx.conn,
             ctx.tool_registry,
             "mcp__echo__send",
             LETTER,
             ttl_ms=60_000,
+            runtime_paths=ctx.runtime_paths,
             lang="zh",
         )
         assert asked is not None

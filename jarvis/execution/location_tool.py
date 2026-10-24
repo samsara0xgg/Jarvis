@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Final
 
-from jarvis.execution.tools import Tool, ToolError
+from jarvis.execution.tools import Receipted, Tool, ToolError
 from jarvis.shared import CallerPrincipal
 from jarvis.shared.here import HereReading, HereUnavailable
+from jarvis.shared.receipts import Covered, Receipt
 from jarvis.state.attachments import short_id
 from jarvis.state.event_log import MAC_NODE
 from jarvis.state.phone_location import NoPhoneReport
@@ -19,24 +20,12 @@ if TYPE_CHECKING:
     from jarvis.shared.here import HereSource
 
 _DESCRIPTION: Final = (
-    "The user's location right now: a place name when known, latitude, longitude, accuracy in"
-    " metres and age_s, how many seconds old the position is. It comes from the device he is"
-    " talking from when that reports locations, else from his phone, and it asks for a fresh fix,"
-    " which can take up to ten seconds; `fresh` says whether the device answered, and if not"
-    " this is its last report. Tell him how old the position is when that matters. Never say you"
-    " do not know where he is without calling it. Call it only when his question depends on"
-    " where he is right now: 'where am I', what he is doing or just did away from the computer,"
-    " what is nearby, places, food or shops near him, how far something is from here. For bus"
-    " trips use bus instead (it starts from here). If it returns an error, no device has"
-    " reported a location: say so and ask him where he is."
-)
-
-_AROUND_RULE: Final = (
-    " The result also has `around` (ADR 0284): the street and nearest intersection, how long he"
-    " has been at this spot, his kept place if he is in one, candidate places he may be at and"
-    " up to 10 other places within 300 m with direction, distance and open now. They are facts"
-    " for you to judge, and each new spot costs money, so do not call it again for the same"
-    " spot."
+    "Use for where he is right now and what is around him: a place name, street, nearby places"
+    " and how long he has stayed. Not for a bus trip (bus) or finding a business (map_search)."
+    " Returns latitude, longitude, accuracy, the age of the position and whether the device took"
+    " a fresh fix (it can take ten seconds; if not, the last report), and with a Google key the"
+    " street, his kept place and the places he may be at. His phone reports after about 200 m"
+    " and a rest, so the last report can be old."
 )
 
 _ASK: Final = "ask the user where he is, or use a saved place he names"
@@ -122,10 +111,11 @@ def build_where_tool(
     if here is None:
         return ()
 
-    def where_am_i(_args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
+    def where_am_i(_args: Mapping[str, Any], ctx: ToolContext) -> Receipted:
         fix = read_here(ctx, fresh=True)
         mac = fix.device == MAC_NODE
         out: dict[str, Any] = {
+            "summary": f"He is at {fix.place or 'an unnamed place'} ({said_where(fix)}).",
             "lat": fix.lat, "lng": fix.lng, "accuracy_m": fix.accuracy_m,
             "place": fix.place, "source": "this Mac" if mac else "phone",
         }
@@ -141,12 +131,20 @@ def build_where_tool(
             if fix.snapshot is not None:
                 out["snapshot"] = fix.snapshot
             out["note"] = _note(fix)
-        return out if around is None else {**out, "around": around.lookup(ctx, fix)}
+        if around is not None:
+            out["around"] = around.lookup(ctx, fix)
+        sources: tuple[str, ...] = ("phone location",)
+        if around is not None:
+            sources += ("Google Places", "Google Geocoding")
+        return Receipted(out, Receipt(
+            "done", reads_only=True, line=f"read where he is: {said_where(fix)}",
+            covered=Covered(sources, "his position now", 1, 0),
+        ))
 
     return (
         Tool(
             name="where_am_i",
-            description=_DESCRIPTION + ("" if around is None else _AROUND_RULE),
+            description=_DESCRIPTION,
             input_schema={"type": "object", "properties": {}, "required": []},
             handler=where_am_i,
             allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),

@@ -24,7 +24,9 @@ around it, no code fence. The program reads your answer and drops what it cannot
   with its `due` date.
 - `goals`: his long-term goals, each with what he said about it. `deadlines`: his hard dates.
 - `routines`: what he usually does on this weekday.
-- `weather`: the day's forecast, or absent.
+- `weather`: the day at home, or absent. Today comes in parts: `now`, what fell since midnight
+  (`earlier_today`), what is left of the day (`rest_of_today`), `tonight`, and the whole day's row
+  (`whole_day`). Another day is its row alone, as `whole_day`.
 - `recent_days`: the last week as he lived it, one day each with its `weekday` and:
   - `story`: your own account of that day, written the night after;
   - `timeline`: every stretch of the day in time order, as `HH:MM-HH:MM what`. Work on the Mac
@@ -95,8 +97,11 @@ around it, no code fence. The program reads your answer and drops what it cannot
 ## Task: opening
 
 Input: `plan` (the day's items in the order he works, with `private` marked), `unconfirmed`
-(commitments read from his mail that he has not confirmed yet), `weather`, `now`, `weekday`. Every
-time is written the way it is said aloud.
+(commitments read from his mail that he has not confirmed yet), `weather` (today at home, in the
+parts the draft task describes), `outings` (each outing away from home, by its `item_id`, with the
+`weather` of the hours from its leave time to its end at its own place: `at` names the place, and is
+`home` with `why_home` when the place's position is not known), `now`, `weekday`. Every time is
+written the way it is said aloud.
 
 You open the day by starting a conversation with him, and you lead it until the two of you have
 settled the plan: first you ask, then you propose. This first message is said aloud on his Mac
@@ -153,13 +158,14 @@ is to say nothing.
   write it. Every time in this input is written the way it is said aloud.
 - `notice`: what the program saw: its `kind`, the `item_id` it is about and its `facts`.
   Kinds: `not_up`, `outing_soon`, `left_late`, `item_due`, `stayed_longer`, `left_early`,
-  `new_commitment`, `progress`. For `outing_soon`, `weather` and `leg_now` hold a fresh reading
-  when there is one. `progress` is a check on the day so far, every two hours after he woke
-  and when a timed item ends: its facts hold the tasks with their estimated minutes and whether
-  each is done, the minutes the tasks not done still need (`remaining_min`), the minutes left
-  before the day ends once the timed items ahead are taken out (`free_min`), the next task,
-  what his screen shows he is doing, today's commits, and `marked`: what the progress task
-  below just marked.
+  `new_commitment`, `progress`. For `outing_soon`, `weather` is the weather of the outing's own
+  hours at its place (`at` names it, and is `home` with `why_home` when its position is not known)
+  and `leg_now` is the leg read again, each when there is one. `progress` is a check on the day
+  so far, every two hours after he woke and when a timed item ends: its facts hold the tasks with
+  their estimated minutes and whether each is done, the minutes the tasks not done still need
+  (`remaining_min`), the minutes left before the day ends once the timed items ahead are taken
+  out (`free_min`), the next task, what his screen shows he is doing, today's commits, and
+  `marked`: what the progress task below just marked.
 - `facts`: what the log says about him now: when and how he woke, where he is and since when, his
   stays and moves today, what his screen shows he is doing, commitments noted today.
 - `told_today`: what you already said to him today, each with its time.

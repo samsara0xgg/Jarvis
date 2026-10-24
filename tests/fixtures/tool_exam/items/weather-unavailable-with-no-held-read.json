@@ -1,0 +1,15 @@
+{
+  "id": "weather-unavailable-with-no-held-read",
+  "tool": "weather",
+  "said": "what's the weather",
+  "at": "2026-10-21T09:30:30-07:00",
+  "zone": "America/Vancouver",
+  "state": null,
+  "args": {},
+  "recording": "weather-unavailable-with-no-held-read.recording.json",
+  "expect": {
+    "error_kind": "dont_retry",
+    "summary_must": ["unavailable"],
+    "summary_must_not": ["(?i)web[ _]search"]
+  }
+}

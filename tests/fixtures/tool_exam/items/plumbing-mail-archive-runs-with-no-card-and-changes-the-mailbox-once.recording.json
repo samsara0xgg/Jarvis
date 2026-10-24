@@ -1,0 +1,21 @@
+{
+ "version": 1,
+ "mailbox": {
+  "messages": [
+   {
+    "id": "m1",
+    "subject": "Plan one",
+    "plain": "First.",
+    "sender": "Sam Lee <sam@example.com>",
+    "ago": 10
+   },
+   {
+    "id": "m2",
+    "subject": "Plan two",
+    "plain": "Second.",
+    "sender": "Kim Ray <kim@example.com>",
+    "ago": 20
+   }
+  ]
+ }
+}

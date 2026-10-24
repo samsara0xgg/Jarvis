@@ -7,8 +7,8 @@ enum FootprintPaint {
     static let ramp: [(kmh: Double, rgb: RGB)] = [
         (0, RGB(240, 132, 218)), (25, RGB(172, 124, 255)), (50, RGB(100, 200, 255)), (80, RGB(111, 224, 180)),
     ]
-    static let casing = RGB(8, 10, 24)              // under every route, at casingAlpha
-    static let casingAlpha = 0.55
+    static let casing = RGB(8, 10, 24)              // under every route, at casingAlpha (three quarters of it under the faint part), casingWidth points wider than the line
+    static let casingAlpha = 0.85, casingWidth = 4.0
     static let gap = RGB(214, 220, 246)             // a stretch with no fixes: dotted, straight, at gapAlpha
     static let gapAlpha = 0.75
     static let token = RGB(16, 18, 30)              // stop token fill; its ring is TLPaint.ink at 0.85

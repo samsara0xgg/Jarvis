@@ -323,7 +323,9 @@ def test_a_dataset_that_cannot_be_written_changes_no_decision(
             _result, conn, llm = _say(tmp_path / turn, "do you have the time", route)
             assert [p["pattern_id"] for p in ran_tier0(conn)] == ["time_now"]
             assert len(llm.requests) == 0
-    assert len(caplog.records) == 1
+    # The route's own warnings: the handler also sees what another module, or a thread an
+    # earlier test on this process left running, logs meanwhile.
+    assert [r.name for r in caplog.records].count("jarvis.decision.surrogate_route") == 1
     assert "jev log" in caplog.text
     assert KEY not in caplog.text
 

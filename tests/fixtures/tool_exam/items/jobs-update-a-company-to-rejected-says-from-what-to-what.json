@@ -1,0 +1,63 @@
+{
+  "id": "jobs-update-a-company-to-rejected-says-from-what-to-what",
+  "tool": "jobs",
+  "said": "Acme turned me down",
+  "at": "2026-10-20T11:00:00-07:00",
+  "zone": "America/Vancouver",
+  "state": null,
+  "setup": [
+    {
+      "tool": "jobs",
+      "args": {
+        "action": "add",
+        "company": "Acme",
+        "role": "data analyst co-op"
+      }
+    }
+  ],
+  "args": {
+    "action": "update",
+    "application": "Acme",
+    "status": "rejected"
+  },
+  "recording": "jobs.recording.json",
+  "expect": {
+    "summary_must": [
+      "^Acme \\(data analyst co-op\\): status applied to rejected\\."
+    ],
+    "result": [
+      {
+        "path": "changed",
+        "op": "len",
+        "value": 1
+      },
+      {
+        "path": "changed.0.from",
+        "op": "eq",
+        "value": "applied"
+      },
+      {
+        "path": "changed.0.to",
+        "op": "eq",
+        "value": "rejected"
+      },
+      {
+        "path": "undo.status",
+        "op": "eq",
+        "value": "applied"
+      }
+    ],
+    "receipt": {
+      "status": "done",
+      "reads_only": false,
+      "line": "Acme (data analyst co-op): status applied to rejected"
+    },
+    "state_after": [
+      {
+        "db": "memory",
+        "sql": "SELECT status FROM job_application WHERE company = 'Acme'",
+        "answer": "rejected"
+      }
+    ]
+  }
+}

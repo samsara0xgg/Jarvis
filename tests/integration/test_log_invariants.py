@@ -253,7 +253,10 @@ def test_a_clean_log_passes_every_invariant(rig: _Rig) -> None:
     """Nothing in a log built only through the real primitives is flagged."""
     seed_clean(rig)
     report = rig.check()
-    assert [(one.name, one.status) for one in report.results if one.status != "ok"] == []
+    # A log alone has no Mac copy to judge the sources by: skipped, not passed.
+    assert [(one.name, one.status) for one in report.results if one.status != "ok"] == [
+        ("sources.keep_arriving", "skipped"),
+    ]
     assert report.violated == ()
     assert report.events > 20
     assert 10 <= len(INVARIANTS) <= 15
@@ -423,7 +426,8 @@ def test_each_invariant_flags_its_violation_and_only_its_own(rig: _Rig, case: st
 def test_every_invariant_has_a_case_in_the_table() -> None:
     """No invariant, lifecycle or secret shape is left without a case above."""
     covered = {one.invariant for one in BREAKS.values()}
-    assert covered == {one.name for one in INVARIANTS}
+    # sources.keep_arriving needs a Mac copy and recordings: its table is test_source_silence.
+    assert covered | {"sources.keep_arriving"} == {one.name for one in INVARIANTS}
     single = "lifecycle.single_terminal"
     lifecycles = {one.note for one in BREAKS.values() if one.invariant == single}
     assert lifecycles == {"response", "action", "playback", "confirmation"}

@@ -3,31 +3,49 @@
 ``Clock`` is a protocol, and mypy is the proof that ``SystemClock`` and ``FakeClock`` both are one:
 ``_through`` takes a ``Clock`` and is called with each. The real clock is checked on what it
 reads (so a freeze of ``time.time()``, ``time.monotonic()`` and ``datetime.now()`` holds), on
-where its zone comes from, and on the boot check of ADR 0322. The fake clock's ``wait`` is checked
-with a waiter on another thread: it ends on the event or on the clock moving, never on real time.
+where its zone comes from, and on the boot check of ADR 0322. The host's tz database is checked for
+the rule of BC's clocks from 2026-11-01, over zone providers the test writes, and the boot for
+logging one error for an old one and going on. The fake clock's ``wait`` is checked with a waiter
+on another thread: it ends on the event or on the clock moving, never on real time.
 """
 
 from __future__ import annotations
 
+import logging
+import os
+import shutil
+import subprocess
+import sys
 import threading
 import time
+import zoneinfo
 from datetime import UTC, datetime, timedelta, tzinfo
+from importlib.resources import files
+from pathlib import Path
 from typing import TYPE_CHECKING
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import pytest
 import time_machine
+import tzdata
 
+from jarvis.runtime.bootstrap import core as core_module
 from jarvis.runtime.config import RuntimeBootstrapError
 from jarvis.shared import clock as clock_module
-from jarvis.shared.clock import Clock, SystemClock, ZoneError, system_zone
+from jarvis.shared.clock import (
+    Clock,
+    SystemClock,
+    ZoneError,
+    system_zone,
+    tz_database_version,
+    zone_data_problem,
+)
 from jarvis.state import daily_report as daily_report_module
 from tests.support.clock import FakeClock
 from tests.support.runtime_config import boot_runtime
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
-    from pathlib import Path
 
 PARIS = ZoneInfo("Europe/Paris")
 VANCOUVER = ZoneInfo("America/Vancouver")
@@ -201,6 +219,184 @@ def test_the_boot_check_stops_a_zone_with_no_offset() -> None:
     """Nothing to cut a day by."""
     with pytest.raises(ZoneError, match="no offset"):
         SystemClock(_Table("Nowhere/Land", lambda _: None)).check_rule()
+
+
+# --- the host's tz database --------------------------------------------------------------------
+
+
+def _vancouver_at(offset: timedelta | None) -> Callable[[str], tzinfo]:
+    """A zone provider whose every zone is on ``offset`` (None: a table with no offset)."""
+    return lambda name: _Table(name, lambda _: offset)
+
+
+def test_a_database_that_holds_the_rule_has_nothing_to_report() -> None:
+    """Vancouver on UTC-7 at noon on 2026-11-02: the day after the old rule turns clocks back."""
+    asked: list[str] = []
+    noon = datetime(2026, 11, 2, 12, tzinfo=UTC)
+
+    def utc7_at_noon(dt: datetime | None) -> timedelta | None:
+        return timedelta(hours=-7) if dt is not None and dt.replace(tzinfo=UTC) == noon else None
+
+    def load(name: str) -> tzinfo:
+        asked.append(name)
+        return _Table(name, utc7_at_noon)
+
+    assert zone_data_problem(load, lambda: "2026e") is None
+    assert asked == ["America/Vancouver"]
+
+
+def test_an_old_database_says_what_it_gives_and_which_version_it_is() -> None:
+    """The one line the log and init.sh print: the zone, the offset it gives, the version."""
+    old = _vancouver_at(timedelta(hours=-8))
+    assert zone_data_problem(old, lambda: "2025b") == (
+        "the tzdata is out of date: America/Vancouver gives UTC-08:00 at 2026-11-02 12:00,"
+        " not UTC-07:00 (tz database 2025b)"
+    )
+
+
+def test_a_database_without_the_zone_or_its_offset_gives_no_offset() -> None:
+    """A zone that is not there, or has no offset at that time, is as out of date as a wrong one."""
+
+    def missing(name: str) -> tzinfo:
+        raise ZoneInfoNotFoundError(name)
+
+    for load in (missing, _vancouver_at(None)):
+        problem = zone_data_problem(load, lambda: "unknown")
+        assert problem is not None
+        assert "America/Vancouver gives no offset at 2026-11-02 12:00" in problem
+
+
+def _zoneinfo_tree(root: Path, *, header: str | None, zone: bool = True) -> str:
+    """A directory shaped like a zoneinfo tree; ``header`` is its ``tzdata.zi`` text, if any."""
+    root.mkdir(parents=True)
+    if zone:
+        (root / "America").mkdir()
+        (root / "America" / "Vancouver").write_bytes(b"")
+    if header is not None:
+        (root / "tzdata.zi").write_text(header, encoding="utf-8")
+    return str(root)
+
+
+def test_the_version_is_the_one_of_the_directory_the_zone_is_read_from(tmp_path: Path) -> None:
+    """The first directory of the search path that holds the zone names it, not one before it."""
+    without = _zoneinfo_tree(tmp_path / "a", header="# version 2020a\n", zone=False)
+    held = _zoneinfo_tree(tmp_path / "b", header="# version 2025b\n# dataform rearguard\n")
+    later = _zoneinfo_tree(tmp_path / "c", header="# version 2026e\n")
+    assert tz_database_version((without, held, later)) == "2025b"
+
+
+def test_the_version_may_be_in_a_version_file_and_is_unknown_without_one(tmp_path: Path) -> None:
+    """Some systems keep it as ``+VERSION``; a tree with neither names none.
+
+    A search path where no directory holds the zone leaves it to the ``tzdata`` package, as
+    ``zoneinfo`` does, so the package's version is the one in force.
+    """
+    plus = _zoneinfo_tree(tmp_path / "plus", header=None)
+    (tmp_path / "plus" / "+VERSION").write_text("2024a\n", encoding="utf-8")
+    bare = _zoneinfo_tree(tmp_path / "bare", header=None)
+    assert tz_database_version((plus,)) == "2024a"
+    assert tz_database_version((bare,)) == "unknown"
+    assert tz_database_version((str(tmp_path / "nowhere"),)) == tzdata.IANA_VERSION
+
+
+def test_every_zone_is_read_from_the_pinned_package_not_the_host() -> None:
+    """ADR 0398: importing jarvis empties the search path, so no host directory is read.
+
+    The zones and the version init.sh and the boot report are the ``tzdata`` package's, which
+    holds the rule for BC's clocks.
+    """
+    assert zoneinfo.TZPATH == ()
+    assert tz_database_version() == tzdata.IANA_VERSION
+    assert zone_data_problem() is None
+    winter = datetime(2026, 11, 12, 12, tzinfo=ZoneInfo("America/Winnipeg"))
+    assert winter.utcoffset() == timedelta(hours=-5)
+
+
+PACKAGE_ZONES = Path(str(files("tzdata.zoneinfo")))
+
+_LOCAL = """
+import os, time, jarvis
+from datetime import datetime
+from jarvis.shared.clock import system_zone
+noon = datetime(2026, 11, 12, 20, 0).timestamp()
+print(os.environ["TZ"], time.localtime(noon).tm_gmtoff, system_zone())
+"""
+
+
+def _local_time_in(host: Path) -> list[str]:
+    """What a fresh ``import jarvis`` leaves: ``TZ``, his offset at 2026-11-12 12:00, his zone.
+
+    The machine is on America/Vancouver and glibc reads its zone files from ``host`` (``TZDIR``).
+    """
+    env = {**os.environ, "TZ": "America/Vancouver", "TZDIR": str(host)}
+    done = subprocess.run(  # noqa: S603 - this interpreter, a fixed script.
+        [sys.executable, "-c", _LOCAL], capture_output=True, text=True, check=True, env=env,
+    )
+    return done.stdout.split()
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="glibc reads TZDIR; macOS does not")
+def test_a_host_database_without_the_rule_points_local_time_at_the_package(
+    tmp_path: Path,
+) -> None:
+    """ADR 0398: an old host gives UTC-8 in BC after 2026-11-01; local time reads the package.
+
+    The old host is US Pacific's rule under Vancouver's name, which is what a database older
+    than 2026e holds for it.
+    """
+    (tmp_path / "America").mkdir()
+    shutil.copyfile(PACKAGE_ZONES / "PST8PDT", tmp_path / "America" / "Vancouver")
+
+    pinned, offset, zone = _local_time_in(tmp_path)
+
+    assert pinned == f":{PACKAGE_ZONES / 'America' / 'Vancouver'}"
+    assert int(offset) == -7 * 3600
+    assert zone == "America/Vancouver"
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="glibc reads TZDIR; macOS does not")
+def test_a_host_database_that_agrees_with_the_package_is_left_as_it_is(tmp_path: Path) -> None:
+    """``TZ`` keeps the name the machine gave it."""
+    (tmp_path / "America").mkdir()
+    shutil.copyfile(PACKAGE_ZONES / "America" / "Vancouver", tmp_path / "America" / "Vancouver")
+
+    assert _local_time_in(tmp_path) == ["America/Vancouver", str(-7 * 3600), "America/Vancouver"]
+
+
+def test_a_tz_that_is_the_path_of_a_zone_file_names_that_zone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The form :func:`pin_local_time` leaves in ``TZ`` still names his zone."""
+    monkeypatch.setenv("TZ", f":{PACKAGE_ZONES / 'Asia' / 'Tokyo'}")
+    assert getattr(system_zone(), "key", None) == "Asia/Tokyo"
+
+
+def test_boot_logs_one_error_for_an_old_database_and_goes_on(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """It names the zone and the version; it does not refuse a boot that has passed its check."""
+    sentence = "the host's tzdata is out of date: America/Vancouver gives UTC-08:00 (2025b)"
+    monkeypatch.setattr(core_module, "zone_data_problem", lambda: sentence)
+    with caplog.at_level(logging.ERROR):
+        clock = _boot(tmp_path, monkeypatch, "language: en\n")
+    assert isinstance(clock, SystemClock)
+    assert [r.getMessage() for r in caplog.records if r.name == core_module.__name__] == [
+        f"runtime: {sentence}",
+    ]
+
+
+def test_boot_logs_nothing_for_a_database_that_holds_the_rule(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A current database is not mentioned."""
+    monkeypatch.setattr(core_module, "zone_data_problem", lambda: None)
+    with caplog.at_level(logging.ERROR):
+        _boot(tmp_path, monkeypatch, "language: en\n")
+    assert [r for r in caplog.records if r.name == core_module.__name__] == []
 
 
 # --- the fake clock's wait ---------------------------------------------------------------------

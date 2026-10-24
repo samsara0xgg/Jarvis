@@ -18,13 +18,13 @@ import re
 import threading
 from dataclasses import dataclass
 from datetime import date, datetime
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, NamedTuple
 from urllib.parse import urlsplit
-from zoneinfo import ZoneInfo
 
 from jarvis.decision.attention import ContextPack
 from jarvis.decision.surrogate_route import await_replies
-from jarvis.shared import lang
+from jarvis.shared import lang, zone_label
+from jarvis.shared.job_names import is_tracking_system
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -105,6 +105,8 @@ class Facts:
     role: str
     event_text: str | None
     event_at: str | None
+    # The later reading of ``event_at`` when the mail's zone label reads two ways (ADR 0379).
+    event_later_at: str | None = None
 
 
 @dataclass(frozen=True)
@@ -471,27 +473,6 @@ _RANGE_SHARED_AMPM: Final = re.compile(
     r"(?P<h2>\d{1,2})(?::\d\d)?\s*(?P<ap>[ap])\.?m\b",
     re.IGNORECASE,
 )
-_ZONES: Final[dict[str, str]] = {
-    "PST": "America/Vancouver",
-    "PDT": "America/Vancouver",
-    "PT": "America/Vancouver",
-    "Pacific": "America/Vancouver",
-    "MST": "America/Edmonton",
-    "MDT": "America/Edmonton",
-    "MT": "America/Edmonton",
-    "Mountain": "America/Edmonton",
-    "CST": "America/Winnipeg",
-    "CDT": "America/Winnipeg",
-    "CT": "America/Winnipeg",
-    "Central": "America/Winnipeg",
-    "EST": "America/Toronto",
-    "EDT": "America/Toronto",
-    "ET": "America/Toronto",
-    "Eastern": "America/Toronto",
-    "UTC": "UTC",
-    "GMT": "UTC",
-}
-_ZONE_RE: Final = re.compile(r"\b(" + "|".join(_ZONES) + r")\b")
 _SENTENCE_SPLIT: Final = re.compile(r"(?<=[.!?])\s+|\n+")
 # A quoted mail's header block (From/To/Cc/Subject/Sent/Date lines) holds the old mail's time.
 _HEADER_LINE: Final = re.compile(r"^[ \t*]*(from|to|cc|subject|sent|date)[ \t*]*:", re.IGNORECASE)
@@ -500,22 +481,6 @@ _EVENT_CHARS: Final[int] = 200
 _PLAUSIBLE_ROLE_CHARS: Final[int] = 80
 
 
-# Applicant-tracking systems send for the employer: their domain is not the company.
-_ATS: Final = frozenset(
-    {
-        "myworkday",
-        "myworkdayjobs",
-        "greenhouse",
-        "greenhouse-mail",  # us.greenhouse-mail.io
-        "clearcompany",
-        "lever",
-        "icims",
-        "smartrecruiters",
-        "ashby",
-        "ashbyhq",
-        "bamboohr",
-    },
-)
 _SECOND_LEVEL: Final = frozenset({"co", "com", "org", "net", "gov", "ac", "edu"})
 # ponytail: a lowercase domain label has no word boundaries to read; it is split only when it ends
 # in one of these corporate words ("reliablecontrols" -> "Reliable Controls"). A dictionary
@@ -640,7 +605,7 @@ def company_of(name: str, domain: str, subject: str = "", body: str = "") -> str
     if (sent := _SENT_TO.search(subject)) and _is_linkedin(domain):  # "sent to <Company>"
         return sent[1]
     label = _owner_label(domain)
-    if label in _ATS:
+    if is_tracking_system(label):
         found = _named_in(subject) or _named_in(body)
         if found:
             return found
@@ -658,11 +623,6 @@ def clean_role(role: str, company: str) -> str:
     """A role without a leading "our "/"the " or a trailing " - Applications"; '' if the company."""
     role = _ROLE_TAIL.sub("", _ROLE_LEAD.sub("", role)).strip(" -|:.,")
     return "" if role.casefold() == company.casefold() else role
-
-
-def is_ats_company(company: str) -> bool:
-    """Whether a company is only an applicant-tracking system's name ("Bamboohr")."""
-    return re.sub(r"[\s-]", "", company).casefold() in {a.replace("-", "") for a in _ATS}
 
 
 def role_of(subject: str, body: str, company: str = "") -> str:
@@ -717,27 +677,73 @@ def _clock_of(sentence: str) -> tuple[int, int] | None:
     return None if plain is None else (int(plain["h"]), int(plain["m"]))
 
 
-def _moment(sentence: str, received: datetime, zone: tzinfo) -> str | None:
-    """An ISO time in ``zone`` out of a sentence that holds a clear date and time; else None.
+class Readings(NamedTuple):
+    """An event time as ISO text in the owner's zone, and its later reading (ADR 0379).
 
-    A time with a zone of its own (``2:00 PM (PDT)``) is that instant; a bare time is the owner's
+    ``later`` is set only when the mail's zone label reads two ways on that date, as a Pacific,
+    Mountain or Central one does while its US zone is on standard time and its Canadian one is
+    not; ``at`` is then the earlier.
+    """
+
+    at: str
+    later: str | None
+
+
+class Event(NamedTuple):
+    """The sentence that names an event and the readings of its time; None where none is clear."""
+
+    text: str | None
+    at: str | None
+    later: str | None
+
+
+_NO_EVENT: Final = Event(None, None, None)
+
+
+def _event(text: str, found: Readings | None) -> Event:
+    """``text`` cut to the length kept, with its readings (none when it gave no clear time)."""
+    cut = text[:_EVENT_CHARS]
+    return Event(cut, None, None) if found is None else Event(cut, found.at, found.later)
+
+
+def _moment(sentence: str, received: datetime, zone: tzinfo) -> Readings | None:
+    """The ISO time of a sentence that holds a clear date and time, in ``zone``; else None.
+
+    A time with a zone label of its own (``2:00 PM (PDT)``) is that instant, or both instants when
+    the label reads two ways on that date (``zone_label.read``); a bare time is the owner's
     clock, which is ``zone``.
     """
     day, clock = _day_of(sentence, received), _clock_of(sentence)
     if day is None or clock is None:
         return None
-    named = _ZONE_RE.search(sentence)
     try:
-        moment = datetime(
-            day.year,
-            day.month,
-            day.day,
-            *clock,
-            tzinfo=ZoneInfo(_ZONES[named[1]]) if named else zone,
-        )
+        first, *rest = zone_label.read(sentence, day, clock, zone)
     except ValueError:
         return None
-    return moment.astimezone(zone).isoformat(timespec="minutes")
+    return Readings(
+        first.isoformat(timespec="minutes"),
+        rest[0].isoformat(timespec="minutes") if rest else None,
+    )
+
+
+def later_reading(event_text: str, event_at: str, received: datetime, zone: tzinfo) -> str | None:
+    """The later reading of an event stored with only its earlier one (ADR 0379), else None.
+
+    ``event_text`` is the sentence its time was read from and ``event_at`` the stored reading. The
+    sentence is read again and its later reading is given only when its earlier one is that same
+    instant, so a time stored by other rules, or by hand, is never paired with a reading of
+    another.
+    """
+    found = _moment(event_text, received, zone)
+    if found is None or found.later is None:
+        return None
+    try:
+        stored = datetime.fromisoformat(event_at)
+    except ValueError:
+        return None
+    if stored.tzinfo is None:  # a time with no offset is the owner's own
+        stored = stored.replace(tzinfo=zone)
+    return found.later if datetime.fromisoformat(found.at) == stored else None
 
 
 def _own_lines(body: str) -> list[str]:
@@ -760,9 +766,7 @@ def _own_lines(body: str) -> list[str]:
     return kept
 
 
-def _labelled_event(
-    lines: list[str], received: datetime, zone: tzinfo,
-) -> tuple[str | None, str | None]:
+def _labelled_event(lines: list[str], received: datetime, zone: tzinfo) -> Event:
     """A ``Date:`` or ``When:`` line with its clock, on the line or on a ``Time:`` line."""
     fields = [(m[1].lower(), m[2].strip()) for ln in lines if (m := _FIELD_LINE.match(ln))]
     time_line = next((v for k, v in fields if k == "time"), "")
@@ -770,18 +774,17 @@ def _labelled_event(
         if label == "time" or _day_of(value, received) is None:
             continue
         sentence = value if _clock_of(value) else f"{value}, {time_line}"
-        if (at := _moment(sentence, received, zone)) is not None:
-            return sentence[:_EVENT_CHARS], at
-    return None, None
+        if (found := _moment(sentence, received, zone)) is not None:
+            return _event(sentence, found)
+    return _NO_EVENT
 
 
-def event_of(
-    body: str, received: datetime, zone: tzinfo, *, dated: bool = False
-) -> tuple[str | None, str | None]:
-    """(sentence, ISO time) of the first sentence on an interview or meeting with a date or time.
+def event_of(body: str, received: datetime, zone: tzinfo, *, dated: bool = False) -> Event:
+    """The first sentence on an interview or meeting with a date or time, and its time.
 
     The time is None unless that sentence holds a clear date and time; it is written in the owner's
-    ``zone``, which also reads a time the sentence gives no zone for. With ``dated`` (the mail is
+    ``zone``, which also reads a time the sentence gives no zone for, and carries a later reading
+    when the sentence's zone label reads two ways (ADR 0379). With ``dated`` (the mail is
     already known to be an interview), a line that is only a clear date and time also counts, as
     in a Teams invitation whose "Thursday, October 8, 2026 2:00 PM (PDT)" has no event word.
     ``Date:``/``When:`` and ``Time:`` lines ("Date: Thursday October 8th", "Time: 1:00pm - 2:00pm")
@@ -792,7 +795,7 @@ def event_of(
     own = "\n".join(lines)
     if dated or _EVENT_WORDS.search(own):
         found = _labelled_event(lines, received, zone)
-        if found[1]:
+        if found.at:
             return found
     for raw in _SENTENCE_SPLIT.split(own):
         sentence = re.sub(r"\s+", " ", raw).strip()
@@ -809,8 +812,8 @@ def event_of(
             or _TIME_24.search(sentence)
         ):
             continue
-        return sentence[:_EVENT_CHARS], _moment(sentence, received, zone)
-    return None, None
+        return _event(sentence, _moment(sentence, received, zone))
+    return _NO_EVENT
 
 
 _RANGE_JOIN: Final = re.compile(r"\s*(?:-|\u2013|\u2014|to|until)\s*", re.IGNORECASE)
@@ -838,9 +841,11 @@ def extract(head: Head, body: str, zone: tzinfo, now: datetime) -> Facts:
         received = datetime.fromisoformat(head.received_at)
     except ValueError:
         received = now
-    text, at = event_of(body, received, zone)
+    event = event_of(body, received, zone)
     company = company_of(head.name, head.domain, head.subject, body)
-    return Facts(company, role_of(head.subject, body, company), text, at)
+    return Facts(
+        company, role_of(head.subject, body, company), event.text, event.at, event.later
+    )
 
 
 # --- what a body says about an interview and where to go (ADR 0182) -----------------------
@@ -903,7 +908,6 @@ _JOB_TITLE: Final = re.compile(
     re.IGNORECASE,
 )
 _MAX_INTERVIEWERS: Final[int] = 4
-_PORTAL_LABELS: Final = frozenset({a.replace("-", "") for a in _ATS} | {"njoyn"})
 _PORTAL_PATH: Final = re.compile(
     r"sign-?in|log-?in|status|candidate|applicant|user-?home|account|portal|my-?applications?",
     re.IGNORECASE,
@@ -985,7 +989,7 @@ def mail_details(body: str) -> dict[str, Any]:
         (
             u
             for u, h, p in urls
-            if _owner_label(h) in _PORTAL_LABELS and _PORTAL_PATH.search(f"{h}{p}")
+            if is_tracking_system(_owner_label(h)) and _PORTAL_PATH.search(f"{h}{p}")
         ),
         None,
     )
@@ -1056,6 +1060,7 @@ def as_row(head: Head, typed: Typed) -> dict[str, Any]:
         "role": facts.role,
         "event_at": facts.event_at,
         "event_text": facts.event_text,
+        "event_later_at": facts.event_later_at,
         "confidence": typed.confidence,
         "extracted_by": typed.extracted_by,
     }

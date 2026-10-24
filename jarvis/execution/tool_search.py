@@ -174,8 +174,8 @@ def build_tool_search(
     # the model searches the source for what it can already call (exam 2026-10-12: gmail).
     taken: dict[str, list[str]] = {}
     for old, (_, how) in replaced().items():
-        if old in names:
-            taken.setdefault(_source(old), []).append(how)
+        if old in names and how not in taken.setdefault(_source(old), []):
+            taken[_source(old)].append(how)
     lines = [
         f"- {s}: {sources.get(s, s)}"
         + (f" Already in your tools for it: {', '.join(taken[s])}." if s in taken else "")

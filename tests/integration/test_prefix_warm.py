@@ -34,10 +34,13 @@ if TYPE_CHECKING:
 
 def test_the_next_turns_first_request_extends_the_warm_request(tmp_path: Path) -> None:
     """The warm ends on this turn's answer; the next request is it plus his new words."""
+    # The last answer is turn 2's own warm.
     outputs = [[("final_answer", "今天是晴天。")], [("final_answer", "好")],
-               [("final_answer", "明天也是。")]]
-    with SpokenPeer(outputs) as peer:
-        runtime, _memory = warm_runtime(tmp_path, peer.url, warm=True)
+               [("final_answer", "明天也是。")], [("final_answer", "好")]]
+    with (
+        SpokenPeer(outputs) as peer,
+        warm_runtime(tmp_path, peer.url, warm=True) as (runtime, _memory),
+    ):
         drive_streaming_turn(runtime, spoken_intent(runtime.conn, "turn-1", "今天天气怎么样"))
         wait_for_requests(peer, 2)
         wait_for(lambda: warm_costs(runtime) >= 1)
@@ -45,8 +48,8 @@ def test_the_next_turns_first_request_extends_the_warm_request(tmp_path: Path) -
         assert len(peer.requests) == 2
         assert warm_costs(runtime) == 1
         drive_streaming_turn(runtime, spoken_intent(runtime.conn, "turn-2", "明天呢"))
-    # Turn 2 warms the prefix for turn 3 in its own time, so it may or may not be a fourth request.
-    first, warm, second = (body for _path, body in peer.requests[:3])
+    # Turn 2 warms the prefix for turn 3 too: a fourth request, ended with the block above.
+    first, warm, second, _warm_for_turn_3 = (body for _path, body in peer.requests)
     assert_prefix_of(warm, second)
     assert warm["input"][-2:] == [
         {"role": "user", "content": "今天天气怎么样"},
@@ -59,8 +62,11 @@ def test_the_next_turns_first_request_extends_the_warm_request(tmp_path: Path) -
 
 def test_words_left_unanswered_are_left_to_the_next_turn(tmp_path: Path) -> None:
     """History ending on Allen's words: the next turn folds them into its own message."""
-    with SpokenPeer([[("final_answer", "好")], [("final_answer", "在的。")]]) as peer:
-        runtime, memory = warm_runtime(tmp_path, peer.url, warm=True)
+    outputs = [[("final_answer", "好")], [("final_answer", "在的。")], [("final_answer", "好")]]
+    with (
+        SpokenPeer(outputs) as peer,
+        warm_runtime(tmp_path, peer.url, warm=True) as (runtime, memory),
+    ):
         append_record(memory.db_path, record_id="a-open", source="allen", text="停")
         run_client = runtime.llm_session_factory
         assert run_client is not None
@@ -73,7 +79,7 @@ def test_words_left_unanswered_are_left_to_the_next_turn(tmp_path: Path) -> None
         )
         wait_for_requests(peer, 1)
         drive_streaming_turn(runtime, spoken_intent(runtime.conn, "turn-after", "你还在吗"))
-    warm, turn = (body for _path, body in peer.requests[:2])  # the turn warms the next one too
+    warm, turn, _warm_for_next = (body for _path, body in peer.requests)  # the turn warms too
     assert warm["input"][-1] == {"role": "assistant", "content": "回答2"}
     assert_prefix_of(warm, turn)
     assert turn["input"][len(warm["input"])]["content"].startswith("停\n\n")
@@ -82,8 +88,10 @@ def test_words_left_unanswered_are_left_to_the_next_turn(tmp_path: Path) -> None
 def test_off_sends_nothing_extra(tmp_path: Path) -> None:
     """The shipped default: two turns, two requests."""
     outputs = [[("final_answer", "晴天。")], [("final_answer", "也是。")]]
-    with SpokenPeer(outputs) as peer:
-        runtime, _memory = warm_runtime(tmp_path, peer.url, warm=False)
+    with (
+        SpokenPeer(outputs) as peer,
+        warm_runtime(tmp_path, peer.url, warm=False) as (runtime, _memory),
+    ):
         drive_streaming_turn(runtime, spoken_intent(runtime.conn, "turn-1", "今天天气怎么样"))
         drive_streaming_turn(runtime, spoken_intent(runtime.conn, "turn-2", "明天呢"))
         time.sleep(0.3)

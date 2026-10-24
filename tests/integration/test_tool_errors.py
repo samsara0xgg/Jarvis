@@ -16,10 +16,9 @@ from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
-from jarvis.execution import tools
+from jarvis.execution import tools, web_search_tool
 from jarvis.execution.highlight_tool import build_highlight_tool
 from jarvis.execution.location_tool import build_where_tool
-from jarvis.execution.mail_draft_tool import build_mail_draft_tool
 from jarvis.execution.night_tools import build_night_tools
 from jarvis.execution.picture_tool import build_picture_tool
 from jarvis.execution.place_tools import build_place_tools
@@ -34,11 +33,11 @@ from jarvis.execution.tools import (
 )
 from jarvis.execution.voice_tools import build_voice_tool
 from jarvis.execution.weather_tool import build_weather_tool
-from jarvis.runtime.dashboard import MailDrafts, ViewState
 from jarvis.shared import CallerPrincipal
 from jarvis.shared.here import HereUnavailable
 from tests.support.clock import FakeClock
 from tests.support.here import FixedHere
+from tests.support.tool_context import tool_context
 from tests.support.tool_world import ToolWorld, tool_chain, tool_request
 
 if TYPE_CHECKING:
@@ -66,7 +65,6 @@ class _Stub:
 
 def _flat(tmp_path: Path) -> dict[str, Tool]:
     """Every flat tool this module drives, built over stand-ins, by name."""
-    drafts = MailDrafts(ViewState())
     built = [
         *build_default_registry(
             obsidian_vault_root=tmp_path, web_search_provider="ddgs",
@@ -78,7 +76,6 @@ def _flat(tmp_path: Path) -> dict[str, Tool]:
         *build_highlight_tool(lambda *_: {}),
         *build_voice_tool(cast("Any", _Stub())),
         *build_picture_tool(cast("Any", _Stub()), None),
-        *build_mail_draft_tool(drafts),
         *build_night_tools(cast("Any", _Stub())),
     ]
     return {t.name: t for t in built if isinstance(t, Tool)}
@@ -114,7 +111,7 @@ FLAT_ROWS: tuple[tuple[str, dict[str, Any], str, tuple[str, ...]], ...] = (
      ("was refused (scheme 'ftp' is not in the http/https allowlist)",
       "only public http(s) pages can be fetched")),
     ("weather", {}, "network_error",
-     ("weather: the forecast could not be read (RuntimeError)", "use web_search")),
+     ("weather is unavailable: the forecast could not be read (RuntimeError)",)),
     ("where_am_i", {}, "location_unavailable",
      ("this Mac's location could not be read (no signal)", "ask the user where he is")),
     ("save_place", {}, "invalid_arguments",
@@ -135,9 +132,6 @@ FLAT_ROWS: tuple[tuple[str, dict[str, Any], str, tuple[str, ...]], ...] = (
     ("look_at_picture", {}, "invalid_arguments",
      ('look_at_picture: picture (the id in its "[Picture note ... id XXXXXXXX]" line, '
       'or "latest") and question are both required',)),
-    ("write_mail_draft", {"letter_id": "m1", "text": "Hi"}, "invalid_arguments",
-     ("write_mail_draft: that letter is not open on the Dashboard, so no draft can go under it",
-      "give him the reply in words")),
     ("start_night_run", {"hours": 99}, "invalid_arguments",
      ("start_night_run: hours must be between 0.25 and 12", "or left out for the default length")),
     ("start_night_run", {"until": "tonight"}, "invalid_arguments",
@@ -152,7 +146,7 @@ def test_a_failing_call_says_what_happened_and_what_to_do_next(
 ) -> None:
     """The message holds the phrases, its code is the one the dispatcher records, no JSON in it."""
     name, args, code, phrases = row
-    monkeypatch.setattr(tools, "_ddgs_search_backend", _boom)
+    monkeypatch.setattr(web_search_tool, "_ddgs_search_backend", _boom)
     ctx = SimpleNamespace(
         conn=sqlite3.connect(":memory:"), action_id="A1", clock=FakeClock(),
         here=_NO_SIGNAL.bind(None),
@@ -168,8 +162,8 @@ def test_a_search_that_fails_names_the_provider_and_the_next_step(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The backend's own words ride along; the model is told to say it failed or fetch a page."""
-    monkeypatch.setattr(tools, "_ddgs_search_backend", _boom)
-    error = _error(_flat(tmp_path)["web_search"], {"query": "oat milk"})
+    monkeypatch.setattr(web_search_tool, "_ddgs_search_backend", _boom)
+    error = _error(_flat(tmp_path)["web_search"], {"query": "oat milk"}, tool_context())
     assert error.code == "web_search_backend_error"
     assert str(error) == (
         "web_search: the ddgs search did not answer (no signal); tell him the search "

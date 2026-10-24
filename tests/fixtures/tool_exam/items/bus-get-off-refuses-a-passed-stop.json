@@ -1,0 +1,18 @@
+{
+  "id": "bus-get-off-refuses-a-passed-stop",
+  "tool": "bus",
+  "said": "I get off at Alder St",
+  "at": "2026-10-18T17:10:00-07:00",
+  "zone": "America/Vancouver",
+  "here": {"lat": 48.5040, "lng": -123.4000, "age_s": 10},
+  "state": null,
+  "setup": [{"tool": "bus", "args": {"ride": "start", "route": "14"}}],
+  "args": {"ride": "get_off", "stop": "Alder St"},
+  "recording": "bus-get-off-refuses-a-passed-stop.recording.json",
+  "expect": {
+    "error_kind": "retry_other_args",
+    "summary_must": ["already passed Alder St"],
+    "events_after": {"must_not": ["ride.alight_set", "ride.moved"]},
+    "checker": "ride_passed_stop_refused"
+  }
+}

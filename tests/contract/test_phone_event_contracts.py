@@ -51,7 +51,7 @@ TYPES: dict[str, tuple[str, dict[str, tuple[str, ...]]]] = {
     "phone_events/measure": ("phone.measure_observed", {"metrics": phone_events.MEASURES}),
     "phone_events/state": (
         "phone.state_observed",
-        {"signals": (*phone_events.SIGNAL_VALUES, phone_events.BATTERY_SIGNAL)},
+        {"signals": (*phone_events.SIGNAL_VALUES, *phone_events.CHARGE_SIGNALS)},
     ),
     "phone_events/track": ("phone.track_observed", {"columns": tuple(FIX_COLUMNS)}),
 }

@@ -1,0 +1,23 @@
+{
+  "id": "mail-page-three-of-a-long-body-is-the-third-part",
+  "tool": "mail",
+  "said": "keep reading the annual report",
+  "at": "2026-10-21T11:00:00-07:00",
+  "zone": "America/Vancouver",
+  "state": null,
+  "args": {
+    "action": "read",
+    "message": "long1",
+    "page": 3
+  },
+  "recording": "mail-page-three-of-a-long-body-is-the-third-part.recording.json",
+  "expect": {
+    "result": [
+      {
+        "path": "part",
+        "op": "matches",
+        "value": "part 3 of 4"
+      }
+    ]
+  }
+}

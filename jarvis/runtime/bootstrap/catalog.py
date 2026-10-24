@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import partial
 from typing import TYPE_CHECKING, Any
 
@@ -21,7 +21,7 @@ from jarvis.deployment.models import default_meaning_dir
 from jarvis.execution.archive_tool import build_archive_tool
 from jarvis.execution.conversation_tool import build_conversation_tool
 from jarvis.execution.dashboard_tool import build_dashboard_tool
-from jarvis.execution.job_ledger_tool import build_job_ledger_tool, build_record_application_tool
+from jarvis.execution.jobs_tool import JobsSource, build_jobs_tool
 from jarvis.execution.mail_tool import build_mail_tool
 from jarvis.execution.my_day_tool import build_my_day_tool
 from jarvis.execution.tidy_tool import build_tidy_tool
@@ -30,14 +30,14 @@ from jarvis.execution.workers import Workers, make_worker_tools
 from jarvis.runtime import device_tools
 from jarvis.runtime.bootstrap.day import _highlight_marks, _wire_plan_reader
 from jarvis.runtime.bootstrap.intakes import _job_mail, _mail_reply
-from jarvis.runtime.bootstrap.places import _live_departure
 from jarvis.runtime.config import Role, RuntimeBootstrapError, WebToolsSettings, WorkersSettings
 from jarvis.runtime.daily_report import DailyReportService, past_day_answer
 from jarvis.runtime.dashboard import CLOSE, PAGES, SETTINGS_CATEGORIES, ViewState
-from jarvis.runtime.home import Home, mail_summarizer, mail_text, weather_lookup
+from jarvis.runtime.home import Home, mail_summarizer, weather_lookup
 from jarvis.runtime.plugin_connections import PluginConnections
 from jarvis.runtime.work_state import build_analyst
 from jarvis.shared import CallerPrincipal
+from jarvis.shared.receipts import call_asks
 from jarvis.state import embedding
 from jarvis.state.attachments import ATTACHMENTS_DIRNAME
 from jarvis.state.ledger import TURN_WAIT_S, LedgerSources, TerminalScreen
@@ -189,21 +189,26 @@ def _register_workers(
     return workers
 
 
-def _register_job_ledger(registry: ToolRegistry, job_mail: JobMail | None) -> None:
-    """``job_ledger`` reads what ``GET /inherent/jobs`` serves, ``record_application`` adds a row.
+def _register_jobs(
+    registry: ToolRegistry, job_mail: JobMail | None, sources: LedgerSources,
+) -> None:
+    """``jobs`` (ADR 0367): the applications ``GET /inherent/jobs`` serves, read, added, changed.
 
-    Both are absent while job mail is off.
+    Absent while job mail is off.
     """
-    for tool in (
-        *build_job_ledger_tool(None if job_mail is None else job_mail.ledger),
-        *build_record_application_tool(None if job_mail is None else job_mail.add_application),
-    ):
+    source = None if job_mail is None else JobsSource(
+        job_mail.jobs_view, job_mail.add_application, job_mail.edit_application,
+    )
+    terminal = sources.terminal
+    if isinstance(terminal, TerminalScreen):  # the count is block D's: the kept answers, no wait
+        sources = replace(sources, terminal=terminal.cached())
+    for tool in build_jobs_tool(source, sources):
         registry.register(tool)
 
 
 def _register_mail(registry: ToolRegistry, home: Home) -> None:
-    """``mail`` (ADR 0242): the overview ``GET /inherent/mail`` serves, a search, one message."""
-    for tool in build_mail_tool(home.mail, home.gmail, mail_text):
+    """``mail`` (ADR 0362): his Gmail through the home's one :class:`Mailbox`."""
+    for tool in build_mail_tool(home.mailbox):
         registry.register(tool)
 
 
@@ -274,7 +279,7 @@ def register_catalog(  # noqa: PLR0913 - one call site per caller, the dependenc
     plugins = make_plugins(registry)
     plugins.initialize()
     job_mail, home = make_late(plugins)
-    _register_job_ledger(registry, job_mail)
+    _register_jobs(registry, job_mail, ledger)
     _register_mail(registry, home)
     _register_conversation(registry, memory_db, paths.root)
     _register_archive(registry, memory_db, paths.root)
@@ -356,12 +361,12 @@ def serve_tools(
                 paths.event_log,
             ),
             features.weatherkit,
+            mail_tools=tools.mail,
         )
         return job_mail, home
 
     build_registry = partial(
         build_default_registry,
-        mail_drafts=features.mail_drafts,
         memory_db_path=memory.db_path,
         observed_repos=config.observer.repos,
         timesink_db_path=config.observer.timesink_db_path,
@@ -379,7 +384,7 @@ def serve_tools(
         transit_offers=features.transit_offers,
         clock=clock,
         here=features.here,
-        bus_live=_live_departure(features.bus_live),
+        bus_live=features.bus_live,
         ride_control=features.rides.control(),
         highlight_marker=_highlight_marks(config, memory, paths, device).mark,
         plan_day_ends=config.plan_day_ends,
@@ -447,6 +452,10 @@ def load_tables(config: RuntimeConfig, registry: ToolRegistry) -> Tables:
             requires_confirmation_tool_names=frozenset(
                 t.name for t in regex_router_tools if t.requires_confirmation
             ),
+            # ADR 0361: a tool whose calls differ is checked against each row's fixed arguments.
+            asks_for_args={
+                t.name: partial(call_asks, t) for t in regex_router_tools if t.effect is not None
+            },
         )
     except Tier0ConfigError as exc:
         msg = f"runtime: {tier0_path} invalid: {exc}"

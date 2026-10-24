@@ -1,367 +1,1044 @@
-"""ADR 0242: his mail is one read-only tool that searches, summarizes and reads."""
+"""ADR 0362: his mail is one tool that lists, searches, reads and archives, and remembers its rows.
+
+A listing numbers its rows from 1 and is held, with every message it matched, until the next
+listing or a restart: a row's number names that row in a later call and in a later turn, and a
+message id always works. The tool composes three modules: ``mail_gmail`` (the server: ids, raw
+messages, headers kept by id), ``mail_lists`` (his words as one Gmail query, exact counts, who
+wrote last) and ``mail_reads`` (a mail, an attachment and a conversation read in parts). An
+archive removes Gmail's inbox label, writes one ``mail.inbox_changed`` event and gives the id
+that puts the mails back. A ``draft`` is a Gmail draft, recorded in the event log (``mail_letters``;
+recipients are named or found in his mail by ``mail_people``); ``send`` sends a draft or a letter,
+and its completion (ADR 0361) turns names, a reply and a draft into the letter the card shows.
+
+Layer rules: execution; ``jarvis.state`` for the event log.
+"""
 
 from __future__ import annotations
 
-import html
+import json
+import math
 import re
 import threading
-from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
-from datetime import UTC, datetime
-from email.utils import parseaddr, parsedate_to_datetime
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final
 
-from jarvis.execution.tools import Tool, ToolError
+from jarvis.execution import (
+    mail_bills,
+    mail_letters,
+    mail_lists,
+    mail_people,
+    mail_reads,
+    speakable,
+)
+from jarvis.execution.mail_gmail import Hit
+from jarvis.execution.mail_letters import Cause, Letter, Letters
+from jarvis.execution.mail_people import People
+from jarvis.execution.paragraphs import PART_CHARS
+from jarvis.execution.tools import Receipted, Tool, ToolError, _get_running_event_uid
 from jarvis.shared import CallerPrincipal
+from jarvis.shared.receipts import Covered, Receipt
+from jarvis.state.event_log import emit_event, iter_events_of_types
+from jarvis.state.mail_bill import Seen, mail_facts
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
-    from datetime import tzinfo
+    from collections.abc import Callable, Mapping, Sequence
+    from datetime import datetime, tzinfo
+    from sqlite3 import Connection
 
+    from jarvis.execution.mail_gmail import Mailbox, Read
+    from jarvis.execution.mail_lists import Ask, Waiting
+    from jarvis.execution.mail_reads import Thread
     from jarvis.execution.tools import ToolContext
-    from jarvis.shared.clock import Clock
+    from jarvis.shared import Event, RiskLevel
 
 _DESCRIPTION: Final = (
-    "Use for any question about Allen's email: finding, summarizing, what needs a reply, what a "
-    "message says. It only reads; to reply use write_mail_draft. No arguments: his unread "
-    "Primary mail with reply marks (yes = needs an answer) and importance (0-3), junk left out. "
-    "query: search all mail (Gmail syntax or plain words), up to 8 results with sender, "
-    "subject, date and snippet, usually enough to answer; page=2 with the same query gives "
-    "results 9-16, page=3 17-24. read: a message id, opens that one message as plain text, "
-    "only when he asks what it says."
+    "Use for any question about his mail: what came, what a mail says, what is waiting on his"
+    " reply, a file attached to one, taking mail out of his inbox, and writing a reply or a new"
+    " letter. His job applications are jobs's and his schedule is schedule's. Returns numbered"
+    " rows (sender, time, subject, the mail's own opening line, files, unread), one mail's text,"
+    " in parts when long, or a letter as it will go; a row's number works until the next listing,"
+    " a message id always."
 )
-_SCHEMA: Final[Mapping[str, Any]] = {
-    "type": "object",
-    "properties": {
-        "query": {
-            "type": "string",
-            "description": "Search words or Gmail syntax, e.g. from:lee co-op newer_than:30d.",
-        },
-        "page": {
-            "type": "integer",
-            "description": "With query: 2 gives results 9-16, 3 gives 17-24; omit for the first 8.",
-        },
-        "read": {
-            "type": "string",
-            "description": "A message id from an earlier result; returns that message's text.",
-        },
-    },
-    "additionalProperties": False,
+_ACTIONS: Final = ("list", "search", "read", "thread", "attachment", "draft", "send", "archive")
+_ACTION_TEXT: Final = (
+    "list (default): his unread inbox, or the mail he received narrowed by the fields below."
+    " search: all his mail; a single match comes back read. read: a mail's text. thread: a"
+    " conversation, oldest first. attachment: one file's text. archive: take mails out of his"
+    " inbox, or put them back with undo. draft: write a letter or reply to his Gmail drafts, or"
+    " discard one with undo. send: send a letter or a draft."
+)
+_TAKEN: Final[Mapping[str, tuple[str, ...]]] = {
+    "query": ("list", "search"),
+    "when": ("list", "search"),
+    "from": ("list", "search"),
+    "to": ("list", "search", "draft", "send"),
+    "cc": ("draft", "send"),
+    "bcc": ("draft", "send"),
+    "subject": ("draft", "send"),
+    "body": ("draft", "send"),
+    "reply_to": ("draft", "send"),
+    "reply_all": ("draft", "send"),
+    "replaces": ("draft",),
+    "draft": ("send",),
+    "unread": ("list", "search"),
+    "waiting": ("list",),
+    "page": ("list", "search", "read", "thread", "attachment"),
+    "looking_for": ("read", "attachment"),
+    "message": ("read", "thread", "attachment", "archive"),
+    "file": ("attachment",),
+    "undo": ("archive", "draft"),
 }
-_PAGE: Final = 8
-_NOON: Final = 12
-_NAME_CHARS: Final = 60
-_SUBJECT_CHARS: Final = 120
-_SNIPPET_CHARS: Final = 200
-_BODY_CHARS: Final = 4000
-_ATTACHMENTS_SHOWN: Final = 10
-_OWN_ERRORS: Final = frozenset({"invalid_arguments", "not_found"})
-"""The codes of errors this tool words itself; any other failure is Gmail's."""
-_NOT_FOUND: Final = re.compile(r"not found|404|invalid id", re.IGNORECASE)
-_SIGN_IN: Final = re.compile(
-    r"auth|log ?in|sign ?in|token|credential|expired|permission|\b40[13]\b", re.IGNORECASE,
-)
-# A reply's quoted lines, the "On <date>, <who> wrote:" line that opens the older message, the
-# signature delimiter and the phone's signature. Forwards and Outlook headers are left alone: a
-# forwarded letter is the content.
-_QUOTE_FROM: Final = re.compile(
-    r"^(?:On [^\n]{1,200}(?:\n[^\n]{0,100})?\bwrote:|-- ?$|Sent from my (?:iPhone|iPad|Android))",
-    re.IGNORECASE | re.MULTILINE,
-)
+"""Each argument and the actions that take it. One an action does not take is an error."""
+_ABOUT: Final[Mapping[str, str]] = {
+    "query": "Words to find, or Gmail syntax such as has:attachment.",
+    "when": (
+        "When it arrived, in his words: today, yesterday, this week, since Monday, Oct 16."
+        " Not Gmail dates."
+    ),
+    "from": "Who sent it, as he said it: a name or an address.",
+    "to": (
+        "Who it went to, or who the letter goes to, as he said it: a name or an address, me for"
+        " his own. draft and send take several as a list, and find a name in his mail."
+    ),
+    "cc": "As to: who also gets the letter.",
+    "bcc": "As to: who gets it unseen.",
+    "subject": "A reply has one already; give it only to change it.",
+    "body": "The letter's text.",
+    "reply_to": (
+        "The mail this answers, a row number or a message id: goes in its thread, to its"
+        " reply-to address or sender."
+    ),
+    "reply_all": "True: also to the others on the mail it answers.",
+    "replaces": "An earlier draft's number: this one takes its place and keeps what is not given.",
+    "draft": "A draft's number, instead of a letter.",
+    "unread": "True: only unread mail.",
+    "waiting": (
+        "True: only conversations where someone else wrote last and is waiting on him, over the"
+        " last 14 days unless when is given."
+    ),
+    "page": (
+        "2 and up: the next rows of a list, the next part of a long text, or the messages before"
+        " the newest six of a conversation."
+    ),
+    "looking_for": (
+        "What he wants from a long text, in his words: gives the opening and the paragraphs that"
+        " match best instead of a part."
+    ),
+    "message": (
+        "A row number from the last listing, or a message id. read takes up to 3 and archive up"
+        " to 50, as 1,2,3 or 1-3."
+    ),
+    "file": "The attachment's number or name, as read listed it.",
+    "undo": "The undo id an earlier archive or draft gave: puts the mails back, or discards it.",
+}
+_TYPES: Final = {
+    "unread": "boolean", "waiting": "boolean", "reply_all": "boolean", "page": "integer",
+}
+_FLAGS: Final = frozenset({"unread", "waiting", "reply_all"})
+_RECIPIENTS: Final = ("to", "cc", "bcc")
+_LETTER: Final = ("to", "cc", "bcc", "subject", "body", "reply_to", "reply_all")
+"""What a letter is made of: a send names a draft or these, not both."""
+_WRITING: Final = frozenset({"draft", "send"})
+
+
+def _properties() -> dict[str, Any]:
+    found: dict[str, Any] = {
+        "action": {"type": "string", "enum": list(_ACTIONS), "description": _ACTION_TEXT},
+    }
+    for name, takers in _TAKEN.items():
+        found[name] = {
+            "type": _TYPES.get(name, "string"),
+            "description": f"{', '.join(takers)}: {_ABOUT[name]}",
+        }
+    return found
+
+
+_SCHEMA: Final[Mapping[str, Any]] = {
+    "type": "object", "properties": _properties(), "additionalProperties": False,
+}
+_PARAMS: Final = ("action", *_TAKEN)
+READ_MAX: Final = 3
+"""Mails one ``read`` takes: three of them share the result a part would have."""
+ARCHIVE_MAX: Final = 50
+_INBOX: Final = "INBOX"
+_SOURCES: Final = ("Gmail",)
+_ROW: Final = re.compile(r"\d{1,4}")
+_RANGE: Final = re.compile(r"(\d{1,4})-(\d{1,4})")
+_SEPARATORS: Final = re.compile(r"[,\s]+")
+_PART: Final = re.compile(r"part (\d+) of (\d+)")
+_ROWS_BUDGET: Final = mail_reads.RESULT_CHARS - 600
+"""What the rows of a list may take of its result; the summary and notes take the rest."""
+_NAMED: Final = 3
+"""How many of the mails an archive names in its summary."""
+_UNDO_CHARS: Final = 8
+"""How much of an archive's event id is its undo id: the start of it names the archive."""
+_SUBJECT_CHARS: Final = 40
+_WRITES: Final = 'mail(action="draft" or "send", ...)'
+_SUPERSEDES: Final = {
+    "mcp__gmail__gmail_search": 'mail(action="search", query=...)',
+    "mcp__gmail__gmail_get": 'mail(action="read", message=<id>)',
+    "mcp__gmail__gmail_downloadAttachment": 'mail(action="attachment", message=<id>, file=...)',
+    "mcp__gmail__gmail_modify": 'mail(action="archive", message=<id>)',
+    "mcp__gmail__gmail_batchModify": 'mail(action="archive", message=<id>)',
+    "mcp__gmail__gmail_modifyThread": 'mail(action="archive", message=<id>)',
+    "mcp__gmail__gmail_listLabels": 'mail(action="search", query=...)',
+    "mcp__gmail__gmail_createDraft": _WRITES,
+    "mcp__gmail__gmail_send": _WRITES,
+    "mcp__gmail__gmail_sendDraft": _WRITES,
+}
+"""The plugin's Gmail tools whose job ``mail`` does, so tool search loads none of them while
+``mail`` is on the menu. ``gmail_createLabel`` is left out: ``mail`` creates no labels, so there
+is nothing to point to."""
+
+_EFFECTS: Final[Mapping[str, RiskLevel]] = {"archive": "L1", "draft": "L1", "send": "L3"}
+
+
+def _effect(args: Mapping[str, Any]) -> RiskLevel:
+    """The call's level (ADR 0361, 0362): a read L0, an archive or a draft L1, a send L3."""
+    return _EFFECTS.get(str(args.get("action")), "L0")
+
+
+# --- the arguments -----------------------------------------------------------------------------
+
+
+def _text(value: object, name: str) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return " ".join(value.split())
+    if isinstance(value, int | float) and not isinstance(value, bool):
+        return str(value)
+    msg = f"mail: {name} must be text"
+    raise ToolError(msg, code="invalid_arguments")
+
+
+def _message(value: object) -> str:
+    """``message`` as one string; a list of rows or ids is joined as he would write them."""
+    if isinstance(value, list | tuple):
+        return ",".join(_text(one, "message") for one in value)
+    return _text(value, "message")
+
+
+def _body(value: object) -> str:
+    """The letter's text as given: its line breaks and spacing kept, a Windows break made one."""
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        msg = "mail: body must be text"
+        raise ToolError(msg, code="invalid_arguments")
+    return value.replace("\r\n", "\n").strip()
+
+
+def _flag(value: object, name: str) -> bool:
+    if value is None or isinstance(value, bool):
+        return bool(value)
+    if isinstance(value, str) and value.strip().lower() in {"true", "false"}:
+        return value.strip().lower() == "true"
+    msg = f"mail: {name} must be true or false"
+    raise ToolError(msg, code="invalid_arguments")
+
+
+def _or(words: tuple[str, ...]) -> str:
+    return f"{', '.join(words[:-1])} or {words[-1]}" if len(words) > 1 else words[0]
+
+
+def _arguments(args: Mapping[str, Any]) -> tuple[str, dict[str, Any]]:
+    """The action and the arguments given for it, each checked.
+
+    A name the tool does not have, and an argument the action does not take, are errors that say
+    so: ignoring one would answer a different question than the one he asked.
+    """
+    unknown = sorted(set(args) - set(_PARAMS))
+    if unknown:
+        msg = f"mail: no argument {', '.join(unknown)}; its arguments are {', '.join(_PARAMS)}"
+        raise ToolError(msg, code="invalid_arguments")
+    action = _text(args.get("action"), "action") or "list"
+    if action not in _ACTIONS:
+        msg = f"mail: action must be one of {', '.join(_ACTIONS)}, not {action!r}"
+        raise ToolError(msg, code="invalid_arguments")
+    given: dict[str, Any] = {}
+    for name, takers in _TAKEN.items():
+        raw = args.get(name)
+        value: Any
+        if name == "page":
+            value = speakable.page_number(raw, "mail", "the next rows")
+            empty = value == 1
+        elif name in _FLAGS:
+            value = _flag(raw, name)
+            empty = not value
+        elif name in _RECIPIENTS and action in _WRITING:
+            value = mail_people.split(raw)
+            empty = not value
+        elif name == "body":
+            value = _body(raw)
+            empty = not value
+        else:
+            value = _message(raw) if name == "message" else _text(raw, name)
+            empty = not value
+        if empty:
+            continue
+        if action not in takers:
+            msg = f"mail: {name} is for {_or(takers)}, not {action}"
+            raise ToolError(msg, code="invalid_arguments")
+        given[name] = value
+    return action, given
+
+
+# --- what a result says ------------------------------------------------------------------------
+
+
+def _size(value: object) -> int:
+    return len(json.dumps(value, ensure_ascii=False))
+
+
+def _noun(count: int, word: str) -> str:
+    return f"{count} {word}" if count == 1 else f"{count} {word}s"
+
+
+def _reads(line: str, window: str, shown: int, more: int = 0, how: str = "") -> Receipt:
+    """The receipt of a read: what it looked at, what it showed, what is left and how to get it."""
+    return Receipt(
+        "done", reads_only=True, line=line, covered=Covered(_SOURCES, window, shown, more, how),
+    )
+
+
+def _part_of(out: Mapping[str, Any]) -> tuple[int, int] | None:
+    """Which part of how many a result is, from its ``part`` key; ``None`` when it is whole."""
+    found = _PART.fullmatch(str(out.get("part", "")))
+    return (int(found[1]), int(found[2])) if found else None
+
+
+def _more_parts(got: tuple[int, int] | None) -> tuple[str, int, str]:
+    """A part as the summary's words, the parts left after it, and how to get the next."""
+    if got is None:
+        return "", 0, ""
+    part, parts = got
+    left = parts - part
+    how = f"page={part + 1}" if left else ""
+    return f" Part {part} of {parts}" + (f"; {how} gives the next." if left else "."), left, how
+
+
+def _fit(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The rows from the first that fit the result's budget: whole rows, at least one."""
+    kept = rows[:1]
+    for one in rows[1:]:
+        if _size([*kept, one]) > _ROWS_BUDGET:
+            break
+        kept.append(one)
+    return kept
+
+
+def _waiting_summary(found: Waiting, ask: Ask, now: datetime, cap: int) -> str:
+    """Who is waiting on him, and what the window held that is not."""
+    lead = (
+        f"{mail_lists.waiting_line(found, now)}." if found.hits
+        else f"No thread is waiting on him ({ask.window})."
+    )
+    rest = found.threads - found.answered - found.skipped - found.unreadable - len(found.hits)
+    tail = f"Of {_noun(found.threads, 'conversation')} with mail in {ask.window}:"
+    ends = "ends" if found.answered == 1 else "end"
+    unchecked = "older one not checked" if found.skipped == 1 else "older ones not checked"
+    tail += f" {found.answered} {ends} with his own message"
+    for count, what in (
+        (rest, "bulk, automated or not addressed to him"),
+        (found.skipped, unchecked),
+        (found.unreadable, "could not be read"),
+    ):
+        if count > 0:
+            tail += f", {count} {what}"
+    tail += "."
+    if found.more:
+        tail += f" The window held more than {cap} received mails, so the oldest are missing."
+    return f"{lead} {tail}"
+
+
+def _archive_named(events: Sequence[Event], given: str) -> Event:
+    """The archive an undo id names: its id is the start of the archive's event id."""
+    said = given.strip().lower()
+    found = [
+        one for one in events
+        if not one.payload.get("in_inbox") and one.event_uid.startswith(said)
+    ] if len(said) >= _UNDO_CHARS else []
+    if len(found) != 1:
+        msg = f"mail: {given} does not name one archive; use the undo an archive gave"
+        raise ToolError(msg, code="invalid_arguments")
+    return found[0]
 
 
 @dataclass(frozen=True)
-class _Held:
-    """The last query: the token Gmail gave for each page reached and its last page once seen."""
+class _Listing:
+    """What the tool last showed: its rows' messages in row order, and what asked for them."""
 
-    query: str = ""
-    tokens: dict[int, str | None] = field(default_factory=dict)
-    last: int | None = None
-
-
-def _cut(text: str, limit: int) -> str:
-    """One line of at most ``limit`` characters."""
-    line = " ".join(text.split())
-    return line if len(line) <= limit else f"{line[: limit - 1]}…"
+    key: tuple[object, ...]
+    hits: tuple[Hit, ...]
+    more: bool = False
+    """Gmail had more matches than the cap, so the last row is not the last match."""
+    waiting: Waiting | None = None
+    thread: Thread | None = None
+    """For a conversation: its messages, so a later page of it needs no new search."""
 
 
-def _when(at: datetime, now: datetime, zone: tzinfo) -> str:
-    """``at`` as he would say it: ``today (Thu) 2:40 pm``, else ``Mon Sep 22, 2:40 pm``."""
-    local = at.astimezone(zone)
-    today = now.astimezone(zone).date()
-    hour = local.hour % _NOON or _NOON
-    clock = f"{hour}:{local.minute:02d} {'am' if local.hour < _NOON else 'pm'}"
-    day = {0: "today", 1: "yesterday"}.get((today - local.date()).days)
-    if day:
-        return f"{day} ({local:%a}) {clock}"
-    year = f" {local.year}" if local.year != today.year else ""
-    return f"{local:%a %b} {local.day}{year}, {clock}"
+def _opening(ask: Ask, listing: _Listing, now: datetime, cap: int) -> str:
+    """The sentence a list opens with: how many, of what, newest first."""
+    if listing.waiting is not None:
+        return _waiting_summary(listing.waiting, ask, now, cap)
+    total = len(listing.hits)
+    count = f"More than {total}" if listing.more else str(total)
+    if ask.query == mail_lists.INBOX_UNREAD:
+        return f"{count} {ask.window}, newest first."
+    what = "mails" if listing.more or total != 1 else "mail"
+    return f"{count} {what}, {ask.window}, newest first."
 
 
-def _dated(header: object) -> datetime | None:
-    """A Date header as an aware time; None when there is none or it does not parse."""
-    try:
-        at = parsedate_to_datetime(str(header))
-    except (TypeError, ValueError):
-        return None
-    return at if at.tzinfo else at.replace(tzinfo=UTC)
+def _page_notes(  # noqa: PLR0913 — what a page says besides its rows: which, left out, gone, not shown.
+    kept: Sequence[Mapping[str, Any]], cut: Sequence[Mapping[str, Any]], gone: int,
+    listing: _Listing, hidden: Sequence[Hit], names: Mapping[str, int], page: int, cap: int,
+) -> list[str]:
+    """The sentences after a list's opening: which rows these are, and what was not shown."""
+    notes: list[str] = []
+    if kept and (kept[0]["n"], kept[-1]["n"]) != (1, len(listing.hits)):
+        notes.append(f"Showing {kept[0]['n']}-{kept[-1]['n']}.")
+    if cut:
+        numbers = ", ".join(f"message={one['n']}" for one in cut)
+        notes.append(f"{_noun(len(cut), 'row')} did not fit; read them with {numbers}.")
+    if gone:
+        notes.append(f"{_noun(gone, 'mail')} on this page no longer exist in Gmail.")
+    if hidden:
+        where = ", ".join(f"{name} {count}" for name, count in names.items())
+        count = f"more than {len(hidden)}" if listing.more else str(len(hidden))
+        said = f"Not shown: {count}{f' ({where})' if where else ''};"
+        said += f" page={page + 1} gives the next {mail_lists.PAGE_ROWS}."
+        if listing.more:
+            said += f" Past the first {cap} only a narrower when or from reaches the rest."
+        notes.append(said)
+    return notes
 
 
-def _iso(value: object) -> datetime | None:
-    try:
-        return datetime.fromisoformat(str(value))
-    except ValueError:
-        return None
+def _nothing(ask: Ask) -> Receipted:
+    """An empty list says what was looked at and how to look differently."""
+    if ask.query == mail_lists.INBOX_UNREAD:
+        summary = "No unread mail in his inbox."
+    else:
+        summary = f"No mail matches {ask.window}. Try fewer words, a wider when or another sender."
+    return Receipted(
+        {"summary": summary, "rows": []},
+        _reads(f"read mail, {ask.window}: none found", f"mail, {ask.window}", 0),
+    )
 
 
-def _trim(body: str) -> tuple[str, bool]:
-    """``body`` without quoted lines, the older message they quote and the signature.
-
-    Also whether anything went; a body that is nothing but those is returned as it is.
-    """
-    kept = "\n".join(line for line in body.split("\n") if not line.lstrip().startswith(">"))
-    if found := _QUOTE_FROM.search(kept):
-        kept = kept[: found.start()]
-    kept = re.sub(r"\n{3,}", "\n\n", kept).strip()
-    return (kept, True) if kept and kept != body else (body, False)
-
-
-def _found(query: str, seen: int, count: int, *, more: bool, total: object) -> str:
-    """The line that opens a page of results: which of them these are, newest first."""
-    if not seen and not more:
-        return f'{count} message{"" if count == 1 else "s"} match "{query}", newest first.'
-    # Gmail's total is an estimate: it is named only when it is more than has been shown.
-    of = f" of about {total}" if more and isinstance(total, int) and total > seen + count else ""
-    return f'Messages {seen + 1}-{seen + count}{of} for "{query}", newest first.'
-
-
-def _failed(exc: Exception) -> ToolError:
-    """Gmail's failure as the model should relay it; nothing to retry."""
-    detail = _cut(str(exc), 200)
-    if isinstance(exc, LookupError):
-        msg = "Gmail is not connected; tell him it needs connecting."
-        return ToolError(msg, code="unavailable")
-    if _SIGN_IN.search(detail):
-        msg = f"Gmail needs reconnecting ({detail}); tell him, mail cannot be read until he does."
-        return ToolError(msg, code="unavailable")
-    msg = f"Gmail did not answer ({detail}); tell him mail could not be read just now."
-    return ToolError(msg, code="network_error")
-
-
-def _argument(args: Mapping[str, Any], name: str) -> str:
-    value = args.get(name)
-    return value.strip() if isinstance(value, str) else ""
-
-
-def _page(args: Mapping[str, Any]) -> int:
-    """The page asked for: 1 when none is, else a whole number from 1."""
-    value = args.get("page")
-    if value is None:
-        return 1
-    if isinstance(value, float) and value.is_integer():
-        value = int(value)
-    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-        msg = "mail: page must be a whole number, e.g. page=2 for results 9-16"
-        raise ToolError(msg, code="invalid_arguments")
-    return value
+# --- the tool ----------------------------------------------------------------------------------
 
 
 class _Mail:
-    """The tool's handler: the overview, a page of a search, one message."""
+    """The tool's handler: its actions over one :class:`Mailbox` and the listing it last showed."""
 
-    def __init__(
-        self,
-        unread: Callable[[], Mapping[str, Any]],
-        gmail: Callable[[str, Mapping[str, Any]], dict[str, Any]],
-        text: Callable[[str], str],
-    ) -> None:
-        self._unread = unread
-        self._gmail = gmail
-        self._text = text
+    def __init__(self, box: Mailbox) -> None:
+        self._box = box
         self._lock = threading.Lock()
-        self._held = _Held()
+        self._listing: _Listing | None = None
+        self._letters = Letters(box, People(box))
 
-    def run(self, args: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
-        """Dispatch on the arguments; a Gmail failure is worded for the model."""
-        query, read = _argument(args, "query"), _argument(args, "read")
-        page = _page(args)
-        if read and (query or page > 1):
-            msg = "mail: pass read=<id> alone, or query=..., not both"
+    def run(self, args: Mapping[str, Any], ctx: ToolContext) -> Receipted:
+        """Check the arguments, then do the action; a failure of Gmail's is already worded."""
+        if _completed(args):  # a send the card froze: its letter, already made
+            return self._send(args, ctx)
+        action, given = _arguments(args)
+        if action in {"list", "search"}:
+            return self._list(given, ctx, searching=action == "search")
+        if action == "draft":
+            return self._discard(given, ctx) if "undo" in given else self._draft(given, ctx)
+        if action == "send":
+            return self._send(self._completion(given, ctx), ctx)
+        if action == "archive" and "undo" in given:
+            return self._put_back(given, ctx)
+        if "message" not in given:
+            msg = f"mail: {action} needs message=<a row of the last listing, or a message id>"
             raise ToolError(msg, code="invalid_arguments")
-        if page > 1 and not query:
-            msg = "mail: page continues a search; pass the same query=... as that search"
-            raise ToolError(msg, code="invalid_arguments")
-        try:
-            if read:
-                return self._read(read, ctx.clock)
-            return self._search(query, page, ctx.clock) if query else self._overview(ctx.clock)
-        except LookupError as exc:  # the home's "not connected".
-            raise _failed(exc) from exc
-        except ToolError as exc:
-            if exc.code in _OWN_ERRORS:
-                raise
-            raise _failed(exc) from exc
+        handlers: Mapping[str, Callable[[Mapping[str, Any], ToolContext], Receipted]] = {
+            "read": self._read, "thread": self._thread, "attachment": self._attachment,
+            "archive": self._archive,
+        }
+        return handlers[action](given, ctx)
 
-    def _overview(self, clock: Clock) -> dict[str, Any]:
-        """``Home.mail``'s unread list (reply marks and ratings are its) as compact rows."""
-        letters = list(self._unread().get("unread") or [])
-        kept = [one for one in letters if not one.get("junk")]
-        now, rows = clock.now(), []
-        for one in kept:
-            row = {k: one[k] for k in ("id", "from", "subject") if one.get(k) is not None}
-            if at := _iso(one.get("received")):
-                row["when"] = _when(at, now, clock.zone)
-            rows.append({**row, **{
-                k: one[k] for k in ("reply", "importance", "category") if one.get(k) is not None
-            }})
-        asking = list(dict.fromkeys(r["from"] for r in rows if r.get("reply") == "yes"))
-        summary = f"{len(rows)} unread in Primary" if rows else "No unread mail in Primary"
-        if asking:
-            summary += f"; {len(asking)} {'needs' if len(asking) == 1 else 'need'} a reply"
-            summary += f" ({', '.join(asking[:3])})"
-        return {"summary": f"{summary}.", "unread": rows, "junk_left_out": len(letters) - len(kept)}
+    # --- rows and ids --------------------------------------------------------------------------
 
-    def _search(self, query: str, page: int, clock: Clock) -> dict[str, Any]:
-        """Page ``page`` of ``_PAGE`` results, each with its headers and snippet read in parallel.
-
-        Gmail's page tokens are held for the last query. A page not reached yet is walked to with
-        id-only searches from the furthest page held, page 1 for a query that is not held.
-        """
+    def _keep(self, listing: _Listing) -> None:
         with self._lock:
-            held = self._held if self._held.query == query else _Held(query)
-        tokens, last = {1: None, **held.tokens}, held.last
-        at = max(n for n in tokens if n <= page)
-        while at < page and (last is None or page <= last):
-            found = self._gmail("gmail_search", self._ask(query, tokens[at]))
-            if not found.get("nextPageToken"):
-                last = at
-                break
-            at += 1
-            tokens[at] = str(found["nextPageToken"])
+            self._listing = listing
+
+    def _held(self) -> _Listing | None:
+        with self._lock:
+            return self._listing
+
+    def _row(self, number: int) -> str:
+        """The message id of row ``number`` of the last listing."""
+        held = self._held()
+        if held is None:
+            msg = (
+                "mail: a row number means a row of the last list or search, and nothing has been"
+                " listed since mail was last restarted; list or search again, or give the"
+                " message id"
+            )
+            raise ToolError(msg, code="no_rows", kind="retry_other_args")
+        if not 1 <= number <= len(held.hits):
+            msg = f"mail: the last listing has {len(held.hits)} rows; there is no row {number}"
+            raise ToolError(msg, code="invalid_arguments")
+        return held.hits[number - 1].id
+
+    def _targets(self, wanted: str, *, limit: int, action: str) -> list[str]:
+        """The message ids ``wanted`` names: row numbers, ranges of them (1-3) and message ids."""
         ids: list[str] = []
-        found = {}
-        if last is None or page <= last:
-            found = self._gmail("gmail_search", self._ask(query, tokens[page]))
-            ids = [str(one["id"]) for one in found.get("messages") or []]
-            if found.get("nextPageToken"):
-                tokens[page + 1] = str(found["nextPageToken"])
+        for part in _SEPARATORS.split(wanted):
+            if not part:
+                continue
+            if span := _RANGE.fullmatch(part):
+                first, last = int(span[1]), int(span[2])
+                if first > last or last - first >= limit:
+                    msg = f"mail: {action} takes up to {_noun(limit, 'mail')}; {part} is more"
+                    raise ToolError(msg, code="invalid_arguments")
+                ids.extend(self._row(number) for number in range(first, last + 1))
+            elif _ROW.fullmatch(part):
+                ids.append(self._row(int(part)))
             else:
-                last = page if ids or page == 1 else page - 1
-        with self._lock:
-            self._held = _Held(query, tokens, last)
-        if not ids and page > 1:
-            end = page - 1 if last is None else last
-            msg = f'There is no page {page} of "{query}"; its results end at page {end}.'
-            return {"summary": msg, "messages": [], "more": False}
-        now = clock.now()
-        rows = [self._row(head, now, clock.zone) for head in self._heads(ids)]
-        more = last is None or page < last
-        if not rows:
-            return {"summary": f'No messages match "{query}".', "messages": [], "more": False}
-        line = _found(
-            query, (page - 1) * _PAGE, len(rows), more=more, total=found.get("resultSizeEstimate"),
+                ids.append(part)
+        ids = list(dict.fromkeys(ids))
+        if len(ids) > limit:
+            msg = f"mail: {action} takes up to {_noun(limit, 'mail')} at a time, not {len(ids)}"
+            raise ToolError(msg, code="invalid_arguments")
+        if not ids:
+            msg = f"mail: {action} needs message=<a row number or a message id>"
+            raise ToolError(msg, code="invalid_arguments")
+        return ids
+
+    # --- list and search -----------------------------------------------------------------------
+
+    def _find(self, ask: Ask, key: tuple[object, ...], now: datetime, *, fresh: bool) -> _Listing:
+        """The listing for ``ask``: the held one for a later page, else a new search."""
+        if not fresh and (held := self._held()) is not None and held.key == key:
+            return held
+        if ask.waiting:
+            found = mail_lists.find_waiting(self._box, ask, now)
+            listing = _Listing(key, found.hits, found.more, waiting=found)
+        else:
+            matches = self._box.search(ask.query)
+            listing = _Listing(key, matches.hits, matches.more)
+        self._keep(listing)
+        return listing
+
+    def _list(self, given: Mapping[str, Any], ctx: ToolContext, *, searching: bool) -> Receipted:
+        """A page of his mail, eight rows: his unread inbox, a narrowed list, or a search."""
+        now, zone = ctx.clock.now(), ctx.clock.zone
+        if searching and not any(
+            given.get(name) for name in ("query", "from", "to", "when", "unread")
+        ):
+            msg = (
+                "mail: search needs query, from, to, when or unread; list with no arguments"
+                " gives his unread inbox"
+            )
+            raise ToolError(msg, code="invalid_arguments")
+        ask = mail_lists.ask_of(given, now, zone, searching=searching)
+        page: int = given.get("page", 1)
+        listing = self._find(ask, (searching, ask.query, ask.waiting), now, fresh=page == 1)
+        total = len(listing.hits)
+        if searching and total == 1 and page == 1 and not listing.more:
+            lead = f"1 mail matches {ask.window}. "
+            return self._read_one(listing.hits[0].id, {}, ctx, lead=lead)
+        if total == 0 and listing.waiting is None:
+            return _nothing(ask)
+        if (page - 1) * mail_lists.PAGE_ROWS >= max(total, 1):
+            end = max(1, math.ceil(total / mail_lists.PAGE_ROWS))
+            msg = (
+                f"mail: this list has {_noun(total, 'mail')}, ending at page {end};"
+                f" page={page} is past it"
+            )
+            raise ToolError(msg, code="invalid_arguments")
+        return self._page(ask, listing, page, ctx)
+
+    def _page(self, ask: Ask, listing: _Listing, page: int, ctx: ToolContext) -> Receipted:
+        """Rows ``(page - 1) * 8 + 1`` on, each read, with what is not shown counted."""
+        now, zone = ctx.clock.now(), ctx.clock.zone
+        start = (page - 1) * mail_lists.PAGE_ROWS
+        lasts = listing.waiting.lasts if listing.waiting is not None else None
+        rows, gone = mail_lists.page_rows(self._box, listing.hits, start, ask, now, lasts=lasts)
+        hidden = listing.hits[start + mail_lists.PAGE_ROWS :]
+        names = mail_lists.not_shown(self._box, ask.query, hidden)
+        shown = [mail_lists.row_json(one, now, zone) for one in rows]
+        kept = _fit(shown)
+        cut = shown[len(kept) :]
+        notes = _page_notes(kept, cut, gone, listing, hidden, names, page, self._box.cap)
+        summary = " ".join([_opening(ask, listing, now, self._box.cap), *notes])
+        what = "mail waiting on him" if ask.waiting else "mail"
+        found = f"more than {len(listing.hits)}" if listing.more else str(len(listing.hits))
+        return Receipted(
+            {"summary": summary, "rows": kept},
+            _reads(
+                f"read {what}, {ask.window}: {found} found, {len(kept)} shown",
+                f"{what}, {ask.window}", len(kept), len(hidden) + len(cut),
+                f"page={page + 1}" if hidden else "",
+            ),
         )
-        return {"summary": line, "messages": rows, "more": more}
+
+    # --- read ----------------------------------------------------------------------------------
+
+    def _read(self, given: Mapping[str, Any], ctx: ToolContext) -> Receipted:
+        """One mail's text in parts, or up to three mails, each with its share."""
+        ids = self._targets(given["message"], limit=READ_MAX, action="read")
+        if len(ids) == 1:
+            return self._read_one(ids[0], given, ctx)
+        now, zone = ctx.clock.now(), ctx.clock.zone
+        mails: list[dict[str, Any]] = []
+        summaries: list[str] = []
+        for message, read in zip(ids, self._box.reads(ids), strict=True):
+            if read is None:
+                msg = f"No mail with id {message}; list or search first to get one"
+                raise ToolError(msg, code="not_found")
+            extras, _ = self._bill(read, zone, look=False)
+            mails.append(mail_reads.mail_json(
+                read, page=given.get("page", 1), looking_for=given.get("looking_for", ""),
+                limit=PART_CHARS // len(ids), raw_max_bytes=self._box.raw_max_bytes,
+                now=now, zone=zone, extras=extras,
+            ))
+            summaries.append(mail_reads.summary_of(read, now, zone))
+        said = f"Read {len(ids)} mails: {' '.join(summaries)}"
+        if any("part" in one or "showing" in one for one in mails):
+            said += " Each is cut to its share; read one alone for the rest."
+        return Receipted(
+            {"summary": said, "mails": mails},
+            _reads(f"read {len(ids)} mails", f"{len(ids)} mails by id", len(ids)),
+        )
+
+    def _read_one(
+        self, message: str, given: Mapping[str, Any], ctx: ToolContext, *, lead: str = "",
+    ) -> Receipted:
+        """One mail read whole or in parts; ``lead`` opens the summary (a search's one match)."""
+        now, zone = ctx.clock.now(), ctx.clock.zone
+        read = self._box.read(message)
+        extras, verdict = self._bill(read, zone, look=True)
+        out = mail_reads.mail_json(
+            read, page=given.get("page", 1), looking_for=given.get("looking_for", ""),
+            limit=PART_CHARS, raw_max_bytes=self._box.raw_max_bytes, now=now, zone=zone,
+            extras=extras,
+        )
+        got = _part_of(out)
+        said, left, how = _more_parts(got)
+        who = read.mail.sender.shown or "an unknown sender"
+        subject = speakable.cut(read.mail.subject, _SUBJECT_CHARS) or "(no subject)"
+        line = f'read {who}\'s mail "{subject}"' + (f", part {got[0]} of {got[1]}" if got else "")
+        summary = lead + mail_reads.summary_of(read, now, zone)
+        window, shown = f"one mail, {read.id}", 1
+        if verdict is not None:
+            summary += " " + mail_bills.line(verdict, now, zone)
+            line += ", receipt found" if verdict.receipt else ", no receipt found"
+            window += f"; {mail_bills.window_text(verdict)}"
+            shown += verdict.looked
+            left += verdict.unread
+        return Receipted(
+            {"summary": summary + said, **out}, _reads(line, window, shown, left, how),
+        )
+
+    def _bill(
+        self, read: Read, zone: tzinfo, *, look: bool,
+    ) -> tuple[dict[str, str], mail_bills.Verdict | None]:
+        """What the mail states of a bill or a payment, and for a bill the receipt that paid it.
+
+        ``look``: search its sender's mail for the receipt (ADR 0365); a read of several mails
+        does not, and says so.
+        """
+        facts = mail_facts(read.mail)
+        if facts is None:
+            return {}, None
+        mail = read.mail
+        if facts.kind != "asks":
+            return {"bill": facts.line}, None
+        if not look:
+            return {"bill": f"{facts.line}; read this mail alone to look for its receipt"}, None
+        if mail.at is None or not mail.sender.address:
+            return {"bill": f"{facts.line}; no sender or date, so no receipt was looked for"}, None
+        seen = Seen(facts, mail.sender.address, mail.at)
+        return {"bill": facts.line}, mail_bills.find_receipt(self._box, read.id, seen, zone)
+
+    # --- thread --------------------------------------------------------------------------------
+
+    def _held_thread(self, message: str) -> Thread | None:
+        held = self._held()
+        if held is not None and held.thread is not None and any(
+            one.id == message for one in held.hits
+        ):
+            return held.thread
+        return None
+
+    def _thread(self, given: Mapping[str, Any], ctx: ToolContext) -> Receipted:
+        """A conversation's messages, the newest six, each with its own new text."""
+        (message,) = self._targets(given["message"], limit=1, action="thread")
+        now, zone = ctx.clock.now(), ctx.clock.zone
+        page: int = given.get("page", 1)
+        found = self._held_thread(message) if page > 1 else None
+        if found is None:
+            found = mail_reads.find_thread(self._box, self._box.read(message))
+            self._keep(_Listing(
+                ("thread", message), tuple(Hit(one.id, one.thread) for one in found.messages),
+                found.more, thread=found,
+            ))
+        rows, earlier = mail_reads.thread_json(found, page=page, now=now, zone=zone)
+        total = len(found.messages)
+        subject = mail_reads.subject_of(found.messages[-1].mail.subject) or "(no subject)"
+        titled = speakable.cut(subject, 80)
+        said = f'Conversation "{titled}": {_noun(total, "message")}, oldest first.'
+        if (rows[0]["n"], rows[-1]["n"]) != (1, total):
+            said += f" Showing {rows[0]['n']}-{rows[-1]['n']}."
+        how = f"page={page + 1}" if earlier else ""
+        if earlier:
+            said += f" {earlier} earlier: {how}."
+        if not found.searched:
+            said += " It has no subject, so only this message could be found."
+        elif found.more:
+            said += " Older messages may be missing: only the newest were looked for."
+        named = speakable.cut(subject, _SUBJECT_CHARS)
+        return Receipted(
+            {"summary": said, "messages": rows},
+            _reads(
+                f'read the conversation "{named}": {len(rows)} of {total} messages',
+                f'conversation "{named}"', len(rows), earlier, how,
+            ),
+        )
+
+    # --- attachment ----------------------------------------------------------------------------
+
+    def _attachment(self, given: Mapping[str, Any], ctx: ToolContext) -> Receipted:
+        """One attachment of a mail as text, in parts as a mail is."""
+        (message,) = self._targets(given["message"], limit=1, action="attachment")
+        read = self._box.read(message)
+        files = read.mail.attachments
+        wanted = given.get("file") or ("1" if len(files) == 1 else "")
+        if files and not wanted:
+            listed = "; ".join(mail_reads.file_lines(files))
+            msg = f"mail: attachment needs file=<number or name>; its attachments are {listed}"
+            raise ToolError(msg, code="invalid_arguments")
+        one = mail_reads.choose_file(files, wanted)
+        out = mail_reads.attachment_json(
+            read, one, page=given.get("page", 1), looking_for=given.get("looking_for", ""),
+            limit=PART_CHARS, raw_max_bytes=self._box.raw_max_bytes,
+        )
+        of = mail_reads.summary_of(read, ctx.clock.now(), ctx.clock.zone).removeprefix("From ")
+        said, left, how = _more_parts(_part_of(out))
+        summary = f"{one.name} ({out['type']}, {out['size']}) from {of}{said}"
+        return Receipted(
+            {"summary": summary, **out},
+            _reads(
+                f"read {speakable.cut(one.name, 60)} from a mail", f"attachment {one.name}", 1,
+                left, how,
+            ),
+        )
+
+    # --- archive -------------------------------------------------------------------------------
+
+    def _archive(self, given: Mapping[str, Any], ctx: ToolContext) -> Receipted:
+        """Take mails out of his inbox: only those in it, so the undo restores exactly them."""
+        ids = self._targets(given["message"], limit=ARCHIVE_MAX, action="archive")
+        labels = self._box.labels(ids)
+        gone = [one for one in ids if one not in labels]
+        inbox = [one for one in ids if _INBOX in labels.get(one, frozenset())]
+        out = [one for one in ids if one in labels and one not in inbox]
+        if len(gone) == len(ids):
+            msg = f"No mail with id {gone[0]}; list or search first to get one"
+            raise ToolError(msg, code="not_found")
+        notes = ""
+        if out:
+            notes += f" {_noun(len(out), 'mail')} already out of his inbox."
+        if gone:
+            notes += f" {_noun(len(gone), 'mail')} no longer exist in Gmail."
+        if not inbox:
+            return Receipted(
+                {"summary": f"Nothing to archive:{notes}", "archived": []},
+                Receipt("done", reads_only=False, line="nothing to archive: none was in his inbox"),
+            )
+        named = [
+            f'{one.sender.shown or "(unknown sender)"}: "{speakable.cut(one.subject, 40)}"'
+            for one in self._box.heads(inbox[:_NAMED]) if one is not None
+        ]
+        self._box.ask(
+            "gmail_batchModify", {"messageIds": inbox, "removeLabelIds": [_INBOX]}, changing=True,
+        )
+        event = emit_event(
+            ctx.conn, type="mail.inbox_changed",
+            payload={"message_ids": inbox, "in_inbox": False, "action_id": ctx.action_id},
+            source_event_id=_get_running_event_uid(ctx.conn, ctx.action_id),
+            correlation={"action_id": ctx.action_id},
+        )
+        more = f" and {len(inbox) - _NAMED} more" if len(inbox) > _NAMED and named else ""
+        count = _noun(len(inbox), "mail")
+        undo = event.event_uid[:_UNDO_CHARS]
+        summary = (
+            f"Took {count} out of his inbox ({'; '.join(named)}{more}); they are in All Mail."
+            f"{notes} Put them back with action=archive and undo={undo}."
+        )
+        return Receipted(
+            {"summary": summary, "archived": inbox, "undo": undo},
+            Receipt(
+                "done", reads_only=False, line=f"took {count} out of his inbox",
+                object=f"mail:{inbox[0]}", undo=event.event_uid,
+            ),
+        )
+
+    def _put_back(self, given: Mapping[str, Any], ctx: ToolContext) -> Receipted:
+        """An archive's undo: the same mails get the inbox label again, once."""
+        if "message" in given:
+            msg = "mail: give undo, or message, not both"
+            raise ToolError(msg, code="invalid_arguments")
+        events = list(iter_events_of_types(ctx.conn, ["mail.inbox_changed"]))
+        event = _archive_named(events, str(given["undo"]))
+        uid = event.event_uid
+        ids = [str(one) for one in event.payload["message_ids"]]
+        if any(one.payload.get("undoes") == uid for one in events):
+            said = "Those mails were put back in his inbox already; nothing changed."
+            return Receipted(
+                {"summary": said, "restored": []},
+                Receipt(
+                    "done", reads_only=False, line="already back in his inbox: nothing changed",
+                    object=f"mail:{ids[0]}",
+                ),
+            )
+        self._box.ask(
+            "gmail_batchModify", {"messageIds": ids, "addLabelIds": [_INBOX]}, changing=True,
+        )
+        emit_event(
+            ctx.conn, type="mail.inbox_changed",
+            payload={
+                "message_ids": ids, "in_inbox": True, "action_id": ctx.action_id, "undoes": uid,
+            },
+            source_event_id=_get_running_event_uid(ctx.conn, ctx.action_id),
+            correlation={"action_id": ctx.action_id},
+        )
+        count = _noun(len(ids), "mail")
+        return Receipted(
+            {"summary": f"Put {count} back in his inbox.", "restored": ids},
+            Receipt(
+                "done", reads_only=False, line=f"put {count} back in his inbox",
+                object=f"mail:{ids[0]}",
+            ),
+        )
+
+
+    # --- draft and send ------------------------------------------------------------------------
+
+    def complete(self, args: Mapping[str, Any], ctx: ToolContext) -> Mapping[str, Any]:
+        """The full arguments of a call that needs a card (ADR 0361): a send's letter, made.
+
+        Names are found in his mail, a reply gets its recipients, subject and thread, and a draft
+        its letter; it only reads. Any other call is as it was given.
+        """
+        if _text(args.get("action"), "action") != "send":
+            return dict(args)
+        action, given = _arguments(args)
+        return self._completion(given, ctx) if action == "send" else dict(args)
+
+    def _cause(self, ctx: ToolContext) -> Cause:
+        return Cause(ctx.action_id, _get_running_event_uid(ctx.conn, ctx.action_id))
+
+    def _compose(
+        self, given: Mapping[str, Any], ctx: ToolContext, action: str, *, replied: str = "",
+    ) -> mail_letters.Composed:
+        """The letter ``given`` describes; ``replied`` is the mail a revision already answers."""
+        if "reply_to" in given:
+            (replied,) = self._targets(given["reply_to"], limit=1, action=action)
+        return self._letters.compose(given, replied, ctx.clock.now(), ctx.clock.zone, action)
 
     @staticmethod
-    def _ask(query: str, token: str | None) -> dict[str, Any]:
-        ask: dict[str, Any] = {"query": query, "maxResults": _PAGE}
-        if token:
-            ask["pageToken"] = token
-        return ask
+    def _open_draft(conn: Connection, given: str, doing: str) -> mail_letters.Written:
+        held = mail_letters.drafts(conn)
+        one = mail_letters.named(held, given)
+        if not one.is_open:
+            msg = f"mail: draft {one.short} {mail_letters.how_it_ended(one, held)}; {doing}"
+            raise ToolError(msg, code="invalid_arguments")
+        return one
 
-    def _heads(self, ids: list[str]) -> list[dict[str, Any]]:
-        if not ids:
-            return []
-        with ThreadPoolExecutor(len(ids), thread_name_prefix="mail-head") as pool:
-            return list(pool.map(
-                lambda one: self._gmail("gmail_get", {"messageId": one, "format": "metadata"}), ids,
-            ))
-
-    def _row(self, head: Mapping[str, Any], now: datetime, zone: tzinfo) -> dict[str, Any]:
-        name, address = parseaddr(str(head.get("from") or ""))
-        row = {
-            "id": str(head["id"]),
-            "from": _cut(name or address, _NAME_CHARS),
-            "subject": _cut(str(head.get("subject") or ""), _SUBJECT_CHARS),
-        }
-        if at := _dated(head.get("date")):
-            row["when"] = _when(at, now, zone)
-        # Gmail's snippet is HTML-escaped ("don&#39;t").
-        if snippet := _cut(html.unescape(str(head.get("snippet") or "")), _SNIPPET_CHARS):
-            row["snippet"] = snippet
-        return row
-
-    def _read(self, message_id: str, clock: Clock) -> dict[str, Any]:
-        """One message whole: headers, the body as clean text, attachment names."""
-        try:
-            message = self._gmail("gmail_get", {"messageId": message_id, "format": "full"})
-        except ToolError as exc:
-            if _NOT_FOUND.search(str(exc)):
-                msg = f"No mail with id {message_id}; search with mail(query=...) first"
-                raise ToolError(msg, code="not_found") from exc
-            raise
-        sender = str(message.get("from") or "")
-        name, address = parseaddr(sender)
-        subject = str(message.get("subject") or "")
-        body, trimmed = _trim(self._text(str(message.get("body") or "")))
-        cut = len(body) > _BODY_CHARS
-        body = body[:_BODY_CHARS].rstrip() if cut else body
-        body += "\n(truncated)" if cut else ""
-        body += "\n(quoted replies and signature removed)" if trimmed else ""
-        files = [
-            str(one.get("filename") or one.get("name") or "") if isinstance(one, dict) else str(one)
-            for one in message.get("attachments") or []
-        ]
-        files = [one for one in files if one][:_ATTACHMENTS_SHOWN]
-        at = _dated(message.get("date"))
-        when = _when(at, clock.now(), clock.zone) if at else ""
-        summary = f"From {name or address or 'an unknown sender'}{f', {when}' if when else ''}: "
-        summary += f"{_cut(subject, _SUBJECT_CHARS) or '(no subject)'}."
-        if files:
-            summary += f" {len(files)} attachment{'' if len(files) == 1 else 's'}."
-        optional = {
-            "to": str(message.get("to") or ""),
-            "when": when,
-            # The ISO form is for the mail card (ADR 0063), which parses it; he hears `when`.
-            "at": at.astimezone(clock.zone).isoformat(timespec="minutes") if at else "",
-            "attachments": files,
-        }
+    def _completion(self, given: Mapping[str, Any], ctx: ToolContext) -> dict[str, Any]:
+        """A send's flat completed arguments: the letter, with the draft it comes from."""
+        if "draft" in given:
+            if any(name in given for name in _LETTER):
+                msg = "mail: send takes draft=<number>, or a letter (to, subject, body), not both"
+                raise ToolError(msg, code="invalid_arguments")
+            one = self._open_draft(ctx.conn, given["draft"], "nothing was sent")
+            letter, short = one.letter, one.short
+            who = self._letters.parse(letter, ctx.clock.now())
+        else:
+            composed = self._compose(given, ctx, "send")
+            letter, who, short = composed.letter, composed.who, ""
         return {
-            "summary": summary,
-            "id": str(message.get("id") or message_id),
-            "thread_id": str(message.get("threadId") or ""),
-            "from": sender,
-            "subject": subject,
-            **{k: v for k, v in optional.items() if v},
-            "body": body or "(no text)",
+            "action": "send", "to": list(letter.to), "cc": list(letter.cc),
+            "bcc": list(letter.bcc), "subject": letter.subject, "body": letter.body,
+            "thread": letter.thread, "draft": short, "you": mail_people.own_marks(who),
         }
 
+    def _drafted(
+        self, composed: mail_letters.Composed, written: mail_letters.Written,
+        old: mail_letters.Written | None, *, left: bool,
+    ) -> Receipted:
+        """What a written draft says: the letter as it will go, its number, and what it replaced."""
+        letter, short = composed.letter, written.short
+        out: dict[str, Any] = {"to": composed.marked(letter.to)}
+        for key, group in (("cc", letter.cc), ("bcc", letter.bcc)):
+            if group:
+                out[key] = composed.marked(group)
+        shown = letter.body if len(letter.body) <= mail_letters.BODY_SHOWN else (
+            letter.body[: mail_letters.BODY_SHOWN - 1] + "…"
+        )
+        out |= {"subject": letter.subject, "body": shown}
+        if composed.answers:
+            out["answers"] = composed.answers
+        said = f"Wrote draft {short} in his Gmail drafts; nothing was sent."
+        for note in composed.notes:
+            said += f" {note}"
+        if old is not None:
+            said += f" It replaces draft {old.short}" + (
+                ", which is still in his Drafts: Gmail would not move it to Trash." if left
+                else ", which was moved to Trash."
+            )
+            out["replaced"] = old.short
+        if shown != letter.body:
+            said += (
+                f" The body shown is cut at {mail_letters.BODY_SHOWN} characters; the draft has"
+                " it all."
+            )
+        said += (
+            f" Send it with action=send and draft={short}; discard it with action=draft and"
+            f" undo={short}."
+        )
+        called = _called(composed.who)
+        return Receipted(
+            {"summary": said, "draft": short, **out, "undo": short},
+            Receipt(
+                "done", reads_only=False,
+                line=f"wrote a draft to {called}: {speakable.cut(letter.subject, _SUBJECT_CHARS)}",
+                object=f"draft:{short}", undo=written.uid,
+            ),
+        )
 
-def build_mail_tool(
-    unread: Callable[[], Mapping[str, Any]],
-    gmail: Callable[[str, Mapping[str, Any]], dict[str, Any]],
-    text: Callable[[str], str],
-) -> tuple[Tool, ...]:
-    """``mail`` over ``Home``: its unread list, its ``gmail`` calls and the HTML-to-text read.
+    def _draft(self, given: Mapping[str, Any], ctx: ToolContext) -> Receipted:
+        """Write a Gmail draft: a new letter, a reply, or a revision of an earlier draft."""
+        old, replied, said = None, "", dict(given)
+        if "replaces" in given:
+            old = self._open_draft(ctx.conn, given["replaces"], "there is nothing to replace")
+            kept = old.letter
+            said.pop("replaces")
+            for key, value in (
+                ("to", kept.to), ("cc", kept.cc), ("bcc", kept.bcc), ("subject", kept.subject),
+                ("body", kept.body),
+            ):
+                said.setdefault(key, list(value) if isinstance(value, tuple) else value)
+            replied = old.reply_to
+        composed = self._compose(said, ctx, "draft", replied=replied)
+        written, left = self._letters.write(
+            ctx.conn, composed, self._cause(ctx), replaces=old,
+        )
+        return self._drafted(composed, written, old, left=left)
 
-    Only ``gmail_search`` and ``gmail_get`` are ever called through ``gmail``.
-    """
+    def _discard(self, given: Mapping[str, Any], ctx: ToolContext) -> Receipted:
+        """A draft's undo: its message moves to Trash, once."""
+        if len(given) > 1:
+            msg = "mail: give undo alone to discard a draft"
+            raise ToolError(msg, code="invalid_arguments")
+        held = mail_letters.drafts(ctx.conn)
+        one = mail_letters.named(held, str(given["undo"]))
+        if not one.is_open:
+            said = f"Draft {one.short} {mail_letters.how_it_ended(one, held)}; nothing changed."
+            return Receipted(
+                {"summary": said, "discarded": ""},
+                Receipt(
+                    "done", reads_only=False, line=f"draft {one.short} was closed already",
+                    object=f"draft:{one.short}",
+                ),
+            )
+        if not self._letters.discard(ctx.conn, one, self._cause(ctx)):
+            msg = (
+                f"mail: Gmail would not move draft {one.short} to Trash, so it is still in his"
+                " Drafts; tell him to delete it there"
+            )
+            raise ToolError(msg, code="unavailable", kind="impossible")
+        return Receipted(
+            {"summary": f"Discarded draft {one.short}: moved to Trash.", "discarded": one.short},
+            Receipt(
+                "done", reads_only=False, line=f"discarded draft {one.short}",
+                object=f"draft:{one.short}",
+            ),
+        )
+
+    def _send(self, done: Mapping[str, Any], ctx: ToolContext) -> Receipted:
+        """Send the completed letter: its draft when unchanged, else a new draft in its place."""
+        letter, short = _finished(done)
+        who = self._letters.parse(letter, ctx.clock.now())
+        problem = Letters.problem(who, letter.subject, letter.body, "send")
+        if problem or any(not mail_people.valid(one.address) for one in who):
+            msg = problem or "mail: a recipient is not an address"
+            raise ToolError(msg, code="invalid_arguments")
+        draft = None
+        if short:
+            draft = mail_letters.named(mail_letters.drafts(ctx.conn), short)
+        sent = self._letters.send(ctx.conn, letter, draft, self._cause(ctx))
+        called = _called(who)
+        return Receipted(
+            {
+                "summary": f'Sent "{letter.subject}" to {called}.',
+                "sent": sent, "to": [one.marked for one in who[: len(letter.to)]],
+            },
+            Receipt(
+                "done", reads_only=False,
+                line=f"sent {speakable.cut(letter.subject, _SUBJECT_CHARS)} to {called}",
+                object=f"mail:{sent}",
+            ),
+        )
+
+
+def _completed(args: Mapping[str, Any]) -> bool:
+    """A send in the form a completion makes: flat, with the thread it answers and who is his."""
+    return args.get("action") == "send" and "thread" in args and "you" in args
+
+
+def _strings(done: Mapping[str, Any], key: str) -> tuple[str, ...]:
+    value = done.get(key)
+    if not isinstance(value, list) or not all(isinstance(one, str) for one in value):
+        msg = f"mail: {key} must be a list of recipients"
+        raise ToolError(msg, code="invalid_arguments")
+    return tuple(value)
+
+
+def _finished(done: Mapping[str, Any]) -> tuple[Letter, str]:
+    """The letter in a completed send, and the number of the draft it came from."""
+    subject, body = done.get("subject"), done.get("body")
+    if not isinstance(subject, str) or not isinstance(body, str):
+        msg = "mail: subject and body must be text"
+        raise ToolError(msg, code="invalid_arguments")
+    letter = Letter(
+        _strings(done, "to"), _strings(done, "cc"), _strings(done, "bcc"), subject, body,
+        str(done.get("thread") or ""),
+    )
+    return letter, str(done.get("draft") or "")
+
+
+def _called(who: Sequence[mail_people.Who]) -> str:
+    """Up to three recipients by name (else address), with how many more."""
+    names = [one.name or one.address for one in who[:_NAMED]]
+    more = f" and {len(who) - _NAMED} more" if len(who) > _NAMED else ""
+    return ", ".join(names) + more
+
+
+def build_mail_tool(box: Mailbox) -> tuple[Tool, ...]:
+    """``mail`` over his Gmail: ``box`` is the one :class:`Mailbox` the runtime wired."""
+    mail = _Mail(box)
     return (
         Tool(
             name="mail",
             description=_DESCRIPTION,
             input_schema=_SCHEMA,
-            handler=_Mail(unread, gmail, text).run,
+            handler=mail.run,
             allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
-            risk_level="L0",
-            read_only=True,
-            supersedes={
-                "mcp__gmail__gmail_search": "mail(query=...)",
-                "mcp__gmail__gmail_get": "mail(read=<id>)",
-            },
+            risk_level="L3",
+            read_only=False,
+            effect=_effect,
+            complete=mail.complete,
+            supersedes=_SUPERSEDES,
         ),
     )
 
 
-__all__ = ["build_mail_tool"]
+__all__ = ["ARCHIVE_MAX", "READ_MAX", "build_mail_tool"]

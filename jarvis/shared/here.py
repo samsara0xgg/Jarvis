@@ -64,20 +64,35 @@ class HereReading:
             raise ValueError(msg) from exc
 
 
+@dataclass(frozen=True)
+class Coarse:
+    """Roughly where he is, read without asking a device for a fix (ADR 0356).
+
+    The last phone report up to a day old, else home (``home`` true).
+    """
+
+    lat: float
+    lng: float
+    home: bool = False
+
+
 class Here:
     """One call's view of where he is; remembers the reading the call used.
 
     ``read`` is where he is under the policy, ``fresh`` always asks for a new fix. Either raises
     :class:`~jarvis.state.phone_location.NoPhoneReport` when no report exists and none came, or
-    :class:`HereUnavailable`.
+    :class:`HereUnavailable`. ``coarse`` is roughly where he is, for a choice that a few
+    kilometres do not change.
     """
 
     def __init__(
         self, read: Callable[[], HereReading], fresh: Callable[[], HereReading],
+        coarse: Callable[[], Coarse | None] = lambda: None,
     ) -> None:
-        """Bind the two readings of one turn."""
+        """Bind the readings of one turn; ``coarse`` never asks a device for a fix."""
         self._read = read
         self._fresh = fresh
+        self._coarse = coarse
         self.used: HereReading | None = None
 
     def read(self) -> HereReading:
@@ -89,6 +104,13 @@ class Here:
         """Where he is now: always asks for a new fix, falling back to the last report."""
         self.used = self._fresh()
         return self.used
+
+    def coarse(self) -> Coarse | None:
+        """Roughly where he is: the last report within a day, else home; None when neither is known.
+
+        It never asks a device and never sets the reading a receipt carries.
+        """
+        return self._coarse()
 
 
 class HereSource(Protocol):

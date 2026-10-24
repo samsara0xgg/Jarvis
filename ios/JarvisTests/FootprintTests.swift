@@ -283,19 +283,6 @@ final class FootprintTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(west.heading(atMs: 50_000)), 225, accuracy: 0.01, "south west is 225, not minus 135")
     }
 
-    func testTheCameraTakesWhereHeWasWhichWayHeWentAndHowFast() throws {
-        let m = try headingModel()
-        let f = try XCTUnwrap(m.follow(atMs: b + 150_000))
-        XCTAssertEqual(f.coord.latitude, 0.01, accuracy: 1e-9)
-        XCTAssertEqual(f.coord.longitude, 0.005, accuracy: 1e-9)
-        XCTAssertEqual(try XCTUnwrap(f.heading), 90, accuracy: 0.01)
-        XCTAssertEqual(f.speedMps, 5)
-        let still = try XCTUnwrap(m.follow(atMs: b + 50_000))
-        XCTAssertNil(still.heading, "in the stop the map keeps the way it was turned")
-        XCTAssertEqual(still.speedMps, 0)
-        XCTAssertNil(m.follow(atMs: b - 1), "nowhere: no camera")
-    }
-
     func testTheFastestFixIsTheOneWithTheHighestSpeedAndNilWhenNoneHasOne() throws {
         let m = try model()
         XCTAssertEqual(m.reply.outings[0].fastest, FootprintPoint(at_ms: b + 1_500_000, lat: -10.08, lng: 20.08, speed_mps: 30))
@@ -324,15 +311,6 @@ final class FootprintTests: XCTestCase {
         streets.ask([stop.coord])
         await Task.yield()
         XCTAssertEqual(calls.n, 1, "once for a place, however often it is asked for")
-    }
-
-    func testTheCameraStandsAtSixHundredMetresWalkingAndOutToTwoKilometresAt80KmhAndNoFurther() {
-        XCTAssertEqual(FootprintMapFollow.distance(speedMps: 0), 600)
-        XCTAssertEqual(FootprintMapFollow.distance(speedMps: 1.4), 600, "walking")
-        XCTAssertEqual(FootprintMapFollow.distance(speedMps: 80 / 3.6), 2000, accuracy: 30)
-        XCTAssertEqual(FootprintMapFollow.distance(speedMps: 60), 2000, "a train does not take it further out")
-        XCTAssertEqual(FootprintMapFollow.distance(speedMps: 12), 1300, accuracy: 1)
-        XCTAssertLessThan(FootprintMapFollow.distance(speedMps: 8), FootprintMapFollow.distance(speedMps: 9), "the faster, the further")
     }
 
     func testTheStayHeIsInNowIsTodaysOpenOneAndTheDayTotalsAreTheOutingsSummed() throws {

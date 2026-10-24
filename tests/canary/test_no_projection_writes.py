@@ -68,7 +68,7 @@ _L2_OPERATIONAL_INSERTS: dict[str, frozenset[str]] = {
     # of the log depends on; the log stays the source and a row can be dropped and refolded.
     # ADR 0302: doing_runs are a model's whole account of a day's doing lane, and doing_answers
     # his answers about it; both append-only, neither a projection of events.
-    # ADR 0315: attention_threads say what each key of his attention served, appended per telling.
+    # ADR 0393: attention_threads say what each key of his attention served, appended per telling.
     "jarvis/state/memory_db.py": frozenset(
         {
             "records", "summaries", "sent", "day_summaries", "day_prose", "day_highlight_marks",
@@ -101,6 +101,9 @@ _L2_OPERATIONAL_INSERTS: dict[str, frozenset[str]] = {
     # ADR 0300: one row per record of his the post-turn pass took up, with what it was given and
     # said. Not a projection: what it wrote to the ledger and the doings are events.
     "jarvis/state/turn_things.py": frozenset({"turn_things"}),
+    # ADR 0342: an index of BC Transit's published export, rebuilt from the zip. Not a projection of
+    # events and not state of his.
+    "jarvis/state/timetable.py": frozenset({"meta", "calendar_dates"}),
     "jarvis/state/job_ledger.py": frozenset(
         {
             "job_mail",

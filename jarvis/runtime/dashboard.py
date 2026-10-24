@@ -1,7 +1,7 @@
-"""ADR 0176, 0148: what the Dashboard shows, and the reply draft under an open letter.
+"""ADR 0176: what the Dashboard shows, kept in memory: a restart forgets it.
 
-Both are in memory only: a restart forgets them; the event log keeps what Jarvis wrote as
-the ``write_mail_draft`` rows.
+The reply draft under an open letter is a Gmail draft the ``mail`` tool wrote, read from the event
+log (ADR 0366, ``jarvis.runtime.mail_page``); only its line's prefix and size are fixed here.
 """
 
 from __future__ import annotations
@@ -18,11 +18,9 @@ VIEW_ROWS: Final = 10
 VIEW_LINE_PREFIX: Final = "Dashboard: "
 VIEW_LINE_CHARS: Final = 1200
 """The view line is the second live-context line allowed past 200 characters (ADR 0176)."""
-DRAFT_CHARS: Final = 8000
-_DRAFTS_KEPT: Final = 20
 DRAFT_LINE_PREFIX: Final = "Draft reply under it"
-_DRAFT_LINE_BODY_CHARS: Final = 2000
-DRAFT_LINE_CHARS: Final = len(DRAFT_LINE_PREFIX) + _DRAFT_LINE_BODY_CHARS + 60
+DRAFT_LINE_BODY_CHARS: Final = 2000
+DRAFT_LINE_CHARS: Final = len(DRAFT_LINE_PREFIX) + DRAFT_LINE_BODY_CHARS + 60
 """The draft line is the one live-context line allowed past 200 characters (ADR 0148)."""
 _TITLE_CHARS: Final = 80
 _ID_CHARS: Final = 64
@@ -69,15 +67,6 @@ class _View(NamedTuple):
     item: Item | None
     rows: tuple[Item, ...]
     at: float
-
-
-class Draft(NamedTuple):
-    """One reply draft: ``subject`` None means "Re: <the letter's subject>"; ``by`` jarvis|owner."""
-
-    revision: int
-    subject: str | None
-    body: str
-    by: str
 
 
 def _one_line(text: str, limit: int) -> str:
@@ -247,61 +236,3 @@ class ViewState:
                 break
             text += piece
         return text
-
-
-class MailDrafts:
-    """Reply drafts by letter id: Jarvis writes the whole body each time, Allen edits by hand."""
-
-    def __init__(self, view: ViewState) -> None:
-        """Jarvis writes only under the letter ``view`` has open."""
-        self._view = view
-        self._drafts: dict[str, Draft] = {}
-        self._revision = 0
-
-    def _store(self, letter_id: str, subject: str | None, body: str, by: str) -> Draft:
-        self._revision += 1  # one counter for every change, so a page sees any change as new
-        self._drafts.pop(letter_id, None)
-        self._drafts[letter_id] = draft = Draft(self._revision, subject, body, by)
-        while len(self._drafts) > _DRAFTS_KEPT:
-            del self._drafts[next(iter(self._drafts))]
-        return draft
-
-    def write(self, letter_id: str, text: str) -> int:
-        """Jarvis replaces the body under the open letter; the revision. ValueError if refused."""
-        if self._view.mail_id() != letter_id:
-            msg = (
-                "that letter is not open on the Dashboard, so no draft can go under it; "
-                "give him the reply in words, or ask him to open the letter"
-            )
-            raise ValueError(msg)
-        text = text.strip()
-        if not text or len(text) > DRAFT_CHARS:
-            msg = f"the draft must be 1 to {DRAFT_CHARS} characters; shorten it"
-            raise ValueError(msg)
-        before = self._drafts.get(letter_id)
-        subject = None if before is None else before.subject
-        return self._store(letter_id, subject, text, "jarvis").revision
-
-    def edit(self, letter_id: str, subject: str, body: str) -> Draft:
-        """Allen's own edit (subject and body) replaces the draft."""
-        return self._store(letter_id, subject.strip() or None, body, "owner")
-
-    def discard(self, letter_id: str) -> None:
-        """Drop the draft."""
-        self._drafts.pop(letter_id, None)
-
-    def get(self, letter_id: str) -> Draft | None:
-        """The latest draft under a letter, or None."""
-        return self._drafts.get(letter_id)
-
-    def line(self) -> str | None:
-        """The state-block line (a ``live_context`` producer): the open letter's draft so far."""
-        letter_id = self._view.mail_id()
-        draft = None if letter_id is None else self._drafts.get(letter_id)
-        if draft is None or not draft.body.strip():
-            return None
-        who = "Allen" if draft.by == "owner" else "Jarvis"
-        return (
-            f"{DRAFT_LINE_PREFIX} (revision {draft.revision}, last edited by {who}): "
-            f"{draft.body.strip()[:_DRAFT_LINE_BODY_CHARS]}"
-        )

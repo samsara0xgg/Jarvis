@@ -22,6 +22,7 @@ from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final
 
 from jarvis.shared import lang
+from jarvis.shared.job_names import company_key, employer_of, is_platform, is_tracking_system
 from jarvis.state.memory_db import open_memory_db
 
 if TYPE_CHECKING:
@@ -94,6 +95,7 @@ CREATE TABLE IF NOT EXISTS job_mail (
     role          TEXT,
     event_at      TEXT,
     event_text    TEXT,
+    event_later_at TEXT,
     confidence    REAL,
     extracted_by  TEXT,
     created_at    TEXT,
@@ -204,6 +206,13 @@ def _add_snapshot_columns(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE job_decision ADD COLUMN {column} TEXT")
 
 
+def _add_event_columns(conn: sqlite3.Connection) -> None:
+    """Add the ``event_later_at`` column of ADR 0379 to a ``job_mail`` made before it."""
+    have = {row[1] for row in conn.execute("PRAGMA table_info(job_mail)")}
+    if "event_later_at" not in have:
+        conn.execute("ALTER TABLE job_mail ADD COLUMN event_later_at TEXT")
+
+
 @contextmanager
 def _db(path: Path) -> Iterator[sqlite3.Connection]:
     """A connection with the tables made, committed on a clean exit and always closed."""
@@ -212,6 +221,7 @@ def _db(path: Path) -> Iterator[sqlite3.Connection]:
         conn.row_factory = sqlite3.Row
         conn.executescript(_SCHEMA)
         _add_snapshot_columns(conn)
+        _add_event_columns(conn)
         with conn:
             yield conn
     finally:
@@ -393,6 +403,7 @@ def upsert_mail(path: Path, mail: dict[str, Any], now: datetime) -> None:
         "role",
         "event_at",
         "event_text",
+        "event_later_at",
         "confidence",
         "extracted_by",
     )
@@ -425,7 +436,8 @@ def mail_rows(path: Path) -> list[dict[str, Any]]:
     with _db(path) as conn:
         rows = conn.execute(
             "SELECT message_id, received_at, sender_name, sender_domain, subject, kind, company,"
-            " role, deleted, event_at, event_text FROM job_mail ORDER BY received_at, message_id",
+            " role, deleted, event_at, event_text, event_later_at FROM job_mail"
+            " ORDER BY received_at, message_id",
         ).fetchall()
     return [dict(row) for row in rows]
 
@@ -469,12 +481,23 @@ def bodyless_mails(path: Path, kinds: Sequence[str], limit: int) -> list[dict[st
     return [dict(row) for row in rows]
 
 
-def set_event(path: Path, message_id: str, event_at: str | None, event_text: str | None) -> None:
-    """Write the event time and sentence read from a mail's body again (ADR 0184)."""
+def set_event(
+    path: Path,
+    message_id: str,
+    event_at: str | None,
+    event_text: str | None,
+    event_later_at: str | None,
+) -> None:
+    """Write the event time, its sentence and its later reading, read from a mail again (ADR 0184).
+
+    ``event_later_at`` is the second reading of ``event_at`` when the mail's zone label reads two
+    ways (ADR 0379), else None.
+    """
     with _db(path) as conn:
         conn.execute(
-            "UPDATE job_mail SET event_at = ?, event_text = ? WHERE message_id = ?",
-            (event_at, event_text, message_id),
+            "UPDATE job_mail SET event_at = ?, event_text = ?, event_later_at = ?"
+            " WHERE message_id = ?",
+            (event_at, event_text, event_later_at, message_id),
         )
 
 
@@ -513,7 +536,11 @@ def delete_mail(path: Path, message_id: str) -> bool:
         )
 
 
-def _next_event(mails: Sequence[sqlite3.Row], now: datetime) -> str | None:
+type _MailRow = Mapping[str, Any]
+"""One ``job_mail`` row as a plain mapping, so a mail can be moved to another company."""
+
+
+def _next_event(mails: Sequence[_MailRow], now: datetime) -> str | None:
     """The earliest event time among a company's mails that is still ahead, or None."""
     upcoming = sorted(
         (m["event_at"] for m in mails if (at := _moment(m["event_at"])) and at >= now),
@@ -522,7 +549,15 @@ def _next_event(mails: Sequence[sqlite3.Row], now: datetime) -> str | None:
     return upcoming[0] if upcoming else None
 
 
-def _mail_view(m: sqlite3.Row) -> dict[str, Any]:
+def _later_reading(mails: Sequence[_MailRow], at: str | None) -> str | None:
+    """The later reading (ADR 0379) of the event at ``at``, from the newest mail with that time.
+
+    ``mails`` are a company's, oldest first, as :func:`_interview_step` takes them.
+    """
+    return next((m["event_later_at"] for m in reversed(mails) if at and m["event_at"] == at), None)
+
+
+def _mail_view(m: _MailRow) -> dict[str, Any]:
     return {
         "message_id": m["message_id"],
         "thread_id": m["thread_id"],
@@ -542,9 +577,9 @@ def list_ledger(path: Path, now: datetime) -> list[dict[str, Any]]:
             " event_text"
             " FROM job_mail WHERE deleted = 0 ORDER BY received_at DESC, message_id",
         ).fetchall()
-    groups: dict[str, list[sqlite3.Row]] = {}
+    groups: dict[str, list[_MailRow]] = {}
     for row in rows:
-        groups.setdefault(str(row["company"]).casefold(), []).append(row)
+        groups.setdefault(str(row["company"]).casefold(), []).append(dict(row))
     ledger = []
     for mails in groups.values():
         newest = mails[0]
@@ -588,7 +623,7 @@ _NO_LINKS: Final[dict[str, None]] = dict.fromkeys(_LINK_FIELDS)
 
 
 def _interview_step(
-    mails: Sequence[sqlite3.Row], upcoming: str | None, status: str
+    mails: Sequence[_MailRow], upcoming: str | None, status: str
 ) -> dict[str, Any] | None:
     """The interview itself: the next event ahead (not once rejected), else the newest past one.
 
@@ -607,7 +642,7 @@ def _interview_step(
 
 
 def _timeline(
-    applied_at: str | None, mails: Sequence[sqlite3.Row], step: dict[str, Any] | None
+    applied_at: str | None, mails: Sequence[_MailRow], step: dict[str, Any] | None
 ) -> list[dict[str, Any]]:
     """Applied, then each interview invitation, offer and rejection by date, and the interview.
 
@@ -644,7 +679,7 @@ def _timeline(
 
 
 def _interview(
-    mails: Sequence[sqlite3.Row],
+    mails: Sequence[_MailRow],
     read: Mapping[str, Mapping[str, Any]],
     step: dict[str, Any] | None,
 ) -> dict[str, Any] | None:
@@ -665,6 +700,7 @@ def _interview(
         return None
     return {
         "at": step["at"] if step else None,
+        "later_at": _later_reading(mails, step["at"]) if step else None,
         **{
             name: said.get(name) or ([] if name == "interviewers" else None)
             for name in _INTERVIEW_FIELDS
@@ -672,7 +708,7 @@ def _interview(
     }
 
 
-def _links(mails: Sequence[sqlite3.Row], read: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
+def _links(mails: Sequence[_MailRow], read: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
     """The newest portal and posting address any mail carries."""
     got = [read.get(m["message_id"]) or {} for m in reversed(mails)]
     return {name: next((one[name] for one in got if one.get(name)), None) for name in _LINK_FIELDS}
@@ -680,7 +716,7 @@ def _links(mails: Sequence[sqlite3.Row], read: Mapping[str, Mapping[str, Any]]) 
 
 def _mail_application(
     company: str,
-    mails: list[sqlite3.Row],
+    mails: list[_MailRow],
     edit: sqlite3.Row | None,
     now: datetime,
     read: Mapping[str, Mapping[str, Any]],
@@ -725,6 +761,7 @@ def _mail_application(
         "applied_at": applied_at,
         "last_at": newest["received_at"],
         "next_event_at": upcoming,
+        "next_event_later_at": _later_reading(mails, upcoming),
         "count": len(mails),
         "mails": [_mail_view(m) for m in reversed(mails)],
         "timeline": _timeline(applied_at, mails, step),
@@ -736,27 +773,66 @@ def _mail_application(
     }
 
 
+def _by_employer(rows: Sequence[_MailRow]) -> dict[str, list[_MailRow]]:
+    """The mails grouped by the company each is for, a platform's mail by its employer.
+
+    A mail of a tracking system joins the other company's application with the same role. Any
+    other mail of a platform (or of a job board) goes to the employer its subject names, spelled
+    as that employer's own mail spells it; with no employer named it stays under the platform's
+    name. The mail keeps its own company; only a moved one is rewritten to its employer.
+    """
+    by_company: dict[str, list[_MailRow]] = {}
+    for m in rows:
+        by_company.setdefault((m["company"] or "").casefold(), []).append(m)
+    roles = {
+        k: {r for g in group if (r := (g["role"] or "").casefold())}
+        for k, group in by_company.items()
+        if k and not is_tracking_system(k)
+    }
+    for key in [k for k in by_company if k and is_tracking_system(k)]:
+        for m in by_company[key][:]:
+            role = (m["role"] or "").casefold()
+            home = next((k for k, held in roles.items() if role and role in held), None)
+            if home:
+                by_company[key].remove(m)
+                by_company[home].append(m)
+    known: dict[str, str] = {}
+    for m in rows:
+        if m["company"] and not is_platform(m["company"]):
+            known.setdefault(company_key(m["company"]), m["company"])
+    for key in [k for k in by_company if k and is_platform(k)]:
+        for m in by_company[key][:]:
+            employer = employer_of(m["company"], m["subject"] or "", known)
+            if employer:
+                by_company[key].remove(m)
+                by_company.setdefault(employer.casefold(), []).append({**m, "company": employer})
+    return by_company
+
+
 def _applications(
     path: Path,
     now: datetime,
-    is_ats: Callable[[str], bool] = lambda _: False,
     details: Callable[[str], Mapping[str, Any]] | None = None,
+    until: datetime | None = None,
 ) -> list[dict[str, Any]]:
     """Every application, hidden ones too: the visible ledger mails grouped, plus Allen's rows.
 
-    One application per company, case-folded. A mail whose company ``is_ats`` (only an
-    applicant-tracking system's name) joins the other company's application with the same role,
-    else it stays its own. A mail-derived application has Allen's ``edit`` row of its company (the
-    newest, when there are several) override its fields; a ``manual`` or ``said`` row is an
+    One application per company, case-folded; a hiring platform's mail is grouped by its employer
+    (:func:`_by_employer`). A mail-derived application has Allen's ``edit`` row of its company
+    (the newest, when there are several) override its fields; a ``manual`` or ``said`` row is an
     application of its own. ``details`` reads the interview and links out of a body start
-    (ADR 0182).
+    (ADR 0182). With ``until``, a mail received after it is not in any application yet.
     """
     with _db(path) as conn:
-        rows = conn.execute(
-            "SELECT message_id, thread_id, received_at, subject, kind, company, role, event_at,"
-            " event_text"
-            " FROM job_mail WHERE deleted = 0",
-        ).fetchall()
+        rows = [
+            dict(row)
+            for row in conn.execute(
+                "SELECT message_id, thread_id, received_at, subject, kind, company, role, event_at,"
+                " event_text, event_later_at"
+                " FROM job_mail WHERE deleted = 0",
+            ).fetchall()
+            if until is None or ((at := _moment(row["received_at"])) is not None and at <= until)
+        ]
         mine = conn.execute("SELECT * FROM job_application").fetchall()
         kept = (
             conn.execute(
@@ -774,21 +850,7 @@ def _applications(
         (r for r in mine if r["source"] == "edit"), key=lambda r: r["updated_at"] or ""
     ):
         edits[(row["company"] or "").casefold()] = row  # the newest edit of a company is last
-    by_company: dict[str, list[sqlite3.Row]] = {}
-    for m in rows:
-        by_company.setdefault((m["company"] or "").casefold(), []).append(m)
-    roles = {
-        k: {r for g in group if (r := (g["role"] or "").casefold())}
-        for k, group in by_company.items()
-        if k and not is_ats(k)
-    }
-    for key in [k for k in by_company if k and is_ats(k)]:
-        for m in by_company[key][:]:
-            role = (m["role"] or "").casefold()
-            home = next((k for k, held in roles.items() if role and role in held), None)
-            if home:
-                by_company[key].remove(m)
-                by_company[home].append(m)
+    by_company = _by_employer(rows)
     found = []
     for company, mails in by_company.items():
         if mails:
@@ -804,6 +866,7 @@ def _applications(
             "applied_at": row["applied_at"],
             "last_at": row["updated_at"],
             "next_event_at": None,
+            "next_event_later_at": None,
             "count": 0,
             "mails": [],
             "timeline": [
@@ -829,14 +892,18 @@ def _applications(
 def list_applications(
     path: Path,
     now: datetime,
-    is_ats: Callable[[str], bool] = lambda _: False,
     details: Callable[[str], Mapping[str, Any]] | None = None,
+    until: datetime | None = None,
 ) -> list[dict[str, Any]]:
     """The tracker's rows (ADR 0177): offers and interviews first, then applied, no reply, rejected.
 
-    Newest activity first within a status. Hidden applications are left out.
+    Newest activity first within a status. Hidden applications are left out. Where the mail's
+    zone label reads two ways (ADR 0379), ``next_event_at`` and ``interview["at"]`` are the
+    earlier reading and ``next_event_later_at`` and ``interview["later_at"]`` the later; else
+    those are None. With ``until``, mail received after it is left out, as a block as of then
+    needs (ADR 0367).
     """
-    shown = [app for app in _applications(path, now, is_ats, details) if not app.pop("hidden")]
+    shown = [app for app in _applications(path, now, details, until) if not app.pop("hidden")]
     return sorted(
         shown,
         key=lambda a: (
@@ -844,6 +911,15 @@ def list_applications(
             -(_moment(a["last_at"]) or _EPOCH).timestamp(),
         ),
     )
+
+
+def hidden_applications(path: Path, now: datetime) -> list[dict[str, str]]:
+    """The applications he hid, as ``{id, company, role}``: an update by id can put one back."""
+    return [
+        {"id": app["id"], "company": app["company"], "role": app["role"]}
+        for app in _applications(path, now)
+        if app["hidden"]
+    ]
 
 
 def _check_application(status: str | None, applied_at: str | None) -> None:
@@ -910,7 +986,6 @@ def edit_application(
     now: datetime,
     app_id: str,
     fields: Mapping[str, Any],
-    is_ats: Callable[[str], bool] = lambda _: False,
 ) -> None:
     """Change ``status``, ``applied_at``, ``note`` or ``hidden`` of an application.
 
@@ -924,7 +999,7 @@ def edit_application(
         row = conn.execute("SELECT source FROM job_application WHERE id = ?", (app_id,)).fetchone()
     base = None
     if row is None:
-        base = next((a for a in _applications(path, now, is_ats) if a["id"] == app_id), None)
+        base = next((a for a in _applications(path, now) if a["id"] == app_id), None)
         if base is None:
             msg = f"no such application: {app_id}"
             raise LookupError(msg)
@@ -972,6 +1047,29 @@ def has_alert(path: Path, message_id: str) -> bool:
         return conn.execute(
             "SELECT 1 FROM job_alert WHERE message_id = ? LIMIT 1", (message_id,)
         ).fetchone() is not None
+
+
+def has_alert_since(path: Path, message_id: str, since: datetime) -> bool:
+    """Whether an alert for ``message_id`` (a card key) was made since ``since`` and not closed.
+
+    A card he settled still counts: one card per outage, not one per poll. A closed one (its
+    cause ended, :func:`close_alerts`) does not, so the next outage makes its own.
+    """
+    with _db(path) as conn:
+        return conn.execute(
+            "SELECT 1 FROM job_alert WHERE message_id = ? AND created_at >= ?"
+            " AND state != 'closed' LIMIT 1",
+            (message_id, _stamp(since)),
+        ).fetchone() is not None
+
+
+def close_alerts(path: Path, message_id: str) -> int:
+    """End every alert made for ``message_id``, answered or not: its cause is over."""
+    with _db(path) as conn:
+        return conn.execute(
+            "UPDATE job_alert SET state = 'closed' WHERE message_id = ? AND state != 'closed'",
+            (message_id,),
+        ).rowcount
 
 
 def mark_spoken(path: Path, alert_id: str) -> None:

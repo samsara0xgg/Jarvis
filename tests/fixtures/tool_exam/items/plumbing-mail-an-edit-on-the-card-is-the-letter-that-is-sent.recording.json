@@ -1,0 +1,21 @@
+{
+ "version": 1,
+ "settings": {
+  "language": "en"
+ },
+ "mailbox": {
+  "messages": [
+   {
+    "id": "sent0",
+    "subject": "Hello",
+    "plain": "Hi.",
+    "sender": "Allen <allen@example.com>",
+    "to": "Sam Lee <sam@example.com>",
+    "labels": [
+     "SENT"
+    ],
+    "at": "2026-09-11T11:00:00-07:00"
+   }
+  ]
+ }
+}

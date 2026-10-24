@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "settings": {
+    "home": {
+      "weather": {
+        "latitude": 48.4284,
+        "longitude": -123.3656,
+        "country_code": "CA",
+        "name": "Victoria"
+      }
+    }
+  },
+  "env": [
+    "ANTHROPIC_API_KEY",
+    "TAVILY_API_KEY"
+  ],
+  "http": [
+    {
+      "method": "POST",
+      "url": "https://api.anthropic.com/v1/messages",
+      "any_body": true,
+      "status": 200,
+      "content_type": "text/event-stream",
+      "body": "event: message_start\ndata: {\"type\": \"message_start\", \"message\": {\"id\": \"msg-scripted\", \"usage\": {\"input_tokens\": 1200, \"cache_read_input_tokens\": 0, \"cache_creation_input_tokens\": 0, \"output_tokens\": 1}}}\n\nevent: content_block_start\ndata: {\"type\": \"content_block_start\", \"index\": 0, \"content_block\": {\"type\": \"thinking\", \"thinking\": \"\", \"signature\": \"\"}}\n\nevent: content_block_delta\ndata: {\"type\": \"content_block_delta\", \"index\": 0, \"delta\": {\"type\": \"thinking_delta\", \"thinking\": \"Start wide.\"}}\n\nevent: content_block_delta\ndata: {\"type\": \"content_block_delta\", \"index\": 0, \"delta\": {\"type\": \"signature_delta\", \"signature\": \"sig-1\"}}\n\nevent: content_block_stop\ndata: {\"type\": \"content_block_stop\", \"index\": 0}\n\nevent: content_block_start\ndata: {\"type\": \"content_block_start\", \"index\": 1, \"content_block\": {\"type\": \"server_tool_use\", \"id\": \"srvtoolu_01\", \"name\": \"web_search\", \"input\": {}}}\n\nevent: content_block_delta\ndata: {\"type\": \"content_block_delta\", \"index\": 1, \"delta\": {\"type\": \"input_json_delta\", \"partial_json\": \"{\\\"query\\\": \\\"oat milk barista blends\\\"}\"}}\n\nevent: content_block_stop\ndata: {\"type\": \"content_block_stop\", \"index\": 1}\n\nevent: content_block_start\ndata: {\"type\": \"content_block_start\", \"index\": 2, \"content_block\": {\"type\": \"web_search_tool_result\", \"tool_use_id\": \"srvtoolu_01\", \"content\": [{\"type\": \"web_search_result\", \"url\": \"https://www.beans.example.com/guides/oat-milk-for-coffee\", \"title\": \"Which oat milk steams best\", \"page_age\": \"October 14, 2026\", \"encrypted_content\": \"enc\"}, {\"type\": \"web_search_result\", \"url\": \"https://cafe-notes.example.org/oat-milk-taste-test\", \"title\": \"Eight oat milks, tasted in flat whites\", \"page_age\": \"October 19, 2026\", \"encrypted_content\": \"enc\"}, {\"type\": \"web_search_result\", \"url\": \"https://grocer.example.com/dairy-free/oat-milk\", \"title\": \"Oat milk prices this week\", \"page_age\": \"October 20, 2026\", \"encrypted_content\": \"enc\"}]}}\n\nevent: content_block_stop\ndata: {\"type\": \"content_block_stop\", \"index\": 2}\n\n",
+      "hang_s": 61
+    }
+  ],
+  "mcp": []
+}

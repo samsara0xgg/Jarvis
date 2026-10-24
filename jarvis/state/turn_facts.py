@@ -7,7 +7,7 @@ the payload's ``turn_id`` unless a function says it reads the correlation.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 from jarvis.state.event_log import EVENT_COLUMNS, get_event, row_to_event
 
@@ -80,6 +80,26 @@ def answer_stopped_by_him(conn: sqlite3.Connection, turn_id: str) -> bool:
     ).fetchone() is not None
 
 
+def answer_superseded(conn: sqlite3.Connection, turn_id: str) -> bool:
+    """Whether a run of the turn was cancelled because his next sentence took its place."""
+    return conn.execute(
+        "SELECT 1 FROM events WHERE type = 'response.cancelled' "
+        "AND json_extract(payload_json, '$.turn_id') = ? "
+        "AND json_extract(payload_json, '$.reason') = 'superseded' LIMIT 1",
+        (turn_id,),
+    ).fetchone() is not None
+
+
+def turn_cancelled_or_failed(conn: sqlite3.Connection, turn_id: str) -> bool:
+    """Whether a run of the turn was cancelled or failed, or the turn failed (read by payload)."""
+    return conn.execute(
+        "SELECT 1 FROM events "
+        "WHERE type IN ('response.cancelled', 'response.failed', 'turn.failed') "
+        "AND json_extract(payload_json, '$.turn_id') = ? LIMIT 1",
+        (turn_id,),
+    ).fetchone() is not None
+
+
 def answer_started(conn: sqlite3.Connection, turn_id: str) -> bool:
     """Whether the turn's answer (any run but a wait line) has opened on a surface or been heard.
 
@@ -94,6 +114,27 @@ def answer_started(conn: sqlite3.Connection, turn_id: str) -> bool:
         "AND json_extract(payload_json, '$.turn_id') = ? "
         "AND json_extract(payload_json, '$.phase') IS NOT 'commentary' LIMIT 1",
         (turn_id,),
+    ).fetchone() is not None
+
+
+_PLAYBACK_ENDS: Final = (
+    "surface.playback_completed", "surface.playback_interrupted", "surface.playback_failed",
+    "surface.speech_dropped",
+)
+"""What ends an answer's playback: a lease's terminal, or its never having one (ADR 0106)."""
+
+
+def playback_ended(conn: sqlite3.Connection, response_id: str) -> bool:
+    """Whether the answer ``response_id`` has an end of its playback on the log.
+
+    That is a lease's ``surface.playback_*`` terminal or a ``surface.speech_dropped``, the row for
+    an answer let go before any of it played. Without one the next turn reads the answer as heard
+    whole.
+    """
+    return conn.execute(
+        "SELECT 1 FROM events WHERE type IN (?, ?, ?, ?) "
+        "AND json_extract(payload_json, '$.response_id') = ? LIMIT 1",
+        (*_PLAYBACK_ENDS, response_id),
     ).fetchone() is not None
 
 
@@ -154,6 +195,19 @@ def input_channels(conn: sqlite3.Connection, turn_id: str) -> list[str | None]:
             (turn_id,),
         )
     ]
+
+
+def latest_input_row(conn: sqlite3.Connection) -> int | None:
+    """The log row id of the newest row of his own words, typed or heard; ``None`` if none.
+
+    The echo a plugin connection writes to resume his task (channel ``plugin_resume``) is not
+    his words and is left out.
+    """
+    (latest,) = conn.execute(
+        "SELECT MAX(id) FROM events WHERE type IN ('surface.user_intent', 'utterance.received') "
+        "AND COALESCE(json_extract(payload_json, '$.channel'), '') != 'plugin_resume'"
+    ).fetchone()
+    return None if latest is None else int(latest)
 
 
 def heard_as_barge_pause(conn: sqlite3.Connection, turn_id: str) -> bool:

@@ -95,7 +95,7 @@ private enum Contract {
             }
         case "phone.state_observed":
             let signal = payload["signal"] as! String, value = payload["value"] as! String
-            if signal == "battery" {
+            if ["battery", "watch_battery"].contains(signal) {
                 XCTAssertEqual(Int(value).map(String.init), value, "a whole percent without leading zeros", file: file, line: line)
                 XCTAssertTrue((0...100).contains(Int(value) ?? -1), file: file, line: line)
                 XCTAssertTrue(["charging", "full", "unplugged"].contains(payload["detail"] as? String ?? "unplugged"), file: file, line: line)
@@ -147,6 +147,7 @@ private func samples() -> [Sensed] {
         .state(.battery(percent: 57), at: t0, detail: "charging"),
         .state(.battery(percent: 100), at: t0, detail: "full"),
         .state(.battery(percent: 0), at: t0, detail: nil),
+        .state(.watchBattery(percent: 42), at: t0, detail: "unplugged"),
     ]
 }
 
@@ -281,6 +282,16 @@ final class BatteryTests: XCTestCase {
         XCTAssertNotEqual(f.eventUid, frame(.state(.battery(percent: 56), at: t0, detail: "charging")).eventUid)
         XCTAssertNil(ReportFrame(.state(.battery(percent: 101), at: t0, detail: nil), now: now))
         XCTAssertNil(ReportFrame(.state(.battery(percent: -1), at: t0, detail: nil), now: now))
+    }
+
+    func testTheWatchsChargeIsItsOwnSignal() throws {
+        let f = frame(.state(.watchBattery(percent: 88), at: t0, detail: "full"))
+        let payload = try XCTUnwrap((try JSONSerialization.jsonObject(with: f.json) as? [String: Any])?["payload"] as? [String: Any])
+        XCTAssertEqual(payload["signal"] as? String, "watch_battery")
+        XCTAssertEqual(payload["value"] as? String, "88")
+        XCTAssertEqual(payload["detail"] as? String, "full")
+        XCTAssertNotEqual(f.eventUid, frame(.state(.battery(percent: 88), at: t0, detail: "full")).eventUid, "the phone's 88 is not the watch's")
+        XCTAssertNil(ReportFrame(.state(.watchBattery(percent: 101), at: t0, detail: nil), now: now))
     }
 }
 

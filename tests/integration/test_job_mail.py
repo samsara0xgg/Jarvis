@@ -181,6 +181,11 @@ def test_a_cycle_types_the_mail_fills_the_ledger_and_alerts_by_rule(
         2027, 3, 4, 14, 0, tzinfo=ZoneInfo("America/Vancouver")
     )
     assert row[2] == "local"
+    # "PST" in March is UTC-8 in Los Angeles and UTC-7 in BC: the other reading is kept (ADR 0379).
+    (later,) = h.sql("SELECT event_later_at FROM job_mail WHERE message_id = 'm-interview'")[0]
+    assert datetime.fromisoformat(later) == datetime(
+        2027, 3, 4, 15, 0, tzinfo=ZoneInfo("America/Vancouver")
+    )
 
     # The rule: no alert for the receipt or for mail older than 48 hours.
     levels = dict(h.sql("SELECT message_id, level FROM job_alert"))
@@ -2613,6 +2618,7 @@ def test_an_application_carries_its_timeline_interview_and_links(
         "join_url": "https://teams.microsoft.com/l/meetup-join/19%3Ameeting_abc/0?context=x",
         "location": None,
         "interviewers": ["Jill Crowe"],
+        "later_at": None,
     }
     assert one["links"] == {
         "portal_url": "https://reliable.wd3.myworkdayjobs.com/en-US/careers/userHome",
@@ -2636,6 +2642,90 @@ def test_an_application_carries_its_timeline_interview_and_links(
     assert hand["interview"] is None
 
 
+# A Thursday in November: US Pacific is UTC-8 and BC UTC-7, so "10 am PST" is 10:00 on his clock
+# or 11:00 on it (ADR 0379). Two days before it is the Tuesday the thing tests start from.
+_WINTER_NOON = datetime(2026, 11, 10, 12, 0, tzinfo=ZoneInfo("America/Vancouver"))
+_WINTER_TEXT = "Thursday, November 12, 2026 10:00 AM - 10:30 AM PST"
+_WINTER_AT = "2026-11-12T10:00-07:00"
+_WINTER_LATER = "2026-11-12T11:00-07:00"
+
+
+def test_an_application_carries_both_readings_of_its_interview_time(
+    tmp_path: Path, jev: JobJev
+) -> None:
+    """``next_event_later_at`` and ``interview["later_at"]`` sit beside the earlier reading."""
+    h = job_harness(tmp_path, jev, [])
+    h.clock.set(_WINTER_NOON)
+    _stored(h, "a1", "Acme", "QA Co-op", "receipt", timedelta(days=10))
+    _stored(h, "a2", "Acme", "QA Co-op", "interview", timedelta(days=5), event_at=_WINTER_AT)
+    h.sql("UPDATE job_mail SET event_later_at = ? WHERE message_id = 'a2'", _WINTER_LATER)
+    _stored(h, "b1", "Beta", "", "interview", timedelta(days=5), event_at="2026-11-13T09:00-07:00")
+    _stored(h, "c1", "Gamma", "", "interview", timedelta(days=5), event_at="2026-11-09T10:00-07:00")
+    h.sql("UPDATE job_mail SET event_later_at = '2026-11-09T11:00-07:00' WHERE message_id = 'c1'")
+    h.client.post(
+        "/inherent/jobs/applications", json={"company": "Hand", "applied_at": "2026-09-12"}
+    )
+
+    apps = _apps(h)
+
+    acme = apps[("Acme", "QA Co-op")]
+    assert (acme["next_event_at"], acme["next_event_later_at"]) == (_WINTER_AT, _WINTER_LATER)
+    assert acme["interview"] is not None
+    assert (acme["interview"]["at"], acme["interview"]["later_at"]) == (_WINTER_AT, _WINTER_LATER)
+    beta = apps[("Beta", "")]  # one reading: nothing beside it
+    assert (beta["next_event_at"], beta["next_event_later_at"]) == ("2026-11-13T09:00-07:00", None)
+    assert beta["interview"] is not None
+    assert beta["interview"]["later_at"] is None
+    gamma = apps[("Gamma", "")]  # the interview was yesterday: nothing ahead; it keeps its own
+    assert (gamma["next_event_at"], gamma["next_event_later_at"]) == (None, None)
+    assert gamma["interview"] is not None
+    assert (gamma["interview"]["at"], gamma["interview"]["later_at"]) == (
+        "2026-11-09T10:00-07:00",
+        "2026-11-09T11:00-07:00",
+    )
+    hand = apps[("Hand", "")]
+    assert (hand["next_event_at"], hand["next_event_later_at"]) == (None, None)
+
+
+def test_the_newest_mail_with_the_time_decides_whether_it_reads_two_ways(
+    tmp_path: Path, jev: JobJev
+) -> None:
+    """A later mail that spells its zone out leaves one reading, whatever the first one said."""
+    h = job_harness(tmp_path, jev, [])
+    h.clock.set(_WINTER_NOON)
+    _stored(h, "a1", "Acme", "QA", "interview", timedelta(days=5), event_at=_WINTER_AT)
+    _stored(h, "a2", "Acme", "QA", "interview", timedelta(days=2), event_at=_WINTER_AT)
+    h.sql("UPDATE job_mail SET event_later_at = ? WHERE message_id = 'a1'", _WINTER_LATER)
+
+    acme = _apps(h)[("Acme", "QA")]
+    assert (acme["next_event_at"], acme["next_event_later_at"]) == (_WINTER_AT, None)
+    assert acme["interview"]["later_at"] is None
+
+    h.sql("UPDATE job_mail SET event_later_at = NULL WHERE message_id = 'a1'")
+    h.sql("UPDATE job_mail SET event_later_at = ? WHERE message_id = 'a2'", _WINTER_LATER)
+    acme = _apps(h)[("Acme", "QA")]
+    assert (acme["next_event_at"], acme["next_event_later_at"]) == (_WINTER_AT, _WINTER_LATER)
+    assert acme["interview"]["later_at"] == _WINTER_LATER
+
+
+def test_a_store_made_before_the_later_reading_gets_its_column_and_keeps_its_rows(
+    tmp_path: Path, jev: JobJev
+) -> None:
+    """Opening an older store adds ``event_later_at`` (empty); what it held is still there."""
+    h = job_harness(tmp_path, jev, [])
+    h.clock.set(_WINTER_NOON)
+    _stored(h, "a2", "Acme", "QA Co-op", "interview", timedelta(days=5), event_at=_WINTER_AT)
+    h.sql("ALTER TABLE job_mail DROP COLUMN event_later_at")
+    assert "event_later_at" not in {row[1] for row in h.sql("PRAGMA table_info(job_mail)")}
+
+    acme = _apps(h)[("Acme", "QA Co-op")]
+
+    assert (acme["next_event_at"], acme["next_event_later_at"]) == (_WINTER_AT, None)
+    assert h.sql("SELECT event_at, event_later_at FROM job_mail") == [(_WINTER_AT, None)]
+
+
+NO_EVENT = triage.Event(None, None, None)
+
 _TEAMS_INVITE = """Hi Yilun,
 
 You are invited to a Microsoft Teams meeting.
@@ -2650,26 +2740,25 @@ Join: https://teams.microsoft.com/l/meetup-join/19%3Ameeting_abc/0?context=x
 def test_event_of_reads_a_bare_teams_time_line_only_for_a_known_interview() -> None:
     """A Teams invitation's time line has no event word: it counts when the mail is an interview."""
     received = NOW - timedelta(days=4)
-    assert triage.event_of(_TEAMS_INVITE, received, OWNER_ZONE) == (None, None)
-    sentence, at = triage.event_of(_TEAMS_INVITE, received, OWNER_ZONE, dated=True)
+    assert triage.event_of(_TEAMS_INVITE, received, OWNER_ZONE) == NO_EVENT
+    sentence, at, later = triage.event_of(_TEAMS_INVITE, received, OWNER_ZONE, dated=True)
     assert sentence == "Thursday, October 8, 2026 2:00 PM (PDT)"
     assert at == "2026-10-08T14:00-07:00"
+    assert later is None  # US and BC Pacific are one clock in October
     # A line with a date but no clock is not a time, even for a known interview.
-    assert triage.event_of("Sometime in October 8, 2026.", received, OWNER_ZONE, dated=True) == (
-        None,
-        None,
-    )
+    vague = triage.event_of("Sometime in October 8, 2026.", received, OWNER_ZONE, dated=True)
+    assert vague == NO_EVENT
 
 
 def test_a_bare_time_is_the_owners_clock_and_the_machines_zone_reads_nothing() -> None:
     """The configured zone reads a time with none of its own and writes every time it returns."""
     tokyo = ZoneInfo("Asia/Tokyo")
     received = NOW - timedelta(days=4)
-    assert triage.event_of("Interview on October 8, 2026 at 1:00 PM.", received, tokyo)[1] == (
+    assert triage.event_of("Interview on October 8, 2026 at 1:00 PM.", received, tokyo).at == (
         "2026-10-08T13:00+09:00"
     )
     # A time that names its own zone is that instant, written on the owner's clock.
-    assert triage.event_of(_TEAMS_INVITE, received, tokyo, dated=True)[1] == (
+    assert triage.event_of(_TEAMS_INVITE, received, tokyo, dated=True).at == (
         "2026-10-09T06:00+09:00"
     )
 
@@ -2702,20 +2791,20 @@ _RC_RECEIVED = datetime(2026, 10, 2, 9, 0, tzinfo=ZoneInfo("America/Vancouver"))
 def test_event_of_reads_the_date_and_time_lines_and_never_a_quoted_header() -> None:
     """A labelled Date and Time is the interview; a quoted Sent header or quote line is not."""
     for dated in (False, True):
-        sentence, at = triage.event_of(_RC_INVITE, _RC_RECEIVED, OWNER_ZONE, dated=dated)
+        sentence, at, _ = triage.event_of(_RC_INVITE, _RC_RECEIVED, OWNER_ZONE, dated=dated)
         assert at == "2026-10-08T13:00-07:00"
         assert sentence == "Thursday October 8th, 1:00pm - 2:00pm"
     when = "When: Oct 8 at 13:00 PDT\nCall me."
-    assert triage.event_of(when, _RC_RECEIVED, OWNER_ZONE, dated=True)[1] == (
+    assert triage.event_of(when, _RC_RECEIVED, OWNER_ZONE, dated=True).at == (
         "2026-10-08T13:00-07:00"
     )
     # A mail that is no interview and names no event takes no Date and Time lines.
-    assert triage.event_of("Date: October 8\nTime: 1pm", _RC_RECEIVED, OWNER_ZONE) == (None, None)
+    assert triage.event_of("Date: October 8\nTime: 1pm", _RC_RECEIVED, OWNER_ZONE) == NO_EVENT
     # The old mail's header gives no event in either mode; the reply holds nothing else.
     for dated in (False, True):
-        assert triage.event_of(_RC_REPLY, _RC_RECEIVED, OWNER_ZONE, dated=dated) == (None, None)
+        assert triage.event_of(_RC_REPLY, _RC_RECEIVED, OWNER_ZONE, dated=dated) == NO_EVENT
     both = _RC_REPLY + _RC_INVITE.split("\n\n", 1)[1]
-    assert triage.event_of(both, _RC_RECEIVED, OWNER_ZONE, dated=True)[1] == (
+    assert triage.event_of(both, _RC_RECEIVED, OWNER_ZONE, dated=True).at == (
         "2026-10-08T13:00-07:00"
     )
 
@@ -2729,11 +2818,60 @@ def test_a_range_with_one_am_pm_starts_at_its_start() -> None:
         ("Interview 1:00pm - 2:00pm Tuesday October 13th", "2026-10-13T13:00-07:00"),
         ("Interview at 2pm Tuesday October 13th", "2026-10-13T14:00-07:00"),
     ):
-        assert triage.event_of(sentence, _RC_RECEIVED, OWNER_ZONE, dated=True)[1] == at, sentence
+        assert triage.event_of(sentence, _RC_RECEIVED, OWNER_ZONE, dated=True).at == at, sentence
     labelled = "Date: Tuesday October 13th\nTime: 1:00 - 2:00pm"
-    assert triage.event_of(labelled, _RC_RECEIVED, OWNER_ZONE, dated=True)[1] == (
+    assert triage.event_of(labelled, _RC_RECEIVED, OWNER_ZONE, dated=True).at == (
         "2026-10-13T13:00-07:00"
     )
+
+
+def test_event_of_reads_a_pacific_label_both_ways_where_us_and_bc_differ() -> None:
+    """ADR 0379: the earlier reading is the time and the later rides with it; else one reading."""
+    received = NOW - timedelta(days=4)
+    both = (_WINTER_AT, _WINTER_LATER)
+    for sentence, at, later in (
+        ("Your interview is on November 12, 2026 at 10:00 AM PST.", *both),
+        ("Your interview is on November 12, 2026 at 10:00 AM PT.", *both),
+        ("Your interview is on November 12, 2026 at 10:00 AM Pacific Standard Time.", *both),
+        (
+            "Your interview is on March 4, 2027 at 2:00 PM Pacific.",
+            "2027-03-04T14:00-07:00",
+            "2027-03-04T15:00-07:00",
+        ),
+        # US and BC Pacific are the one clock in US summer time, so there is one time.
+        ("Your interview is on October 8, 2026 at 10:00 AM PDT.", "2026-10-08T10:00-07:00", None),
+        ("Your interview is on July 15, 2027 at 10:00 AM PST.", "2027-07-15T10:00-07:00", None),
+        # Another label is its zone's one time on his clock; an offset beats a name; none is his.
+        ("Your interview is on July 15, 2027 at 2:00 PM ET.", "2027-07-15T11:00-07:00", None),
+        ("Your interview is on November 12, 2026 at 2:00 PM EST.", "2026-11-12T12:00-07:00", None),
+        ("Your interview is on November 12, 2026 at 17:00 UTC.", _WINTER_AT, None),
+        ("Your interview is on November 12, 2026 at 10 AM UTC-5.", "2026-11-12T08:00-07:00", None),
+        ("Your interview is on November 12, 2026 at 10:00 AM PST (UTC-8).", _WINTER_LATER, None),
+        ("Your interview is on November 12, 2026 at 10:00 AM.", _WINTER_AT, None),
+    ):
+        found = triage.event_of(sentence, received, OWNER_ZONE)
+        assert (found.text, found.at, found.later) == (sentence, at, later), sentence
+    labelled = "Date: Thursday November 12th\nTime: 1:00pm - 2:00pm PT"
+    found = triage.event_of(labelled, received, OWNER_ZONE, dated=True)
+    assert (found.at, found.later) == ("2026-11-12T13:00-07:00", "2026-11-12T14:00-07:00")
+
+
+def test_a_stored_time_gets_its_later_reading_only_from_the_sentence_it_was_read_from() -> None:
+    """A time set by hand, by older rules or from another sentence is never paired (ADR 0379)."""
+    received = NOW - timedelta(days=4)
+    said = "Thursday, November 12, 2026 10:00 AM PST"
+
+    def later(text: str, stored: str) -> str | None:
+        return triage.later_reading(text, stored, received, OWNER_ZONE)
+
+    assert later(said, _WINTER_AT) == _WINTER_LATER
+    assert later(said, "2026-11-12T17:00+00:00") == _WINTER_LATER  # the same instant, other offset
+    assert later(said, "2026-11-12T10:00") == _WINTER_LATER  # no offset is his own clock
+    assert later(said, _WINTER_LATER) is None  # the later reading is not the stored time
+    assert later(said, "2026-11-12T09:00-07:00") is None  # a time the sentence does not give
+    assert later(said, "not a time") is None
+    assert later("Thursday, July 15, 2027 10:00 AM PDT", "2027-07-15T10:00-07:00") is None
+    assert later("See you Thursday", _WINTER_AT) is None
 
 
 def test_interviewers_of_a_panel_line_are_persons_not_titles() -> None:
@@ -2764,7 +2902,7 @@ def test_the_repair_pass_corrects_a_wrong_event_time_from_the_kept_body(
             },
             NOW,
         )
-        job_ledger.set_event(h.db, key, wrong, "Sent: Friday, October 2, 2026 4:45 PM")
+        job_ledger.set_event(h.db, key, wrong, "Sent: Friday, October 2, 2026 4:45 PM", None)
     body = {"fix": _RC_INVITE, "none": "See you soon.", "other": _RC_INVITE}
     for key, text in body.items():
         job_ledger.record_decision(
@@ -2780,8 +2918,90 @@ def test_the_repair_pass_corrects_a_wrong_event_time_from_the_kept_body(
     assert h.gmail.calls == []
 
 
+def test_the_repair_pass_adds_the_later_reading_to_an_interview_still_ahead(
+    tmp_path: Path, jev: JobJev
+) -> None:
+    """ADR 0379: never Gmail; from the stored sentence where it is ahead, or the kept body."""
+    h = job_harness(tmp_path, jev, [])
+    h.clock.set(_WINTER_NOON)
+    cases = (  # the sentence stored with the time, and the time stored: the earlier reading
+        ("pst", "Thursday, November 12, 2026 10:00 AM PST", _WINTER_AT),
+        ("pt", "Thursday, March 4, 2027 2:00 PM PT", "2027-03-04T14:00-07:00"),
+        ("summer", "Thursday, July 15, 2027 10:00 AM PDT", "2027-07-15T10:00-07:00"),
+        ("eastern", "Thursday, November 12, 2026 2:00 PM ET", "2026-11-12T12:00-07:00"),
+        ("own", "Thursday, November 12, 2026 10:00 AM", _WINTER_AT),
+        ("hand", "Thursday, November 12, 2026 10:00 AM PST", "2026-11-12T09:00-07:00"),
+        ("over", "Monday, November 9, 2026 10:00 AM PST", "2026-11-09T10:00-07:00"),
+        ("gone", "Thursday, November 12, 2026 10:00 AM PST", _WINTER_AT),
+        ("done", "Thursday, November 12, 2026 10:00 AM PST", _WINTER_AT),
+        ("kept", "Thursday, November 12, 2026 10:00 AM PST", _WINTER_AT),
+        ("stale", "Thursday, November 12, 2026 10:00 AM PST", _WINTER_AT),
+        ("kept_over", "Monday, November 9, 2026 10:00 AM PST", "2026-11-09T10:00-07:00"),
+    )
+    for key, text, at in cases:
+        _stored(h, key, "Acme", "QA", "interview", timedelta(days=5), event_at=at)
+        h.sql("UPDATE job_mail SET event_text = ? WHERE message_id = ?", text, key)
+    h.sql("UPDATE job_mail SET deleted = 1 WHERE message_id = 'gone'")
+    h.sql("UPDATE job_mail SET event_later_at = '2026-11-12T11:30-07:00' WHERE message_id = 'done'")
+    h.sql("UPDATE job_mail SET event_later_at = '2026-11-12T11:30-07:00' WHERE message_id='stale'")
+    for key, said in (  # the body kept at the time (ADR 0162) names the same sentence
+        ("kept", "Thursday, November 12, 2026 10:00 AM PST"),
+        ("stale", "Thursday, November 12, 2026 10:00 AM PST"),
+        ("kept_over", "Monday, November 9, 2026 10:00 AM PST"),
+    ):
+        job_ledger.record_decision(
+            h.db,
+            key,
+            "body",
+            "job",
+            NOW,
+            head={"received_at": NOW.isoformat()},
+            body_excerpt=f"Hi,\n\n{said}\n\nThanks",
+        )
+
+    # The body is the source of an event: what it names today replaces all three fields, ahead
+    # or not and whatever was stored. Only the stored sentence is held to "still ahead".
+    assert repair(h.db, "ledger_only", clock=h.clock) == 5  # pst, pt, kept, stale and kept_over
+
+    assert h.sql(
+        "SELECT message_id, event_at, event_later_at FROM job_mail ORDER BY message_id"
+    ) == [
+        ("done", _WINTER_AT, "2026-11-12T11:30-07:00"),  # already had one: not written again
+        ("eastern", "2026-11-12T12:00-07:00", None),
+        ("gone", _WINTER_AT, None),  # hidden
+        ("hand", "2026-11-12T09:00-07:00", None),  # not the time the sentence gives
+        ("kept", _WINTER_AT, _WINTER_LATER),
+        ("kept_over", "2026-11-09T10:00-07:00", "2026-11-09T11:00-07:00"),  # over, but its body
+        ("over", "2026-11-09T10:00-07:00", None),  # already over
+        ("own", _WINTER_AT, None),
+        ("pst", _WINTER_AT, _WINTER_LATER),
+        ("pt", "2027-03-04T14:00-07:00", "2027-03-04T15:00-07:00"),
+        ("stale", _WINTER_AT, _WINTER_LATER),  # the body does not read 11:30: replaced
+        ("summer", "2027-07-15T10:00-07:00", None),
+    ]
+    assert repair(h.db, "ledger_only", clock=h.clock) == 0
+    assert h.gmail.calls == []
+
+
 def _bodyless(h: JobHarness, key: str, kind: str, **fields: Any) -> None:  # noqa: ANN401
     _stored(h, f"m-{key}", "Reliable Controls", "Firmware QA", kind, timedelta(days=4), **fields)
+
+
+def test_a_body_read_again_fills_both_readings_of_its_pacific_time(
+    tmp_path: Path, jev: JobJev
+) -> None:
+    """ADR 0379: the re-read of an old mail with no time stores the later reading too."""
+    winter = _TEAMS_INVITE.replace("Thursday, October 8, 2026 2:00 PM (PDT)", _WINTER_TEXT)
+    h = job_harness(
+        tmp_path, jev, [mail_row("rc", "Jill <jill@rc.example>", "Interview rc", winter)]
+    )
+    _bodyless(h, "rc", "interview")
+
+    assert h.job.reread() == 1
+
+    assert h.sql("SELECT message_id, event_at, event_later_at FROM job_mail") == [
+        ("m-rc", _WINTER_AT, _WINTER_LATER),
+    ]
 
 
 def test_old_interview_mail_without_a_kept_body_is_read_again_once(
@@ -2894,11 +3114,15 @@ _JOIN = "https://teams.microsoft.com/l/meetup-join/19%3Ameeting_abc/0?context=x"
 _OLD_ACTION = "job-interview-reminders"
 
 
-def _reminding(
+def _reminding(  # noqa: PLR0913 - the invitation's time and sentence, the clock, the settings
     tmp_path: Path,
     jev: JobJev,
     *,
     event_text: str = _RANGE,
+    event_at: str = _INTERVIEW,
+    later_at: str = "",
+    now: datetime = _TUE_NOON,
+    body: str | None = _TEAMS_INVITE,
     **settings: Any,  # noqa: ANN401
 ) -> JobHarness:
     """A harness with interview things on, a fixed clock and Reliable Controls' invitation."""
@@ -2911,7 +3135,7 @@ def _reminding(
         **settings,
     )
     assert h.job.interviews is not None
-    h.clock.set(_TUE_NOON)
+    h.clock.set(now)
     _stored(
         h,
         "m-rc",
@@ -2919,18 +3143,19 @@ def _reminding(
         "Firmware QA",
         "interview",
         timedelta(days=4),
-        event_at=_INTERVIEW,
+        event_at=event_at,
     )
-    h.sql("UPDATE job_mail SET event_text = ?", event_text)
-    job_ledger.record_decision(
-        h.db,
-        "m-rc",
-        "body",
-        "job",
-        NOW,
-        head={"received_at": NOW.isoformat()},
-        body_excerpt=_TEAMS_INVITE,
-    )
+    h.sql("UPDATE job_mail SET event_text = ?, event_later_at = ?", event_text, later_at or None)
+    if body is not None:  # None: the body was not kept, only the stored sentence is left
+        job_ledger.record_decision(
+            h.db,
+            "m-rc",
+            "body",
+            "job",
+            NOW,
+            head={"received_at": NOW.isoformat()},
+            body_excerpt=body,
+        )
     return h
 
 
@@ -3011,6 +3236,133 @@ def test_an_interview_with_no_end_has_none_and_the_words_are_english_in_english(
     evening, before = sorted(_rung(h), key=lambda r: r.due_at_ms)
     assert evening.text == "Tomorrow 13:00 Interview: Reliable Controls — Firmware QA · Teams"
     assert before.text == "13:00 Interview: Reliable Controls — Firmware QA · Teams"
+
+
+def _winter(
+    tmp_path: Path, jev: JobJev, *, later_at: str = _WINTER_LATER, kept: bool = True
+) -> JobHarness:
+    """An invitation for "10 am PST" on a Thursday in November, two days ahead."""
+    body = _TEAMS_INVITE.replace("Thursday, October 8, 2026 2:00 PM (PDT)", _WINTER_TEXT)
+    return _reminding(
+        tmp_path,
+        jev,
+        event_text=_WINTER_TEXT,
+        event_at=_WINTER_AT,
+        later_at=later_at,
+        now=_WINTER_NOON,
+        body=body if kept else None,
+    )
+
+
+def _two_times(said: str = "10:00 AM - 10:30 AM PST") -> str:
+    """The note on a thing whose time reads two ways: the table's sentence with both clocks."""
+    return lang.t(
+        "job.thing.note",
+        when=lang.t(
+            "job.when.two", first="10:00", later="11:00", said=said,
+            zones=lang.t("job.zones.pacific"),
+        ),
+    )
+
+
+def test_a_time_read_two_ways_starts_the_thing_at_the_earlier_and_names_both(
+    tmp_path: Path, jev: JobJev
+) -> None:
+    """ADR 0379: it starts at the earlier reading, its note names both, its rings count from it."""
+    h = _winter(tmp_path, jev)
+
+    h.job.remind()
+
+    (one,) = _things(h)
+    assert (one.start_at, one.end_at) == ("2026-11-12T10:00:00-07:00", "2026-11-12T10:30:00-07:00")
+    assert one.note == _two_times()
+    assert one.rings == ("-1d@20:00", "-30m")
+    evening, before = sorted(_rung(h), key=lambda r: r.due_at_ms)
+    assert evening.due_at_ms == _utc("2026-11-11T20:00:00-07:00")
+    assert before.due_at_ms == _utc("2026-11-12T09:30:00-07:00")
+    app = _apps(h)[("Reliable Controls", "Firmware QA")]
+    assert app["reminders"]["at"] == "2026-11-12T10:00:00-07:00"
+    h.job.remind()
+    assert (len(_things(h)), len(_rung(h)), len(_things(h)[0].history)) == (1, 2, 1)
+
+
+def test_a_time_read_one_way_leaves_the_things_note_empty(tmp_path: Path, jev: JobJev) -> None:
+    """No second reading, no note: what the thing said before this change is what it says."""
+    h = _winter(tmp_path, jev, later_at="")
+
+    h.job.remind()
+
+    (one,) = _things(h)
+    assert (one.start_at, one.note) == ("2026-11-12T10:00:00-07:00", "")
+
+
+def test_the_second_reading_added_to_an_armed_interview_reaches_its_thing(
+    tmp_path: Path, jev: JobJev
+) -> None:
+    """Armed with one reading, then repaired offline: the same thing gains the note and no ring."""
+    h = _winter(tmp_path, jev, later_at="", kept=False)
+    h.job.remind()
+    (before,) = _things(h)
+    armed = {r.reminder_id for r in _rung(h)}
+    assert before.note == ""
+
+    assert repair(h.db, "ledger_only", clock=h.clock) == 1
+    h.job.remind()
+
+    (one,) = _things(h)
+    assert one.thing_id == before.thing_id
+    assert one.note == _two_times()
+    assert (one.start_at, one.end_at) == (before.start_at, before.end_at)
+    assert {r.reminder_id for r in _rung(h) if r.pending} == armed  # no ring was moved or re-set
+    assert h.gmail.calls == []
+
+
+def test_the_things_note_follows_the_readings_but_never_replaces_his_own(
+    tmp_path: Path, jev: JobJev
+) -> None:
+    """The note this pass wrote goes when the time reads one way again; his own words stay."""
+    h = _winter(tmp_path, jev)
+    h.job.remind()
+    h.sql("UPDATE job_mail SET event_later_at = NULL")
+    h.job.remind()
+    (one,) = _things(h)
+    assert one.note == ""  # the note this pass wrote is taken back
+
+    h = _winter(tmp_path / "his", jev, later_at="")
+    h.job.remind()
+    (made,) = _things(h)
+    with contextlib.closing(open_runtime_event_log(h.event_log)) as conn:
+        things.change(
+            conn,
+            made.thing_id,
+            {"note": "bring the portfolio"},
+            by="him",
+            evidence="said so",
+            zone=_VANCOUVER,
+            now=_WINTER_NOON,
+        )
+    h.sql("UPDATE job_mail SET event_later_at = ?", _WINTER_LATER)
+    h.job.remind()
+    (one,) = _things(h)
+    assert one.note == "bring the portfolio"
+
+
+def test_a_note_this_pass_wrote_in_the_other_language_is_still_its_own(
+    tmp_path: Path, jev: JobJev, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """His language changed since the note was written: it is still this pass's to take back."""
+    monkeypatch.setattr(lang, "_current", "zh")
+    h = _winter(tmp_path, jev)
+    h.job.remind()
+    (written,) = _things(h)
+    assert written.note == _two_times()
+    monkeypatch.setattr(lang, "_current", "en")
+    h.sql("UPDATE job_mail SET event_later_at = NULL")
+
+    h.job.remind()
+
+    (one,) = _things(h)
+    assert one.note == ""
 
 
 def test_event_minutes_reads_only_a_clear_range() -> None:

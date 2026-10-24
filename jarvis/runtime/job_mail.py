@@ -167,6 +167,11 @@ class JobMail:
             )
         self._failures = 0
         self._last_ok = self.now()
+        # What the jobs tool says of how fresh its rows are (ADR 0367): when the mailbox was last
+        # listed, and when reading first failed since.
+        self._started = self._last_ok
+        self._read_at: datetime | None = None
+        self._failing_since: datetime | None = None
         # Wired by the daemon: the quiet level now, whether speaking is allowed (speech not
         # muted, no live conversation) and the one fixed line. Until then she never speaks.
         self.quiet: Callable[[], str] = lambda: "dnd"
@@ -268,9 +273,7 @@ class JobMail:
             return
         try:
             self.interviews.reconcile(
-                ledger.list_applications(
-                    self._db, self.now(), triage.is_ats_company, triage.mail_details
-                )
+                ledger.list_applications(self._db, self.now(), triage.mail_details)
             )
         except Exception:
             LOGGER.exception("job mail: the interview reminders pass failed; the poller goes on")
@@ -288,9 +291,11 @@ class JobMail:
             received = datetime.fromisoformat(row["received_at"])
         except (TypeError, ValueError):
             received = self.now()
-        sentence, at = triage.event_of(body, received, self._zone, dated=True)
-        if at or sentence:
-            ledger.set_event(self._db, row["message_id"], at, sentence or row["event_text"])
+        found = triage.event_of(body, received, self._zone, dated=True)
+        if found.at or found.text:
+            ledger.set_event(
+                self._db, row["message_id"], found.at, found.text or row["event_text"], found.later
+            )
 
     def poll_once(self) -> int:
         """One cycle, on the calling thread; returns how many letters it settled."""
@@ -311,6 +316,7 @@ class JobMail:
             self._failed(exc)
             raise
         self._failures, self._last_ok = 0, now
+        self._read_at, self._failing_since = now, None
         ledger.resolve_health(self._db)  # a recovery is silent and clears the old down card
         if not fresh:
             return 0
@@ -627,6 +633,8 @@ class JobMail:
         """Count a failed cycle; raise the one health alert when the channel is down."""
         now = self.now()
         self._failures += 1
+        if self._failing_since is None:
+            self._failing_since = now
         if self._failures < _HEALTH_FAILURES and now - self._last_ok < _HEALTH_AFTER:
             return
         last = ledger.last_health_alert(self._db)
@@ -685,13 +693,14 @@ class JobMail:
         """``POST /inherent/notices/{id}``: see :func:`settle_notice`."""
         settle_notice(self._db, self.quiet(), self.now(), notice_id, action, reaction)
 
-    def ledger(self) -> dict[str, Any]:
-        """``GET /inherent/jobs``: the ledger by company, the applications, held-back mail, rules.
+    def _applications_view(
+        self, now: datetime,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any] | None, str | None]:
+        """The Jobs page's applications, the time on job sites and why that is missing, if it is.
 
-        ``rules`` are the standing alert rules in force, for the ledger page to show (ADR 0158).
+        The time is None when no TimeSink could be read, and then ``note`` says why when the
+        terminal could not be reached (ADR 0170).
         """
-        now = self.now()
-        groups = ledger.list_ledger(self._db, now)
         known = job_time.companies(ledger.company_sites(self._db))
         note = None
         try:
@@ -699,11 +708,19 @@ class JobMail:
         except device_reads.DeviceUnavailable as exc:
             found, note = None, str(exc)  # the time column is not empty: the device is not there
         armed = {} if self.interviews is None else self.interviews.views()
-        applications = ledger.list_applications(
-            self._db, now, triage.is_ats_company, triage.mail_details
-        )
+        applications = ledger.list_applications(self._db, now, triage.mail_details)
         for app in applications:  # what is armed for the interview ahead (ADR 0186)
             app["reminders"] = armed.get(app["id"])
+        return applications, found, note
+
+    def ledger(self) -> dict[str, Any]:
+        """``GET /inherent/jobs``: the ledger by company, the applications, held-back mail, rules.
+
+        ``rules`` are the standing alert rules in force, for the ledger page to show (ADR 0158).
+        """
+        now = self.now()
+        groups = ledger.list_ledger(self._db, now)
+        applications, found, note = self._applications_view(now)
         return {
             "ledger": [{**g, **job_time.spent_view(found, g["company"])} for g in groups],
             "applications": applications,
@@ -720,13 +737,41 @@ class JobMail:
             ],
         }
 
+    def jobs_view(self) -> dict[str, Any]:
+        """What the ``jobs`` tool reads (ADR 0367): the page's applications and how fresh they are.
+
+        ``applications`` are the ones ``GET /inherent/jobs`` serves, each with ``site_s``, its
+        seconds on the company's site over :data:`job_time.WINDOW_DAYS` days, or None when no
+        TimeSink answered (``time_note`` then says why, when it is known): unknown, never 0.
+        ``hidden`` are the ones he hid, so an update can put one back. ``mail`` says when this
+        process started, when the mailbox was last listed and, if reading has failed since, when
+        it first did; the times are ISO text in UTC.
+        """
+        now = self.now()
+        applications, found, note = self._applications_view(now)
+        for app in applications:
+            spent = None if found is None else job_time.spent_view(found, app["company"])
+            app["site_s"] = None if spent is None else spent["time_total_s"]
+        return {
+            "applications": applications,
+            "hidden": ledger.hidden_applications(self._db, now),
+            "time_note": note,
+            "mail": {
+                "started": self._started.isoformat(),
+                "read": None if self._read_at is None else self._read_at.isoformat(),
+                "failing_since": (
+                    None if self._failing_since is None else self._failing_since.isoformat()
+                ),
+            },
+        }
+
     def add_application(self, fields: Mapping[str, Any]) -> str:
         """``POST /inherent/jobs/applications``: Allen's own row; returns its id (400 if bad)."""
         return ledger.add_application(self._db, self.now(), **fields)
 
     def edit_application(self, app_id: str, fields: Mapping[str, Any]) -> None:
         """``POST /inherent/jobs/applications/{id}``: his edit; an unknown id is a LookupError."""
-        ledger.edit_application(self._db, self.now(), app_id, fields, triage.is_ats_company)
+        ledger.edit_application(self._db, self.now(), app_id, fields)
 
     def flag(self, message_id: str, reaction: str) -> None:
         """``POST /inherent/jobs/{id}/flag``: Allen says a held-back mail was job mail after all.
@@ -785,7 +830,8 @@ def repair(
     a LinkedIn "your application was sent to X" row (ADR 0177). A mail Allen flagged is never
     touched by the routing rules. An interview or offer row's event time is read again from its
     kept body and replaced when the body names one; a bare time there is the owner's clock in
-    ``clock``'s zone.
+    ``clock``'s zone. An event still ahead whose stored sentence names a zone label that reads two
+    ways on its date gets its later reading from that sentence, once (ADR 0379).
     """
     changed = 0
     now = clock.now().astimezone(UTC)
@@ -806,7 +852,7 @@ def repair(
                 if value != (row[field] or "")
             }
         )
-        if row["kind"] in _REREAD_KINDS and body and _fix_event(db, row, body, clock.zone):
+        if _repair_event(db, row, body, clock):
             changed += 1
         if not ledger.is_flagged(db, message_id):
             quiet = False  # whether its pending alerts must go
@@ -832,6 +878,13 @@ def repair(
     return changed
 
 
+def _repair_event(db: Path, row: Mapping[str, Any], body: str, clock: Clock) -> bool:
+    """Read a row's event again from its kept body, else give one ahead its later reading."""
+    if row["kind"] in _REREAD_KINDS and body and _fix_event(db, row, body, clock.zone):
+        return True
+    return _read_later(db, row, clock)
+
+
 def _fix_event(db: Path, row: Mapping[str, Any], body: str, zone: tzinfo) -> bool:
     """Set an interview or offer row's event to what its kept body names under today's rules.
 
@@ -842,10 +895,34 @@ def _fix_event(db: Path, row: Mapping[str, Any], body: str, zone: tzinfo) -> boo
         received = datetime.fromisoformat(row["received_at"])
     except (TypeError, ValueError):
         return False
-    sentence, at = triage.event_of(body, received, zone, dated=True)
-    if (at, sentence) == (row["event_at"], row["event_text"]):
+    found = triage.event_of(body, received, zone, dated=True)
+    if (found.text, found.at, found.later) == (
+        row["event_text"], row["event_at"], row["event_later_at"]
+    ):
         return False
-    ledger.set_event(db, row["message_id"], at, sentence)
+    ledger.set_event(db, row["message_id"], found.at, found.text, found.later)
+    return True
+
+
+def _read_later(db: Path, row: Mapping[str, Any], clock: Clock) -> bool:
+    """Give an event still ahead the later reading its stored sentence names (ADR 0379).
+
+    Offline, from the stored sentence alone: only a visible row with no later reading yet, whose
+    ``event_at`` is ahead and whose sentence reads to that very time and a second one, gets it.
+    """
+    if row["deleted"] or row["event_later_at"] or not (row["event_at"] and row["event_text"]):
+        return False
+    try:
+        at = datetime.fromisoformat(row["event_at"])
+        received = datetime.fromisoformat(row["received_at"])
+    except (TypeError, ValueError):
+        return False
+    if (at if at.tzinfo else at.replace(tzinfo=clock.zone)) <= clock.now():
+        return False
+    later = triage.later_reading(row["event_text"], row["event_at"], received, clock.zone)
+    if later is None:
+        return False
+    ledger.set_event(db, row["message_id"], row["event_at"], row["event_text"], later)
     return True
 
 

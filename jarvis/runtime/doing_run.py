@@ -1,9 +1,13 @@
 """Runtime wiring for the writer of the doing lane (ADR 0302).
 
 For a day, the writer folds the day line, cuts the waking window into segments, gathers the clues
-and asks one model for what he was doing, on a dedicated client pinned to ``doing.preset``. L3
-builds the input and gates the answer; L2 appends the run. A run that fails or is gated out
-stores nothing and the run before it stays.
+and the day's keys of his attention nobody told yet or told to vary, and asks one model for what
+he was doing, what each new key served (ADR 0393) and what each key that varies served in each
+span (ADR 0396), on a dedicated client pinned to ``doing.preset``. While it writes, the model may
+read his Mac's screen text, as often as :data:`~jarvis.decision.screen_reads.MAX_ROUNDS` rounds
+allow (ADR 0395). L3 builds the input and gates the answer; L2 reads the screen and appends the
+run and the told keys. A run that fails or is gated out stores nothing and the run before it
+stays; a telling gated out leaves its keys untold.
 
 :class:`DoingSchedule` looks at today and the last few days every quarter of an hour, in a thread
 off the loop, and asks the model only when the inputs changed (ADR 0310, ADR 0311):
@@ -12,7 +16,8 @@ off the loop, and asks the model only when the inputs changed (ADR 0310, ADR 031
   most every two hours as well; after the first, each writes only the time from where the last
   written span starts and keeps the spans before it (:func:`narrow`);
 - a day that is over (it is a day before today, or he has gone to bed): one final run of the
-  whole day, and another when late rows change its inputs.
+  whole day, once his phone and tablet use is known past its end or :data:`FINAL_WAIT` after it,
+  and never again on the clock (ADR 0397).
 
 The inputs are told apart by a digest of the facts and clues (:func:`inputs_digest`).
 """
@@ -22,20 +27,18 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final, NamedTuple
 
 from jarvis.decision.attention_threads import (
-    ThreadBrief,
     known_threads,
-    read_threads,
+    labels,
+    read_told,
     untold,
-)
-from jarvis.decision.attention_threads import (
-    build_messages as build_thread_messages,
+    varying,
 )
 from jarvis.decision.cost_guard import CostRecorder
 from jarvis.decision.doing_run import (
@@ -45,11 +48,21 @@ from jarvis.decision.doing_run import (
     inputs_digest,
     narrow,
     read_run,
+    times,
+    varies_of,
+)
+from jarvis.decision.screen_reads import (
+    MAX_READ_CHARS,
+    MAX_ROUNDS,
+    SCREEN_TOOL,
+    SPENT,
+    answer,
+    requested,
 )
 from jarvis.runtime.doing_day import lane_line, reach_past_start
 from jarvis.runtime.session_compaction import build_compact_client
 from jarvis.shared import lang
-from jarvis.state import attention
+from jarvis.state import attention, screen_text
 from jarvis.state.day_line import DayLine, DaySources, day_window, fold_day, shipped_conn
 from jarvis.state.doing import cut, fact_spans, his_facts, waking_window
 from jarvis.state.doing_clues import HIS_WORDS, gather
@@ -70,13 +83,14 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
     from pathlib import Path
 
-    from jarvis.decision.llm import LLMClient
+    from jarvis.decision.llm import ChatResult, LLMClient
+    from jarvis.state.doing import Waking
     from jarvis.state.doing_clues import Clue
+    from jarvis.state.memory_db import DoingRun
 
 LOGGER = logging.getLogger(__name__)
 
 KIND: Final[str] = "doing_run"
-THREADS_KIND: Final[str] = "attention_threads"
 DEFAULT_PRESET: Final[str] = "haiku-bg"
 SHORT_EVERY: Final[timedelta] = timedelta(hours=2)
 """A day is written at most this often, however often its inputs change, unless he asks."""
@@ -84,6 +98,9 @@ CHECK_EVERY: Final[timedelta] = timedelta(minutes=15)
 """How often a day is folded to see whether its inputs changed."""
 RECENT_DAYS: Final[int] = 3
 """The days before today that are written when their inputs change."""
+FINAL_WAIT: Final[timedelta] = timedelta(hours=12)
+"""How long after a day's waking part ends its final waits for his phone and tablet use to arrive
+(it comes 6 to 8 hours late); past it the final is written with what is known."""
 _ATTEMPTS: Final[int] = 2
 """An answer that fails a gate is asked for once more, as the day summaries are."""
 _QUIET: Final[frozenset[str]] = frozenset(
@@ -99,11 +116,6 @@ class DoingSettings:
     prompt: str
     clock_drafts: bool = False
     """Today is also written on the clock every two hours, not only when he asks (ADR 0311)."""
-    threads_prompt: str | None = None
-    """What the model is told when it says what new keys of his attention served (ADR 0315);
-    None: no key is told, and each stays its own thread."""
-    threads_preset: str | None = None
-    """The model that tells keys; None: the writer's."""
 
     @classmethod
     def from_config(cls, raw: object) -> DoingSettings | None:
@@ -114,15 +126,10 @@ class DoingSettings:
         if not (isinstance(prompt, str) and prompt.strip()):
             LOGGER.warning("doing needs a prompt; what he was doing is not written")
             return None
-        threads_prompt, threads_preset = raw.get("threads_prompt"), raw.get("threads_preset")
         return cls(
             preset=preset if isinstance(preset, str) and preset.strip() else DEFAULT_PRESET,
             prompt=prompt.strip(),
             clock_drafts=raw.get("clock_drafts") is True,
-            threads_prompt=threads_prompt.strip()
-            if isinstance(threads_prompt, str) and threads_prompt.strip() else None,
-            threads_preset=threads_preset
-            if isinstance(threads_preset, str) and threads_preset.strip() else None,
         )
 
 
@@ -150,7 +157,9 @@ def read_brief(
 
     The day line is folded as ``GET /inherent/day`` folds the doing lane, to where the waking part
     can reach past midnight (ADR 0313), and cut as it is there, so the spans written are over the
-    segments the page shows. The day is ``final`` once the waking part of it is over.
+    segments the page shows. The day is ``final`` once the waking part of it is over. The keys of
+    the waking window nobody told yet, and those told to vary, come with the threads told so far
+    (:func:`_keys`).
     """
     zone = sources.zone
     start_ms, end_ms = day_window(day, zone)
@@ -162,7 +171,7 @@ def read_brief(
         waking = waking_window(facts, start_ms, end_ms, now_ms)
         if waking.end_ms <= waking.start_ms:
             return None
-        clues = gather(conn, sources.memory_db, day, items, (waking.start_ms, waking.end_ms), zone)
+        clues = gather(sources.memory_db, day, items, (waking.start_ms, waking.end_ms), zone)
         segments = cut(facts, waking)
         signals = gather_signals(conn, sources, segments, items)
     return Brief(
@@ -171,44 +180,188 @@ def read_brief(
         waking=waking, segments=segments, facts=facts, items=items, clues=clues, signals=signals,
         screen=_screen_reach(line, sources),
         foreground=foreground(sources, (waking.start_ms, waking.end_ms)),
+        **_keys(sources, waking),
     )
 
 
+def _keys(sources: DaySources, waking: Waking) -> dict[str, Any]:
+    """The waking window's keys nobody told yet or told to vary, and the threads told so far.
+
+    With where those keys held him (ADR 0393, ADR 0396). None of it without memory.db, or when no
+    key is untold and none that varies held him; a read that fails leaves them out, logged, and
+    the day is written without them.
+    """
+    memory_db = sources.memory_db
+    if memory_db is None or not memory_db.is_file():
+        return {}
+    try:
+        pieces = attention.read(sources, waking.start_ms, waking.end_ms)
+        with closing(open_memory_db(memory_db)) as conn:
+            told = attention_threads(conn)
+    except Exception:
+        LOGGER.exception("doing: the day's keys could not be read; none is asked about")
+        return {}
+    asked, varies = untold(pieces, told), varying(pieces, told)
+    if not asked and not varies:
+        return {}
+    names = {p.key: p.name for p in pieces}
+    shown = {key: names.get(key) or attention.key_name(key) for key in told}
+    keys = {one.key for one in (*asked, *varies)}
+    return {
+        "asked": asked, "varies": varies, "known": known_threads(told, shown),
+        "pieces": [p for p in pieces if p.key in keys],
+    }
+
+
 class Composed(NamedTuple):
-    """What the model answered for a day: the gated spans, or why none may be stored."""
+    """What the model answered for a day, each part gated by itself.
+
+    ``spans`` are the gated spans, or None when none may be stored; ``threads`` what the new keys
+    served, by key (empty with none asked), or None when it may not be stored; ``why`` the last
+    refusal.
+    """
 
     spans: list[dict[str, Any]] | None
+    threads: dict[str, tuple[str | None, str | None]] | None
     why: str
     model: str | None
     tokens_in: int
     tokens_out: int
+    reads: int = 0
+    """How many times the model read the screen."""
+
+
+type ScreenReader = Callable[[int, int, str | None], Sequence[screen_text.Window]]
+"""Reads his Mac's screen over ``[start_ms, end_ms)``, of one key or of every window (None)."""
+
+_READ_ENOUGH: Final = (
+    "[From the program, not the user] No more screen reads for this answer. Write the whole "
+    "answer now as one JSON object."
+)
+
+
+def screen_reader(sources: DaySources) -> ScreenReader:
+    """The screen reads of ``sources``' shipped captures (:func:`jarvis.state.screen_text.seen`)."""
+    return lambda start_ms, end_ms, key: screen_text.seen(sources, start_ms, end_ms, key)
+
+
+def _assistant_turn(result: ChatResult) -> dict[str, Any]:
+    return {
+        "role": "assistant", "content": result.text or "",
+        "tool_calls": [
+            {
+                "id": call.call_id, "type": "function",
+                "function": {"name": call.name, "arguments": call.arguments_json},
+            }
+            for call in result.tool_calls
+        ],
+    }
+
+
+class _Asked(NamedTuple):
+    result: ChatResult
+    messages: list[dict[str, Any]]
+    tokens_in: int
+    tokens_out: int
+    reads: int
+
+
+def _ask(  # noqa: PLR0913 — the conversation, the knobs, the model and its two seams.
+    messages: list[dict[str, Any]], brief: Brief, settings: DoingSettings, client: LLMClient,
+    cost_recorder: CostRecorder, read: ScreenReader | None,
+) -> _Asked:
+    """One answer, after the screen reads it asks for, at most :data:`MAX_ROUNDS` rounds of them.
+
+    Each read is answered and the model asked again; past the last round it is told to answer
+    and may read no more. Once its reads hold :data:`MAX_READ_CHARS` characters, a further read is
+    told they are spent. Without ``read`` the model is given no tool.
+    """
+    tools = None if read is None else [SCREEN_TOOL]
+    at = {f"t{n}": ms for n, ms in enumerate(times(brief))}
+    keys = labels(brief.asked, brief.varies)
+    names = {one.key: one.name for one in (*brief.asked, *brief.varies)}
+    spent_in = spent_out = reads = read_chars = 0
+    for rounds in range(MAX_ROUNDS + 1):
+        last = rounds == MAX_ROUNDS
+        result = cost_recorder.chat(
+            client, messages=messages, system=settings.prompt, tools=tools,
+            tool_choice=None if tools is None else "none" if last else "auto",
+            kind=KIND, turn_id=None,
+        )
+        spent_in, spent_out = spent_in + result.tokens_in, spent_out + result.tokens_out
+        calls = [] if read is None or last else requested(result)
+        if not calls:
+            return _Asked(result, messages, spent_in, spent_out, reads)
+        assert read is not None  # noqa: S101 — calls are read only with a reader
+        replies = []
+        for call_id, arguments in calls:
+            if read_chars >= MAX_READ_CHARS:
+                text, error = SPENT, True
+            else:
+                text, error = answer(arguments, at, keys, names, read, brief.zone)
+                read_chars += 0 if error else len(text)
+            replies.append({
+                "role": "tool", "tool_call_id": call_id, "content": text,
+                **({"is_error": True} if error else {}),
+            })
+        reads += len(calls)
+        messages = [*messages, _assistant_turn(result), *replies]
+        if rounds == MAX_ROUNDS - 1:
+            messages.append({"role": "user", "content": _READ_ENOUGH})
+    msg = "unreachable: the last round reads nothing"
+    raise AssertionError(msg)
 
 
 def compose_run(
     brief: Brief, settings: DoingSettings, client: LLMClient, cost_recorder: CostRecorder,
+    read: ScreenReader | None = None,
 ) -> Composed:
     """Ask the model for ``brief``'s day and gate the answer; a rejected one is asked once more.
 
-    The second ask shows the model its answer and why the gates refused it, so it fixes that
-    rather than writing the day afresh. Blocking. A call that raises propagates, with nothing
-    stored.
+    With ``read`` the model may read his Mac's screen while it writes (ADR 0395). The spans and
+    what the new keys served are gated apart: either refused asks again, and a part that passed
+    in either answer is kept, the later one when both passed. What a span says a key that varies
+    served is gated with the spans, by the keys the same answer told to vary (ADR 0396). The
+    second ask shows the model its answer and why the gates refused it, so it fixes that rather
+    than writing the day afresh. Blocking. A call that raises propagates, with nothing stored.
     """
     messages = build_messages(brief)
-    why, model, spent_in, spent_out = "", None, 0, 0
+    spans: list[dict[str, Any]] | None = None
+    threads: dict[str, tuple[str | None, str | None]] | None = None
+    why, model, spent_in, spent_out, reads = "", None, 0, 0, 0
     for _attempt in range(_ATTEMPTS):
-        result = cost_recorder.chat(
-            client, messages=messages, system=settings.prompt, tools=None, tool_choice=None,
-            kind=KIND, turn_id=None,
-        )
+        asked = _ask(messages, brief, settings, client, cost_recorder, read)
+        result, messages = asked.result, asked.messages
         model = result.model_used or client.model
-        spent_in, spent_out = spent_in + result.tokens_in, spent_out + result.tokens_out
-        found = read_run(result.text, result.finish_reason, brief)
-        if not isinstance(found, str):
-            return Composed(found, "", model, spent_in, spent_out)
-        why = found
+        spent_in, spent_out = spent_in + asked.tokens_in, spent_out + asked.tokens_out
+        reads += asked.reads
+        told = read_told(result.text, result.finish_reason, brief.asked)
+        found = read_run(result.text, result.finish_reason, brief, varies_of(brief, told))
+        spans = spans if isinstance(found, str) else found
+        threads = threads if isinstance(told, str) else told
+        refused = [part for part in (found, told) if isinstance(part, str)]
+        if not refused:
+            return Composed(spans, threads, "", model, spent_in, spent_out, reads)
+        why = "; ".join(refused)
         LOGGER.warning("doing: %s rejected (%s)", brief.day, why)
         messages = asked_again(messages, result.text, why)
-    return Composed(None, why, model, spent_in, spent_out)
+    return Composed(spans, threads, why, model, spent_in, spent_out, reads)
+
+
+def store_told(memory_db: Path, brief: Brief, composed: Composed) -> int:
+    """Append what the answer told of ``brief``'s new keys, as the model's; how many it told.
+
+    Nothing is kept when that part was refused or no key was asked, and its keys are asked again
+    at the next run.
+    """
+    if not composed.threads:
+        if composed.threads is None:
+            LOGGER.warning("doing: %s's new keys not told (%s)", brief.day, composed.why)
+        return 0
+    append_attention_threads(
+        memory_db, composed.threads, origin="model", model=composed.model, day=brief.day,
+    )
+    return len(composed.threads)
 
 
 def store_run(memory_db: Path, brief: Brief, composed: Composed) -> str:
@@ -226,65 +379,17 @@ def store_run(memory_db: Path, brief: Brief, composed: Composed) -> str:
     )
 
 
-def read_thread_brief(brief: Brief, sources: DaySources, memory_db: Path) -> ThreadBrief | None:
-    """The keys of ``brief``'s waking window nobody told yet, as the model is shown them (0315).
+def settled(brief: Brief, now: datetime) -> bool:
+    """Whether ``brief``'s finished day may have its final: its late use is in, or waited for.
 
-    None when there is none to ask about.
+    His phone and tablet use reaches the brain hours late; the final waits until every device is
+    known past the waking window, or none reaches the brain, or :data:`FINAL_WAIT` has passed
+    since the window ended (ADR 0397).
     """
-    pieces = attention.read(sources, brief.waking.start_ms, brief.waking.end_ms)
-    with closing(open_memory_db(memory_db)) as conn:
-        told = attention_threads(conn)
-    asked = untold(pieces, told)
-    if not asked:
-        return None
-    names = {p.key: p.name for p in pieces}
-    shown = {key: names.get(key) or " ".join(key.split("|")[1:]).strip() for key in told}
-    projects = sorted({
-        (str(item.get("project") or ""), str(item.get("title") or ""))
-        for item in brief.items if item["kind"] == "code" and item.get("project")
-    })
-    return ThreadBrief(
-        day=brief.day, language=brief.language, zone=brief.zone, asked=asked,
-        known=known_threads(told, shown), projects=projects,
-    )
-
-
-class Told(NamedTuple):
-    """What the model said new keys served, or why none of it may be stored (ADR 0315)."""
-
-    threads: dict[str, tuple[str | None, str | None]] | None
-    why: str
-    model: str | None
-    tokens_in: int
-    tokens_out: int
-
-
-def compose_threads(
-    brief: ThreadBrief, settings: DoingSettings, client: LLMClient, cost_recorder: CostRecorder,
-) -> Told:
-    """Ask the model what ``brief``'s keys served, and gate it; a refused answer is asked again.
-
-    Blocking; a call that raises propagates, with nothing stored.
-    """
-    if settings.threads_prompt is None:
-        msg = "keys are told only with doing.threads_prompt"
-        raise ValueError(msg)
-    messages = build_thread_messages(brief)
-    why, model, spent_in, spent_out = "", None, 0, 0
-    for _attempt in range(_ATTEMPTS):
-        result = cost_recorder.chat(
-            client, messages=messages, system=settings.threads_prompt, tools=None,
-            tool_choice=None, kind=THREADS_KIND, turn_id=None,
-        )
-        model = result.model_used or client.model
-        spent_in, spent_out = spent_in + result.tokens_in, spent_out + result.tokens_out
-        found = read_threads(result.text, result.finish_reason, brief)
-        if not isinstance(found, str):
-            return Told(found, "", model, spent_in, spent_out)
-        why = found
-        LOGGER.warning("attention threads: %s rejected (%s)", brief.day, why)
-        messages = asked_again(messages, result.text, why)
-    return Told(None, why, model, spent_in, spent_out)
+    if not brief.screen:
+        return True
+    ended = datetime.fromtimestamp(brief.waking.end_ms / 1000, brief.zone)
+    return now - ended >= FINAL_WAIT
 
 
 class DoingSchedule:
@@ -301,12 +406,10 @@ class DoingSchedule:
         pricing_table: Mapping[str, Mapping[str, float]],
         poll_s: float = 300.0,
         client: LLMClient | None = None,
-        threads_client: LLMClient | None = None,
     ) -> None:
         """Bind the stores and the knobs; nothing runs until :meth:`run`.
 
-        ``client`` stands in for the one built from ``settings.preset`` on first use, and
-        ``threads_client`` for the one built from ``settings.threads_preset``.
+        ``client`` stands in for the one built from ``settings.preset`` on first use.
         """
         self._settings = settings
         self._sources = sources
@@ -316,8 +419,9 @@ class DoingSchedule:
         self._pricing_table = pricing_table
         self._poll_s = poll_s
         self._client = client
-        self._threads_client = threads_client
         self._looked: dict[str, datetime] = {}
+        self._refused: dict[str, str] = {}
+        """The inputs of each finished day whose final the gates refused, by day."""
         self._writing = threading.Lock()
         """One day is written at a time: the clock's pass and his asking never write two runs."""
 
@@ -374,6 +478,30 @@ class DoingSchedule:
                 LOGGER.exception("doing: %s failed; the previous run stands", day or "tidying")
                 return "failed"
 
+    def _held(
+        self, brief: Brief, latest: DoingRun | None, digest: str, now: datetime, *, asked: bool,
+    ) -> str | None:
+        """Why ``brief``'s day is not written now (``unchanged`` or ``waiting``), else None."""
+        recent = False
+        if latest is not None:
+            # A finished day has one final (ADR 0397); late rows do not rewrite it unasked.
+            if brief.final and not latest.draft and not asked:
+                return "unchanged"
+            # A draft whose inputs did not change still becomes the final run once the day is over.
+            if latest.inputs_digest == digest and not (brief.final and latest.draft):
+                return "unchanged"
+            recent = now - datetime.fromisoformat(latest.written_at).astimezone() < SHORT_EVERY
+        if asked:
+            return None
+        # Unasked, today is written on the clock only with clock_drafts (ADR 0311).
+        if recent or not (brief.final or self._settings.clock_drafts):
+            return "waiting"
+        # A final waits for his late phone and tablet use; one the gates refused is tried again
+        # on the clock only when its inputs change.
+        if brief.final and (not settled(brief, now) or self._refused.get(brief.day) == digest):
+            return "waiting"
+        return None
+
     def _day(self, day: date, now: datetime, *, asked: bool) -> str:
         brief = read_brief(day, self._sources, self._event_log_path, now)
         if brief is None:
@@ -382,15 +510,9 @@ class DoingSchedule:
             return "no inputs"
         with closing(open_memory_db(self._memory_db)) as conn:
             latest = latest_doing_run(conn, brief.day)
-        recent = False
-        if latest is not None:
-            # A draft whose inputs did not change still becomes the final run once the day is over.
-            if latest.inputs_digest == inputs_digest(brief) and not (brief.final and latest.draft):
-                return "unchanged"
-            recent = now - datetime.fromisoformat(latest.written_at).astimezone() < SHORT_EVERY
-        # Unasked, today is written on the clock only with clock_drafts (ADR 0311).
-        if not asked and (recent or not (brief.final or self._settings.clock_drafts)):
-            return "waiting"
+        digest = inputs_digest(brief)
+        if (held := self._held(brief, latest, digest, now, asked=asked)) is not None:
+            return held
         # Today's newest part is written after what the last draft said; a final run rewrites all.
         short = latest is not None and latest.draft and not brief.final
         writing = narrow(brief, latest.spans) if short and latest is not None else brief
@@ -398,38 +520,20 @@ class DoingSchedule:
             self._client = build_compact_client(self._llm_config, self._settings.preset)
         with closing(open_runtime_event_log(self._event_log_path)) as conn:
             recorder = CostRecorder(conn, pricing_table=self._pricing_table)
-            self._tell_threads(brief, recorder)
-            composed = compose_run(writing, self._settings, self._client, recorder)
+            composed = compose_run(
+                writing, self._settings, self._client, recorder, screen_reader(self._sources),
+            )
+        told = store_told(self._memory_db, brief, composed)
+        keys = f", {told} keys told" if told else ""
         if composed.spans is None:
-            return f"rejected ({composed.why})"
+            if brief.final:
+                self._refused[brief.day] = digest
+            return f"rejected ({composed.why}){keys}"
         spans = [*map(dict, writing.kept), *composed.spans]
         store_run(self._memory_db, brief, composed._replace(spans=spans))
         questions = sum(span["question"] is not None for span in spans)
         kind = "final" if brief.final else "short" if writing.kept else "draft"
-        return f"landed ({kind}, {len(spans)} spans, {questions} questions)"
-
-    def _tell_threads(self, brief: Brief, recorder: CostRecorder) -> None:
-        """Before a run, have the day's new keys told (ADR 0315); a failure only logs."""
-        if self._settings.threads_prompt is None:
-            return
-        try:
-            asked = read_thread_brief(brief, self._sources, self._memory_db)
-            if asked is None:
-                return
-            if self._threads_client is None:
-                self._threads_client = build_compact_client(
-                    self._llm_config, self._settings.threads_preset or self._settings.preset,
-                )
-            told = compose_threads(asked, self._settings, self._threads_client, recorder)
-            if told.threads is None:
-                LOGGER.warning("attention threads: %s not told (%s)", brief.day, told.why)
-                return
-            append_attention_threads(
-                self._memory_db, told.threads, origin="model", model=told.model, day=brief.day,
-            )
-            LOGGER.info("attention threads: %s told %d keys", brief.day, len(told.threads))
-        except Exception:
-            LOGGER.exception("attention threads: %s failed; its keys stay as they are", brief.day)
+        return f"landed ({kind}, {len(spans)} spans, {questions} questions{keys})"
 
     async def run(self) -> None:
         """The loop; a failed pass is logged and the next one tries again."""
@@ -447,17 +551,18 @@ class DoingSchedule:
 __all__ = [
     "CHECK_EVERY",
     "DEFAULT_PRESET",
+    "FINAL_WAIT",
     "KIND",
     "RECENT_DAYS",
     "SHORT_EVERY",
-    "THREADS_KIND",
     "Composed",
     "DoingSchedule",
     "DoingSettings",
-    "Told",
+    "ScreenReader",
     "compose_run",
-    "compose_threads",
     "read_brief",
-    "read_thread_brief",
+    "screen_reader",
+    "settled",
     "store_run",
+    "store_told",
 ]

@@ -33,7 +33,8 @@ struct HerSprite: View {
     }
 
     private func frame(_ f: HerFace, _ date: Date) -> some View {
-        let c = f.clip, i = Int(date.timeIntervalSinceReferenceDate * c.fps) % c.frames
+        // the remainder is taken in Double: a real watch is arm64_32, where Int is 32-bit and the frames since 2001 (about 6.5e9 at 8 fps) do not fit
+        let c = f.clip, i = Int((date.timeIntervalSinceReferenceDate * c.fps).truncatingRemainder(dividingBy: Double(c.frames)))
         return Image("her-\(f.rawValue)-\(String(format: "%02d", i))")
             .resizable().interpolation(.high)
             .frame(width: Self.base * c.margin, height: Self.base * c.margin)

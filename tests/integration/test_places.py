@@ -37,7 +37,6 @@ from jarvis.runtime.daemon.routes import read_day
 from jarvis.runtime.ledger import LedgerContext, LedgerSettings
 from jarvis.runtime.locate import HerePolicy
 from jarvis.runtime.memory_page import MemoryPage
-from jarvis.runtime.rides import Rides
 from jarvis.runtime.whereabouts import ASK_PLACE_LINE, Whereabouts
 from jarvis.shared import CallerPrincipal
 from jarvis.state import places
@@ -58,7 +57,7 @@ from tests.support.places import NOW, NOW_MS, TODAY, ZONE, ms_days_ago, stay
 from tests.support.runtime_config import runtime_config
 from tests.support.tool_context import tool_context
 from tests.support.tool_world import ToolWorld, tool_request
-from tests.support.transit import FAKE_KEY, sent_request, serve_routes
+from tests.support.transit import FAKE_KEY, sent_request, serve_routes, transit_clock
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -278,6 +277,21 @@ def test_equal_circles_go_to_the_older_place() -> None:
     assert places.containing([replace_address_only(first)], 48.0, -123.0) is None
 
 
+def test_a_kept_place_is_found_by_its_name_for_its_position() -> None:
+    """Case and spacing aside; a place with an address alone has no position to give."""
+    clinic = places.Place("a", "Dental  Clinic", "other", 48.5, -123.4, 100, None, "user", "t", "t")
+    cafe = replace_address_only(
+        places.Place("b", "Cafe", "other", 1.0, 2.0, 100, None, "user", "t", "t"),
+    )
+    twin = places.Place("c", "dental clinic", "other", 9.0, 9.0, 100, None, "user", "t", "t")
+    held = [cafe, clinic, twin]
+    assert places.position_of(held, "dental clinic") == (48.5, -123.4)
+    assert places.position_of(held, " DENTAL CLINIC ") == (48.5, -123.4)  # the first kept answers
+    assert places.position_of(held, "Cafe") is None  # kept by its address alone
+    assert places.position_of(held, "Clinic") is None  # a part of a name is not the name
+    assert places.position_of([], "Clinic") is None
+
+
 def replace_address_only(one: places.Place) -> places.Place:
     """The same place with only an address: it holds no stay."""
     return places.Place(
@@ -301,17 +315,13 @@ def test_the_tools_are_registered_for_her_and_the_save_description_is_the_approv
     assert not by_name["save_place"].read_only
     assert not by_name["forget_place"].read_only
     assert by_name["save_place"].description == (
-        "Keep a place in his long-term memory under a name, or rename one he keeps. Call it when "
-        'he names a place ("this is my home", "这里是健身房"), tells you he goes somewhere '
-        "often, or answers your question about a spot. You may also keep a place on your own "
-        "judgement when `places` shows he goes there regularly and it clearly matters to him, "
-        "but only under a name he has used: never invent a name, and never use the phone's "
-        'label as one. `where` is "here" (where his phone is now), or a spot id or a place id '
-        "from `places`. Places he goes to only now and then are not kept; they stay counted."
+        "Use to keep a place under the name he uses for it, or to rename or resize one he keeps."
+        " Not for finding a business (map_search) or noting a visit (places counts those)."
+        " Returns the kept place and whether anything changed."
     )
     assert by_name["forget_place"].description == (
-        "Remove a kept place when he asks you to forget it or says it is no longer his (he "
-        "moved out, quit the gym). Its visits stay counted."
+        "Use to remove a kept place he no longer wants or no longer has. Not for hiding a visit:"
+        " visits stay counted. Returns the name removed."
     )
     assert by_name["save_place"].input_schema["required"] == ["name", "where"]
 
@@ -394,7 +404,8 @@ def test_a_spot_id_keeps_a_place_even_after_a_new_stay_moves_its_centre(world: W
     assert abs(place.lat - CAFE.centre()[0]) < 0.0002
     gone = world.call("save_place", {"name": "x", "where": "spot:49.0000,-123.0000"})
     assert gone["code"] == "not_found"
-    assert world.call("save_place", {"name": "x", "where": "somewhere"})["code"] == "not_found"
+    # Words are the reader's; without a Google key it says so rather than guessing a point.
+    assert world.call("save_place", {"name": "x", "where": "somewhere"})["code"] == "unavailable"
 
 
 def test_rename_forget_and_the_refusals(world: World) -> None:
@@ -428,7 +439,9 @@ def test_rename_forget_and_the_refusals(world: World) -> None:
     assert world.call("save_place", {"name": "Dojo", "where": "place:nope"})["code"] == "not_found"
     assert len(world.rows("place_changes")) == 2
     # Forget: the place goes, the change keeps what it was, the visits are spots again.
-    assert world.call("forget_place", {"place": "iron WORKS"}) == {"forgotten": "Iron Works"}
+    assert world.call("forget_place", {"place": "iron WORKS"}) == {
+        "summary": "Forgot Iron Works.", "forgotten": "Iron Works",
+    }
     assert world.kept() == []
     forgot = world.rows("place_changes")[-1]
     assert (forgot["op"], forgot["after"]) == ("forget", None)
@@ -947,7 +960,7 @@ def _body(seen: list[Any]) -> dict[str, Any]:
     return dict(json.loads(data))
 
 
-def test_the_settings_are_copied_once_and_transit_and_the_rides_read_the_table(
+def test_the_settings_are_copied_once_and_the_bus_reads_the_table(
     world: World, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """lat,lng is a centre, an address is an address; a forgotten copy is not copied again."""
@@ -973,16 +986,35 @@ def test_the_settings_are_copied_once_and_transit_and_the_rides_read_the_table(
     places.save(world.db, name="home", lat=48.0, lng=-123.0, role="home", origin="user")
     # `bus` reads home and school from the table at each call.
     seen = serve_routes(monkeypatch)
+    routes_only = urllib.request.urlopen
+    asked: list[Any] = []
+
+    def with_places(request: Any, *, timeout: float) -> Any:  # noqa: ANN401
+        """The reader's Text Search for the school's address; everything else is the routes."""
+        if request.full_url.startswith("https://places.googleapis.com/"):
+            asked.append(json.loads(request.data))
+            campus = {
+                "id": "ChIJcampus", "displayName": {"text": "Example Campus"},
+                "formattedAddress": "Example Campus, Example City",
+                "location": {"latitude": 48.46, "longitude": -123.31},
+            }
+            return io.BytesIO(json.dumps({"places": [campus]}).encode())
+        return routes_only(request, timeout=timeout)
+
+    monkeypatch.setattr(urllib.request, "urlopen", with_places)
     monkeypatch.setattr(transit_tool, "_get_running_event_uid", lambda *_: None)
     registry = build_default_registry(
         transit_api_key=FAKE_KEY, transit_places=partial(places.home_school, world.db),
     )
     (transit,) = (d for d in registry.get_definitions() if d.name == "bus")
-    ctx = tool_context(world.conn, "A1", clock=world.clock)
+    ctx = tool_context(world.conn, "A1", clock=transit_clock())
     transit.handler({"from": "home", "to": "school"}, ctx)
     sent = _body(seen)
     assert sent["origin"] == {"location": {"latLng": {"latitude": 48.0, "longitude": -123.0}}}
-    assert sent["destination"] == {"address": "Example Campus, Example City"}
+    assert asked[0]["textQuery"] == "Example Campus, Example City"
+    assert sent["destination"] == {
+        "location": {"latLng": {"latitude": 48.46, "longitude": -123.31}},
+    }
     school = next(p for p in world.kept() if p.role == "school")
     places.forget(world.db, school.id, origin="user")
     places.save(world.db, name="school", lat=48.5, lng=-123.5, role="school", origin="user")
@@ -990,12 +1022,6 @@ def test_the_settings_are_copied_once_and_transit_and_the_rides_read_the_table(
     transit.handler({"from": "home", "to": "school"}, ctx)
     sent = _body(seen)
     assert sent["destination"] == {"location": {"latLng": {"latitude": 48.5, "longitude": -123.5}}}
-    # The rides find his stop from the same table.
-    rides = Rides(world.log, None, places=partial(places.home_school, world.db))
-    assert rides._place(world.conn, "School") == (48.5, -123.5)  # noqa: SLF001
-    home_now = next(p for p in world.kept() if p.role == "home")
-    places.forget(world.db, home_now.id, origin="user")
-    assert rides._place(world.conn, "home") is None  # noqa: SLF001
 
 
 def test_the_tables_and_the_nightly_prompt_are_what_the_decision_names(tmp_path: Path) -> None:

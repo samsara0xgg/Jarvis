@@ -1,0 +1,48 @@
+{
+ "version": 1,
+ "settings": {},
+ "env": [
+  "GOOGLE_MAPS_API_KEY"
+ ],
+ "http": [
+  {
+   "method": "POST",
+   "url": "https://routes.googleapis.com/directions/v2:computeRoutes",
+   "request": "{\"origin\": {\"location\": {\"latLng\": {\"latitude\": 48.4284, \"longitude\": -123.3656}}}, \"destination\": {\"location\": {\"latLng\": {\"latitude\": 48.4634, \"longitude\": -123.3117}}}, \"travelMode\": \"TRANSIT\", \"computeAlternativeRoutes\": true, \"departureTime\": \"2026-10-16T16:45:00Z\"}",
+   "status": 200,
+   "content_type": "application/json",
+   "body": "{\"routes\": [{\"legs\": [{\"steps\": [{\"travelMode\": \"WALK\", \"staticDuration\": \"300s\"}, {\"travelMode\": \"TRANSIT\", \"staticDuration\": \"900s\", \"transitDetails\": {\"stopDetails\": {\"departureStop\": {\"name\": \"Cook St at Pine Ave\", \"location\": {\"latLng\": {\"latitude\": 48.44, \"longitude\": -123.35}}}, \"arrivalStop\": {\"name\": \"Cook St at Hill Rd\", \"location\": {\"latLng\": {\"latitude\": 48.45, \"longitude\": -123.35}}}, \"departureTime\": \"2026-10-16T17:05:00Z\", \"arrivalTime\": \"2026-10-16T17:13:00Z\"}, \"headsign\": \"Northgate\", \"transitLine\": {\"nameShort\": \"7\", \"name\": \"Northgate\"}}}, {\"travelMode\": \"WALK\", \"staticDuration\": \"180s\"}], \"endLocation\": {\"location\": {\"latLng\": {\"latitude\": 48.4634, \"longitude\": -123.3117}}}}]}]}"
+  },
+  {
+   "method": "POST",
+   "url": "https://routes.googleapis.com/directions/v2:computeRoutes",
+   "request": "{\"origin\": {\"location\": {\"latLng\": {\"latitude\": 48.4284, \"longitude\": -123.3656}}}, \"destination\": {\"location\": {\"latLng\": {\"latitude\": 48.4634, \"longitude\": -123.3117}}}, \"travelMode\": \"DRIVE\"}",
+   "status": 200,
+   "content_type": "application/json",
+   "body": "{\"routes\": [{\"duration\": \"780s\", \"distanceMeters\": 6100}]}"
+  },
+  {
+   "method": "POST",
+   "url": "https://routes.googleapis.com/directions/v2:computeRoutes",
+   "request": "{\"origin\": {\"location\": {\"latLng\": {\"latitude\": 48.4284, \"longitude\": -123.3656}}}, \"destination\": {\"location\": {\"latLng\": {\"latitude\": 48.4634, \"longitude\": -123.3117}}}, \"travelMode\": \"WALK\"}",
+   "status": 200,
+   "content_type": "application/json",
+   "body": "{\"routes\": [{\"duration\": \"4500s\", \"distanceMeters\": 5800}]}"
+  },
+  {
+   "method": "GET",
+   "url": "https://bct.tmix.se/gtfs-realtime/tripupdates.pb?operatorIds=48",
+   "status": 200,
+   "content_type": "application/x-protobuf",
+   "body_b64": "CgUKAzIuMA=="
+  },
+  {
+   "method": "GET",
+   "url": "https://bct.tmix.se/Tmix.Cap.TdExport.WebApi/gtfs/?operatorIds=48",
+   "status": 200,
+   "content_type": "application/zip",
+   "body_b64": "UEsDBBQAAAAAAPtbVV1Tk1BXSgAAAEoAAAAKAAAAYWdlbmN5LnR4dO+7v2FnZW5jeV9pZCxhZ2VuY3lfbmFtZSxhZ2VuY3lfdGltZXpvbmUKMSxUZXN0IFRyYW5zaXQsQW1lcmljYS9WYW5jb3V2ZXIKUEsDBBQAAAAAAPtbVV27TFVkIgAAACIAAAAKAAAAcm91dGVzLnR4dO+7v3JvdXRlX2lkLHJvdXRlX3Nob3J0X25hbWUKUjcsNwpQSwMEFAAAAAAA+1tVXZvuWuNvAAAAbwAAAAkAAAB0cmlwcy50eHTvu79yb3V0ZV9pZCxzZXJ2aWNlX2lkLHRyaXBfaWQsdHJpcF9oZWFkc2lnbixkaXJlY3Rpb25faWQKUjcsV0ssVDctbm9ydGgsTm9ydGhnYXRlLDAKUjcsV0ssVDctc291dGgsU291dGhiYXksMQpQSwMEFAAAAAAA+1tVXbwoKXnPAAAAzwAAAAkAAABzdG9wcy50eHTvu79zdG9wX2lkLHN0b3BfY29kZSxzdG9wX25hbWUsc3RvcF9sYXQsc3RvcF9sb24KUEUsLENvb2sgU3QgYXQgUGluZSBBdmUsNDguNDQsLTEyMy4zNDk4ClBXLCxDb29rIFN0IGF0IFBpbmUgQXZlLDQ4LjQ0LC0xMjMuMzUwMgpaRSwsQ29vayBTdCBhdCBIaWxsIFJkLDQ4LjQ1LC0xMjMuMzQ5OApaVywsQ29vayBTdCBhdCBIaWxsIFJkLDQ4LjQ1LC0xMjMuMzUwMgpQSwMEFAAAAAAA+1tVXY4wqDG9AAAAvQAAAA4AAABzdG9wX3RpbWVzLnR4dO+7v3RyaXBfaWQsYXJyaXZhbF90aW1lLGRlcGFydHVyZV90aW1lLHN0b3BfaWQsc3RvcF9zZXF1ZW5jZQpUNy1ub3J0aCwxMDowNzowMCwxMDowNzowMCxQRSwxClQ3LW5vcnRoLDEwOjE1OjAwLDEwOjE1OjAwLFpFLDIKVDctc291dGgsMDk6NTc6MDAsMDk6NTc6MDAsWlcsMQpUNy1zb3V0aCwxMDowNTowMCwxMDowNTowMCxQVywyClBLAwQUAAAAAAD7W1Vdhnv/Qn4AAAB+AAAADAAAAGNhbGVuZGFyLnR4dO+7v3NlcnZpY2VfaWQsbW9uZGF5LHR1ZXNkYXksd2VkbmVzZGF5LHRodXJzZGF5LGZyaWRheSxzYXR1cmRheSxzdW5kYXksc3RhcnRfZGF0ZSxlbmRfZGF0ZQpXSywxLDEsMSwxLDEsMSwxLDIwMjYwMTAxLDIwMjYxMjMxClBLAwQUAAAAAAD7W1VdJBBtSyIAAAAiAAAAEgAAAGNhbGVuZGFyX2RhdGVzLnR4dO+7v3NlcnZpY2VfaWQsZGF0ZSxleGNlcHRpb25fdHlwZQpQSwECFAMUAAAAAAD7W1VdU5NQV0oAAABKAAAACgAAAAAAAAAAAAAAgAEAAAAAYWdlbmN5LnR4dFBLAQIUAxQAAAAAAPtbVV27TFVkIgAAACIAAAAKAAAAAAAAAAAAAACAAXIAAAByb3V0ZXMudHh0UEsBAhQDFAAAAAAA+1tVXZvuWuNvAAAAbwAAAAkAAAAAAAAAAAAAAIABvAAAAHRyaXBzLnR4dFBLAQIUAxQAAAAAAPtbVV28KCl5zwAAAM8AAAAJAAAAAAAAAAAAAACAAVIBAABzdG9wcy50eHRQSwECFAMUAAAAAAD7W1VdjjCoMb0AAAC9AAAADgAAAAAAAAAAAAAAgAFIAgAAc3RvcF90aW1lcy50eHRQSwECFAMUAAAAAAD7W1Vdhnv/Qn4AAAB+AAAADAAAAAAAAAAAAAAAgAExAwAAY2FsZW5kYXIudHh0UEsBAhQDFAAAAAAA+1tVXSQQbUsiAAAAIgAAABIAAAAAAAAAAAAAAIAB2QMAAGNhbGVuZGFyX2RhdGVzLnR4dFBLBQYAAAAABwAHAJQBAAArBAAAAAA="
+  }
+ ],
+ "mcp": []
+}

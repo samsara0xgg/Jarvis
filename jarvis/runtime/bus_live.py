@@ -1,15 +1,15 @@
-"""BC Transit's live departures for a pinned trip (ADR 0200).
+"""BC Transit's live departures (ADR 0200) and the timetable store behind every bus time (ADR 0342).
 
 Google plans the trip; this reads what the bus is actually doing. The realtime feed
 (GTFS-realtime ``TripUpdates``, about 30 s fresh, no key) says per trip and stop when the bus will
-leave and how far off its timetable that is. Its trips and stops are named by the static GTFS
-export (a zip of about 16 MB), so that is kept under the runtime root and fetched at most once a
-day, in the background once there is a copy; only the two small lookups a match needs (trip ->
-route number, stop -> position) are built, on the first refresh and again when a new export
-lands. Google and BC Transit spell stop names differently, so a stop is found by position: every
-GTFS stop within ``STOP_RADIUS_M`` of where Google put it.
+leave. Its trips and stops are named by the static GTFS export (a zip of about 16 MB), fetched at
+most once a day, in the background once there is a copy. Each export is indexed once, off the
+request path, into the timetable store (:mod:`jarvis.state.timetable`) beside it, and only the
+first store ever built is waited for. Google gives no BC Transit ids, so a Google bus leg is matched
+to a trip by position and stop order (:meth:`BusLive.timed`), against one :meth:`BusLive.snapshot`
+of the feed that all the legs of an answer share.
 
-A followed ride (ADR 0224) reads the same export and the VehiclePositions feed
+A followed ride (ADR 0224) reads the same store and the VehiclePositions feed
 (``vehicleupdates.pb``, about 13 KB): :meth:`BusLive.vehicles` for the buses,
 :meth:`BusLive.trip_stops` for one trip's stops with their scheduled times and
 :meth:`BusLive.predicted` for the live arrivals of a trip.
@@ -17,37 +17,37 @@ A followed ride (ADR 0224) reads the same export and the VehiclePositions feed
 
 from __future__ import annotations
 
-import csv
-import io
+import logging
 import shutil
-import sys
 import threading
 import time
 import urllib.request
-import zipfile
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import TYPE_CHECKING, Final
-from zoneinfo import ZoneInfo
 
 from google.transit import gtfs_realtime_pb2
 
-from jarvis.shared.geo import metres
-from jarvis.state.ride_progress import StopTime, Vehicle
+from jarvis.shared.rounding import departure_ms
+from jarvis.state import timetable
+from jarvis.state.ride_progress import Vehicle
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
+    from jarvis.state.ride_progress import StopTime
+
+LOGGER = logging.getLogger(__name__)
+
 FEED_URL: Final = "https://bct.tmix.se/gtfs-realtime/tripupdates.pb?operatorIds=48"
 VEHICLES_URL: Final = "https://bct.tmix.se/gtfs-realtime/vehicleupdates.pb?operatorIds=48"
 STATIC_URL: Final = "https://bct.tmix.se/Tmix.Cap.TdExport.WebApi/gtfs/?operatorIds=48"
 STATIC_MAX_AGE_S: Final = 24 * 3600
-STOP_RADIUS_M: Final = 40.0
-MATCH_WINDOW_MS: Final = 10 * 60_000
+STOP_RADIUS_M: Final = timetable.STOP_RADIUS_M
+MATCH_WINDOW_MS: Final = timetable.MATCH_WINDOW_MS
 _FEED_TIMEOUT_S: Final = 10.0
 _STATIC_TIMEOUT_S: Final = 120.0
-_ZONE: Final = ZoneInfo("America/Vancouver")
-_TRIPS_KEPT: Final = 20
+_NEXT_TRIPS_TRIED: Final = 6
 
 
 def _fetch_feed() -> bytes:
@@ -68,6 +68,42 @@ def _download_static(dest: Path) -> None:
         shutil.copyfileobj(reply, out)
 
 
+def _updates(
+    feed: gtfs_realtime_pb2.FeedMessage, call: timetable.Call,
+) -> list[tuple[gtfs_realtime_pb2.TripUpdate.StopTimeUpdate, bool]]:
+    """The stop time updates the feed holds for ``call``'s trip on its service day.
+
+    Each comes with whether the feed dated it. A trip runs every day under one id, so an update
+    dated with another day's ``start_date`` is not this day's.
+    """
+    day = f"{call.day:%Y%m%d}"
+    found: list[tuple[gtfs_realtime_pb2.TripUpdate.StopTimeUpdate, bool]] = []
+    for entity in feed.entity:
+        update = entity.trip_update
+        if not entity.HasField("trip_update") or update.trip.trip_id != call.trip_id:
+            continue
+        if update.trip.start_date and update.trip.start_date != day:
+            continue
+        found.extend((one, bool(update.trip.start_date)) for one in update.stop_time_update)
+    return found
+
+
+def _given(one: gtfs_realtime_pb2.TripUpdate.StopTimeUpdate) -> tuple[int, int] | None:
+    """``(arrive, depart)`` in epoch ms an update gives; one time stands for both, none is None."""
+    arrive, depart = int(one.arrival.time) * 1000, int(one.departure.time) * 1000
+    return (arrive or depart, depart or arrive) if arrive or depart else None
+
+
+def _own_day(*, dated: bool, late_ms: int) -> bool:
+    """Whether a prediction ``late_ms`` from the schedule is for the call's own service day.
+
+    One the feed dated has passed the date check already; an undated one counts only when it is no
+    later than a bus can run (:data:`~jarvis.state.timetable.LIVE_SLACK_MS`), else it is another
+    day's.
+    """
+    return dated or abs(late_ms) <= timetable.LIVE_SLACK_MS
+
+
 class BusLive:
     """Live departure times from BC Transit; ``feed`` and ``download`` are the network calls."""
 
@@ -79,19 +115,200 @@ class BusLive:
         download: Callable[[Path], None] = _download_static,
         vehicles: Callable[[], bytes] = _fetch_vehicles,
     ) -> None:
-        """``cache_dir`` holds the static zip.
+        """``cache_dir`` holds the static zip and the timetable store built from it.
 
         ``feed`` (trip updates), ``vehicles`` (positions) and ``download`` (the export) are the
         network calls.
         """
         self._zip = cache_dir / "bctransit-gtfs.zip"
+        self._store = cache_dir / "bctransit-timetable.sqlite"
         self._feed, self._download, self._vehicles = feed, download, vehicles
-        self._trips: dict[str, str] | None = None
-        self._loaded = 0.0  # the export's mtime the maps were built from
-        self._refreshing = threading.Lock()  # held while a background download runs
-        self._stops: dict[str, tuple[float, float]] = {}
-        self._names: dict[str, str] = {}
-        self._trip_cache: dict[tuple[str, str | None], list[StopTime]] = {}
+        self._table: timetable.Timetable | None = None
+        self._routes: dict[str, str] = {}
+        self._refreshing = threading.Lock()  # held while a background download or build runs
+        self._guard = threading.Lock()
+
+    # --- the timetable ------------------------------------------------------------------
+
+    def table(self) -> timetable.Timetable:
+        """The timetable store for the newest export.
+
+        Only a first download and a first build are waited for. A day-old export still names the
+        trips, so it answers while the new one downloads and is indexed in the background (inline,
+        a bus answer once took 64 s); the next call reads the new store. Errors propagate.
+        """
+        if not self._zip.exists():
+            self._refresh()
+        elif not self._fresh() and self._refreshing.acquire(blocking=False):
+            threading.Thread(target=self._refresh_then_release, daemon=True).start()
+        stamp = str(self._zip.stat().st_mtime_ns)
+        with self._guard:
+            held = self._table
+        if held is not None and held.source == stamp:
+            return held
+        if held is None and self._store.exists():
+            held = self._open()
+            if held.source == stamp:
+                return held
+        if held is None:
+            return self._build(stamp)
+        if self._refreshing.acquire(blocking=False):
+            threading.Thread(target=self._build_then_release, args=(stamp,), daemon=True).start()
+        return held
+
+    def _open(self) -> timetable.Timetable:
+        opened = timetable.Timetable(self._store)
+        with self._guard:
+            self._table, self._routes = opened, {}
+        return opened
+
+    def _build(self, stamp: str) -> timetable.Timetable:
+        """Index the export now; used when no store can answer yet."""
+        with self._guard:
+            held = self._table
+        if held is not None and held.source == stamp:
+            return held
+        timetable.build(self._zip, self._store)
+        return self._open()
+
+    def _build_then_release(self, stamp: str) -> None:
+        try:
+            self._build(stamp)
+        except Exception:  # noqa: BLE001 - the old store keeps answering.
+            LOGGER.warning("bus_live: could not index the new export", exc_info=True)
+        finally:
+            self._refreshing.release()
+
+    def _routes_of(self, table: timetable.Timetable) -> dict[str, str]:
+        with self._guard:
+            if not self._routes:
+                self._routes = table.route_numbers()
+            return self._routes
+
+    # --- the realtime feed --------------------------------------------------------------
+
+    def _live(
+        self, feed: gtfs_realtime_pb2.FeedMessage, call: timetable.Call,
+    ) -> tuple[int, int] | None:
+        """``(arrive, depart)`` in epoch ms when the feed says ``call``'s bus reaches and leaves.
+
+        The feed's own prediction for the stop; with none, the delay of the nearest earlier stop
+        of that trip it does predict, carried on to this one (GTFS-realtime holds a delay good
+        until the next prediction). Only a prediction for the call's own service day counts: one
+        the feed dates with that day's ``start_date``, or an undated one within
+        :data:`~jarvis.state.timetable.LIVE_SLACK_MS` of the schedule.
+        """
+        known = [
+            (one, dated, given) for one, dated in _updates(feed, call)
+            if (given := _given(one)) is not None
+        ]
+        for one, dated, given in known:
+            if one.stop_id == call.stop_id and _own_day(
+                dated=dated, late_ms=given[1] - call.depart_ms,
+            ):
+                return given
+        if not known:
+            return None
+        places: dict[str, timetable.Call] = {}
+        for each in self.table().trip_calls(call.trip_id, call.day):
+            places.setdefault(each.stop_id, each)
+        carried: tuple[int, int] | None = None  # the nearest earlier stop's (seq, delay)
+        for one, dated, given in known:
+            earlier = places.get(one.stop_id)
+            if earlier is None or earlier.seq >= call.seq:
+                continue
+            delay = given[1] - earlier.depart_ms
+            if _own_day(dated=dated, late_ms=delay) and (
+                carried is None or earlier.seq >= carried[0]
+            ):
+                carried = (earlier.seq, delay)
+        if carried is None:
+            return None
+        return call.arrive_ms + carried[1], call.depart_ms + carried[1]
+
+    def live_at(self, feed: gtfs_realtime_pb2.FeedMessage, call: timetable.Call) -> int | None:
+        """When the feed says ``call``'s bus leaves its stop (epoch ms), None when it is silent."""
+        found = self._live(feed, call)
+        return None if found is None else found[1]
+
+    def _arrival_at(
+        self, feed: gtfs_realtime_pb2.FeedMessage, call: timetable.Call,
+    ) -> int | None:
+        found = self._live(feed, call)
+        return None if found is None else found[0]
+
+    def snapshot(self) -> gtfs_realtime_pb2.FeedMessage:
+        """The realtime feed, downloaded and parsed once, for lookups to share."""
+        feed = gtfs_realtime_pb2.FeedMessage()
+        feed.ParseFromString(self._feed())
+        return feed
+
+    def timed(
+        self,
+        route: str,
+        board: tuple[float, float],
+        alight: tuple[float, float],
+        around_ms: int,
+        feed: gtfs_realtime_pb2.FeedMessage | None = None,
+    ) -> timetable.Timed | None:
+        """The trip a Google bus leg is, with the feed's times at its stops (ADR 0342).
+
+        ``feed`` is the answer's one :meth:`snapshot`; without it the trip has its scheduled
+        times only. None when no trip fits. Errors propagate.
+        """
+        table = self.table()
+        found = table.match_leg(
+            route, board, alight, around_ms,
+            None if feed is None else lambda call: self.live_at(feed, call),
+        )
+        if found is None:
+            return None
+        return timetable.Timed(
+            found,
+            None if feed is None else self.live_at(feed, found.board),
+            None if feed is None else self._arrival_at(feed, found.alight),
+        )
+
+    def following(
+        self, after: timetable.Timed, feed: gtfs_realtime_pb2.FeedMessage | None = None,
+        not_before_ms: int | None = None,
+    ) -> timetable.Timed | None:
+        """The next trip of the same route, from the same stop, in the same direction.
+
+        It is read to the same alight stop; None when no later trip calls at both. With
+        ``not_before_ms``, the first one whose departure (live, else scheduled, to the minute) is
+        no earlier than that: the bus he can still catch at a change. Errors propagate.
+        """
+        table, board = self.table(), after.match.board
+        run, day = board.trip_id, board.day
+        for _ in range(_NEXT_TRIPS_TRIED):
+            nxt = table.next_trip_after(run, day, board.stop_id)
+            if nxt is None:
+                return None
+            end = next(
+                (c for c in table.calls_after(nxt.trip_id, nxt.day, nxt.seq)
+                 if c.stop_id == after.match.alight.stop_id),
+                None,
+            )
+            if end is not None:
+                found = timetable.Timed(
+                    timetable.Match(nxt, end),
+                    None if feed is None else self.live_at(feed, nxt),
+                    None if feed is None else self._arrival_at(feed, end),
+                )
+                if not_before_ms is None or departure_ms(found.depart_ms) >= not_before_ms:
+                    return found
+            run, day = nxt.trip_id, nxt.day
+        return None
+
+    def last_gone(self, after: timetable.Timed, now_ms: int) -> timetable.Call | None:
+        """The last bus of this route, stop and direction that had left by ``now_ms``, or None."""
+        table, board = self.table(), after.match.board
+        gone = [
+            c for c in table.calls_at(board.stop_id, now_ms - 24 * 3_600_000, now_ms, board.route)
+            if c.direction == board.direction
+        ]
+        return gone[-1] if gone else None
 
     def departure(
         self,
@@ -103,19 +320,22 @@ class BusLive:
     ) -> tuple[str, int] | None:
         """``(trip_id, live departure ms)`` of the bus on ``route`` at ``stop``, or None.
 
-        With ``trip_id`` (the bus matched last time) that trip is looked for first; otherwise,
-        or when it is gone from the feed, the trip whose timetable (or live) time is closest to
-        ``around_ms``, and no more than ten minutes from it. ``feed`` is a :meth:`snapshot`
-        shared by several lookups; without it the feed is downloaded for this one. Network and
-        file errors propagate.
+        With ``trip_id`` (the trip the pin was matched to, ADR 0342) that trip alone is read, on
+        the service day whose time is nearest ``around_ms``: a trip the feed has stopped covering
+        gives None. Without one, the trip whose timetable (or live) time is closest to
+        ``around_ms``, and no more than ten minutes from it. ``feed`` is a :meth:`snapshot` shared
+        by several lookups; without it the feed is downloaded for this one. Network and file
+        errors propagate.
         """
-        return _closest(self._stop_times(route, stop, around_ms, feed), trip_id)
-
-    def snapshot(self) -> gtfs_realtime_pb2.FeedMessage:
-        """The realtime feed, downloaded and parsed once, for lookups to share."""
-        feed = gtfs_realtime_pb2.FeedMessage()
-        feed.ParseFromString(self._feed())
-        return feed
+        feed = feed if feed is not None else self.snapshot()
+        if trip_id is not None:
+            table = self.table()
+            for near, _ in table.stops_near(stop, STOP_RADIUS_M):
+                call = table.call_near(trip_id, near.stop_id, around_ms)
+                if call is not None and (at := self.live_at(feed, call)) is not None:
+                    return trip_id, at
+            return None
+        return _closest(self._stop_times(route, stop, around_ms, feed))
 
     def next_departure(
         self,
@@ -129,8 +349,8 @@ class BusLive:
         The bus now matched (or, when it is gone from the feed, ``around_ms``) is the line:
         the earliest bus on ``route`` at ``stop`` leaving after it. Errors propagate.
         """
-        found = self._stop_times(route, stop, around_ms)
-        now = _closest(found, trip_id)
+        found = self._stop_times(route, stop, around_ms, self.snapshot())
+        now = _closest([f for f in found if trip_id is None or f[1] == trip_id] or found)
         line = now[1] if now else around_ms
         later = [(live, trip) for _, trip, live in found if live > line]
         return (min(later)[1], min(later)[0]) if later else None
@@ -144,7 +364,7 @@ class BusLive:
         feed = gtfs_realtime_pb2.FeedMessage()
         feed.ParseFromString(self._vehicles())
         try:
-            trips: dict[str, str] = self._lookups()
+            trips = self._routes_of(self.table())
         except Exception:  # noqa: BLE001 - the feed's own route id still names the route.
             trips = {}
         found: list[Vehicle] = []
@@ -172,43 +392,27 @@ class BusLive:
         return found
 
     def stop_name(self, stop_id: str) -> str | None:
-        """The name of a stop in the static export, once it has been read; else None."""
-        return self._names.get(stop_id) or None
+        """The name of a stop in the timetable, once it has been indexed; else None."""
+        if self._table is None:
+            return None
+        return self._table.stop_name(stop_id) or None
+
+    def headsign(self, trip_id: str) -> str:
+        """Where a trip is going, from the timetable; empty when it has none. Errors propagate."""
+        return self.table().headsign_of(trip_id)
 
     def trip_stops(self, trip_id: str, service_date: str | None = None) -> list[StopTime]:
         """The stops of a trip in order, with their scheduled times on ``service_date``.
 
-        ``service_date`` is ``YYYYMMDD`` (the feed's ``start_date``); today when None. The
-        timetable is read from the static export by one pass over its stop times, and the last
-        few trips are kept. Errors propagate.
+        ``service_date`` is ``YYYYMMDD`` (the feed's ``start_date``); today when None. Errors
+        propagate.
         """
-        key = (trip_id, service_date)
-        if key in self._trip_cache:
-            return self._trip_cache[key]
-        self._lookups()
+        table = self.table()
         day = (
-            datetime.strptime(service_date, "%Y%m%d").replace(tzinfo=_ZONE)
-            if service_date
-            else datetime.now(_ZONE).replace(hour=0, minute=0, second=0, microsecond=0)
+            datetime.strptime(service_date, "%Y%m%d").date()  # noqa: DTZ007 - a date only.
+            if service_date else datetime.now(table.zone).date()
         )
-        found: list[StopTime] = []
-        with zipfile.ZipFile(self._zip) as archive:
-            for row in _rows(archive, "stop_times.txt"):
-                if row["trip_id"] != trip_id or row["stop_id"] not in self._stops:
-                    continue
-                clock = row["arrival_time"] or row["departure_time"]
-                h, m, sec = (int(part) for part in clock.split(":"))
-                at = day + timedelta(hours=h, minutes=m, seconds=sec)
-                lat, lng = self._stops[row["stop_id"]]
-                found.append(StopTime(
-                    int(row["stop_sequence"]), row["stop_id"], self._names[row["stop_id"]],
-                    lat, lng, int(at.timestamp() * 1000),
-                ))
-        found.sort(key=lambda s: s.seq)
-        if len(self._trip_cache) >= _TRIPS_KEPT:
-            self._trip_cache.clear()
-        self._trip_cache[key] = found
-        return found
+        return table.trip_stops(trip_id, day)
 
     @staticmethod
     def predicted(feed: gtfs_realtime_pb2.FeedMessage, trip_id: str) -> dict[str, int]:
@@ -229,12 +433,12 @@ class BusLive:
         route: str,
         stop: tuple[float, float],
         around_ms: int,
-        feed: gtfs_realtime_pb2.FeedMessage | None = None,
+        feed: gtfs_realtime_pb2.FeedMessage,
     ) -> list[tuple[int, str, int]]:
         """Each bus on ``route`` at ``stop`` as ``(distance from around_ms, trip, live ms)``."""
-        trips = self._lookups()
-        near = {sid for sid, at in self._stops.items() if metres(stop, at) <= STOP_RADIUS_M}
-        feed = feed if feed is not None else self.snapshot()
+        table = self.table()
+        trips = self._routes_of(table)
+        near = {s.stop_id for s, _ in table.stops_near(stop, STOP_RADIUS_M)}
         found: list[tuple[int, str, int]] = []
         for entity in feed.entity:
             update = entity.trip_update
@@ -249,55 +453,36 @@ class BusLive:
                 found.append((off, update.trip.trip_id, live))
         return found
 
-    def _lookups(self) -> dict[str, str]:
-        """The trip -> route number map, building it (and the stop positions) from the export.
-
-        Only the first export is waited for. A day-old one still names the trips, so it answers
-        while the new one downloads in the background (inline, a bus answer once took 64 s); the
-        maps are rebuilt when the new file lands.
-        """
-        if not self._zip.exists():
-            self._refresh()
-        elif not self._fresh() and self._refreshing.acquire(blocking=False):
-            threading.Thread(target=self._refresh_then_release, daemon=True).start()
-        loaded = self._zip.stat().st_mtime
-        if self._trips is not None and loaded == self._loaded:
-            return self._trips
-        with zipfile.ZipFile(self._zip) as archive:
-            routes = {
-                row["route_id"]: sys.intern(row["route_short_name"].strip())
-                for row in _rows(archive, "routes.txt")
-            }
-            self._trips = {
-                row["trip_id"]: routes.get(row["route_id"], "")
-                for row in _rows(archive, "trips.txt")
-            }
-            self._stops = {}
-            self._names = {}
-            for row in _rows(archive, "stops.txt"):
-                self._stops[row["stop_id"]] = (float(row["stop_lat"]), float(row["stop_lon"]))
-                self._names[row["stop_id"]] = (row.get("stop_name") or "").strip()
-        self._loaded = loaded
-        return self._trips
+    # --- the export ---------------------------------------------------------------------
 
     def _refresh(self) -> None:
-        """Download the export over the old copy; with no copy at all, a failure raises."""
+        """Download the export over the old copy; with no copy at all, a failure raises.
+
+        One download at a time, across threads and processes; a caller that waited finds the copy
+        the other fetched and keeps it.
+        """
         self._zip.parent.mkdir(parents=True, exist_ok=True)
-        part = self._zip.with_suffix(".part")
-        try:
-            self._download(part)
-            part.replace(self._zip)
-        except Exception:
-            part.unlink(missing_ok=True)
-            if not self._zip.exists():
-                raise
-            # An old copy still names the trips; its age restarts, so a day without the
-            # export is the price of a failed download, not a retry every refresh.
-            self._zip.touch()
+        with timetable.exclusive(self._zip.with_name(self._zip.name + ".lock")):
+            if self._fresh():
+                return
+            part = timetable.scratch(self._zip, ".part")
+            try:
+                self._download(part)
+                part.replace(self._zip)
+            except Exception:
+                part.unlink(missing_ok=True)
+                if not self._zip.exists():
+                    raise
+                # An old copy still names the trips; its age restarts, so a day without the
+                # export is the price of a failed download, not a retry every refresh.
+                self._zip.touch()
 
     def _refresh_then_release(self) -> None:
         try:
             self._refresh()
+            self._build(str(self._zip.stat().st_mtime_ns))
+        except Exception:  # noqa: BLE001 - the old copy keeps answering.
+            LOGGER.warning("bus_live: could not refresh the export", exc_info=True)
         finally:
             self._refreshing.release()
 
@@ -305,14 +490,12 @@ class BusLive:
         return self._zip.exists() and time.time() - self._zip.stat().st_mtime < STATIC_MAX_AGE_S
 
 
-def _closest(found: list[tuple[int, str, int]], trip_id: str | None) -> tuple[str, int] | None:
-    """The matched bus: ``trip_id`` if the feed still has it, else the closest within the window."""
+def _closest(found: list[tuple[int, str, int]]) -> tuple[str, int] | None:
+    """The matched bus: the closest in time, if it is within the window."""
     if not found:
         return None
-    off, best, live = min((-1 if trip == trip_id else off, trip, live) for off, trip, live in found)
+    off, best, live = min(found)
     return (best, live) if off <= MATCH_WINDOW_MS else None
 
 
-def _rows(archive: zipfile.ZipFile, name: str) -> csv.DictReader[str]:
-    """One CSV of the export; BC Transit's files start with a UTF-8 byte-order mark."""
-    return csv.DictReader(io.TextIOWrapper(archive.open(name), encoding="utf-8-sig", newline=""))
+__all__ = ["BusLive"]

@@ -1,0 +1,48 @@
+{
+ "version": 1,
+ "settings": {},
+ "env": [
+  "GOOGLE_MAPS_API_KEY"
+ ],
+ "http": [
+  {
+   "method": "POST",
+   "url": "https://routes.googleapis.com/directions/v2:computeRoutes",
+   "request": "{\"origin\": {\"location\": {\"latLng\": {\"latitude\": 48.4284, \"longitude\": -123.3656}}}, \"destination\": {\"location\": {\"latLng\": {\"latitude\": 48.4634, \"longitude\": -123.3117}}}, \"travelMode\": \"TRANSIT\", \"computeAlternativeRoutes\": true, \"departureTime\": \"2026-10-15T16:30:00Z\"}",
+   "status": 200,
+   "content_type": "application/json",
+   "body": "{\"routes\": [{\"legs\": [{\"steps\": [{\"travelMode\": \"WALK\", \"staticDuration\": \"300s\"}, {\"travelMode\": \"TRANSIT\", \"staticDuration\": \"900s\", \"transitDetails\": {\"stopDetails\": {\"departureStop\": {\"name\": \"Fern St at Haultain St\", \"location\": {\"latLng\": {\"latitude\": 48.432, \"longitude\": -123.36}}}, \"arrivalStop\": {\"name\": \"Kestrel Rd at Brook St\", \"location\": {\"latLng\": {\"latitude\": 48.46, \"longitude\": -123.32}}}, \"departureTime\": \"2026-10-15T16:53:00Z\", \"arrivalTime\": \"2026-10-15T17:07:00Z\"}, \"headsign\": \"Kestrel Park\", \"transitLine\": {\"nameShort\": \"14\", \"name\": \"Kestrel Park\"}}}, {\"travelMode\": \"WALK\", \"staticDuration\": \"180s\"}], \"endLocation\": {\"location\": {\"latLng\": {\"latitude\": 48.4634, \"longitude\": -123.3117}}}}]}]}"
+  },
+  {
+   "method": "POST",
+   "url": "https://routes.googleapis.com/directions/v2:computeRoutes",
+   "request": "{\"origin\": {\"location\": {\"latLng\": {\"latitude\": 48.4284, \"longitude\": -123.3656}}}, \"destination\": {\"location\": {\"latLng\": {\"latitude\": 48.4634, \"longitude\": -123.3117}}}, \"travelMode\": \"DRIVE\"}",
+   "status": 200,
+   "content_type": "application/json",
+   "body": "{\"routes\": [{\"duration\": \"780s\", \"distanceMeters\": 6100}]}"
+  },
+  {
+   "method": "POST",
+   "url": "https://routes.googleapis.com/directions/v2:computeRoutes",
+   "request": "{\"origin\": {\"location\": {\"latLng\": {\"latitude\": 48.4284, \"longitude\": -123.3656}}}, \"destination\": {\"location\": {\"latLng\": {\"latitude\": 48.4634, \"longitude\": -123.3117}}}, \"travelMode\": \"WALK\"}",
+   "status": 200,
+   "content_type": "application/json",
+   "body": "{\"routes\": [{\"duration\": \"4500s\", \"distanceMeters\": 5800}]}"
+  },
+  {
+   "method": "GET",
+   "url": "https://bct.tmix.se/gtfs-realtime/tripupdates.pb?operatorIds=48",
+   "status": 200,
+   "content_type": "application/x-protobuf",
+   "body_b64": "CgUKAzIuMBIfCgEwGhoKCgoIVDE0LTA5NTMSDBoGENiJxNYGIgJGMQ=="
+  },
+  {
+   "method": "GET",
+   "url": "https://bct.tmix.se/Tmix.Cap.TdExport.WebApi/gtfs/?operatorIds=48",
+   "status": 200,
+   "content_type": "application/zip",
+   "body_b64": "UEsDBBQAAAAAAPtbVV1Tk1BXSgAAAEoAAAAKAAAAYWdlbmN5LnR4dO+7v2FnZW5jeV9pZCxhZ2VuY3lfbmFtZSxhZ2VuY3lfdGltZXpvbmUKMSxUZXN0IFRyYW5zaXQsQW1lcmljYS9WYW5jb3V2ZXIKUEsDBBQAAAAAAPtbVV0685JLJAAAACQAAAAKAAAAcm91dGVzLnR4dO+7v3JvdXRlX2lkLHJvdXRlX3Nob3J0X25hbWUKUjE0LDE0ClBLAwQUAAAAAAD7W1VdrfmG+lkAAABZAAAACQAAAHRyaXBzLnR4dO+7v3JvdXRlX2lkLHNlcnZpY2VfaWQsdHJpcF9pZCx0cmlwX2hlYWRzaWduLGRpcmVjdGlvbl9pZApSMTQsV0ssVDE0LTA5NTMsS2VzdHJlbCBQYXJrLDAKUEsDBBQAAAAAAPtbVV37gQlIhAAAAIQAAAAJAAAAc3RvcHMudHh077u/c3RvcF9pZCxzdG9wX2NvZGUsc3RvcF9uYW1lLHN0b3BfbGF0LHN0b3BfbG9uCkYxLCxGZXJuIFN0IGF0IEhhdWx0YWluIFN0LDQ4LjQzMiwtMTIzLjM2CkYyLCxLZXN0cmVsIFJkIGF0IEJyb29rIFN0LDQ4LjQ2LC0xMjMuMzIKUEsDBBQAAAAAAPtbVV1M7bQefQAAAH0AAAAOAAAAc3RvcF90aW1lcy50eHTvu790cmlwX2lkLGFycml2YWxfdGltZSxkZXBhcnR1cmVfdGltZSxzdG9wX2lkLHN0b3Bfc2VxdWVuY2UKVDE0LTA5NTMsMDk6NTM6MDAsMDk6NTM6MDAsRjEsMQpUMTQtMDk1MywxMDowNzowMCwxMDowNzowMCxGMiwyClBLAwQUAAAAAAD7W1Vdhnv/Qn4AAAB+AAAADAAAAGNhbGVuZGFyLnR4dO+7v3NlcnZpY2VfaWQsbW9uZGF5LHR1ZXNkYXksd2VkbmVzZGF5LHRodXJzZGF5LGZyaWRheSxzYXR1cmRheSxzdW5kYXksc3RhcnRfZGF0ZSxlbmRfZGF0ZQpXSywxLDEsMSwxLDEsMSwxLDIwMjYwMTAxLDIwMjYxMjMxClBLAwQUAAAAAAD7W1VdJBBtSyIAAAAiAAAAEgAAAGNhbGVuZGFyX2RhdGVzLnR4dO+7v3NlcnZpY2VfaWQsZGF0ZSxleGNlcHRpb25fdHlwZQpQSwECFAMUAAAAAAD7W1VdU5NQV0oAAABKAAAACgAAAAAAAAAAAAAAgAEAAAAAYWdlbmN5LnR4dFBLAQIUAxQAAAAAAPtbVV0685JLJAAAACQAAAAKAAAAAAAAAAAAAACAAXIAAAByb3V0ZXMudHh0UEsBAhQDFAAAAAAA+1tVXa35hvpZAAAAWQAAAAkAAAAAAAAAAAAAAIABvgAAAHRyaXBzLnR4dFBLAQIUAxQAAAAAAPtbVV37gQlIhAAAAIQAAAAJAAAAAAAAAAAAAACAAT4BAABzdG9wcy50eHRQSwECFAMUAAAAAAD7W1VdTO20Hn0AAAB9AAAADgAAAAAAAAAAAAAAgAHpAQAAc3RvcF90aW1lcy50eHRQSwECFAMUAAAAAAD7W1Vdhnv/Qn4AAAB+AAAADAAAAAAAAAAAAAAAgAGSAgAAY2FsZW5kYXIudHh0UEsBAhQDFAAAAAAA+1tVXSQQbUsiAAAAIgAAABIAAAAAAAAAAAAAAIABOgMAAGNhbGVuZGFyX2RhdGVzLnR4dFBLBQYAAAAABwAHAJQBAACMAwAAAAA="
+  }
+ ],
+ "mcp": []
+}

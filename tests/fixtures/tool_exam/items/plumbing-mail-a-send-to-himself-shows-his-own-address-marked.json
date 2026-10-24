@@ -1,0 +1,54 @@
+{
+  "id": "plumbing-mail-a-send-to-himself-shows-his-own-address-marked",
+  "layer": "plumbing",
+  "at": "2026-10-21T11:00:00-07:00",
+  "zone": "America/Vancouver",
+  "state": null,
+  "turns": [
+    {
+      "said": "send myself a test email",
+      "script": [
+        {
+          "tool_calls": [
+            {
+              "name": "mail",
+              "arguments": {
+                "action": "send",
+                "to": "me",
+                "subject": "Test",
+                "body": "A test."
+              }
+            }
+          ]
+        }
+      ],
+      "card": {
+        "tool": "mail",
+        "letter": true,
+        "args": {
+          "to": [
+            "allen@example.com (you)"
+          ],
+          "subject": "Test",
+          "body": "A test."
+        }
+      }
+    }
+  ],
+  "recording": "plumbing-mail-a-send-to-himself-shows-his-own-address-marked.recording.json",
+  "expect": {
+    "model_requests": [
+      1
+    ],
+    "gmail": [
+      {
+        "tool": "gmail_createDraft",
+        "count": 0
+      },
+      {
+        "tool": "gmail_sendDraft",
+        "count": 0
+      }
+    ]
+  }
+}

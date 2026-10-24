@@ -1,0 +1,21 @@
+{
+  "id": "weather-today-after-drizzle",
+  "tool": "weather",
+  "said": "will it rain again today",
+  "at": "2026-10-21T09:35:00-07:00",
+  "zone": "America/Vancouver",
+  "state": null,
+  "args": {},
+  "recording": "weather-today-after-drizzle.recording.json",
+  "expect": {
+    "summary_must": ["no more rain today"],
+    "result": [
+      {"path": "earlier_today.rain_mm", "op": "eq", "value": 1.0},
+      {"path": "rest_of_today.max_chance_pct", "op": "eq", "value": 0},
+      {"path": "rest_of_today.rain_mm", "op": "eq", "value": 0},
+      {"path": "rest_of_today.likely_from", "op": "absent"},
+      {"path": "next_hour.now", "op": "eq", "value": "dry"}
+    ],
+    "checker": "weather_today_in_parts"
+  }
+}

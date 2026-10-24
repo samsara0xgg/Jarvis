@@ -1,0 +1,18 @@
+{
+ "version": 1,
+ "settings": {},
+ "env": [
+  "TAVILY_API_KEY"
+ ],
+ "http": [
+  {
+   "method": "GET",
+   "url": "https://news.example.com/s/ferries",
+   "request": "",
+   "status": 404,
+   "content_type": "text/html; charset=utf-8",
+   "body": "<html><head><title>Not found</title></head><body><h1>404</h1><p>There is no page at this address on Northwind Press.</p></body></html>"
+  }
+ ],
+ "mcp": []
+}

@@ -1,10 +1,13 @@
-"""ADR 0324: the Mac's daily Pi backup carries the nightly check-log reports, and nothing else.
+"""ADR 0324: the Mac's daily Pi backup carries the check-log reports and the recorded day.
+
+The recorded day is ADR 0238's archive; nothing else travels.
 
 ``scripts/pi_brain_backup.sh`` is run for real, with ``ssh``, ``scp`` and ``sqlite3`` replaced by
 shims that act on a fake Pi home on this machine (the script's Pi-side Python runs unchanged).
 What is asserted is what the owner relies on: the databases and the dated reports arrive in the
 day's folder, env and other logs stay behind, a Pi with no report yet is a note rather than a failed
-backup, and the copied event log can be checked where it landed.
+backup, the copied event log can be checked where it landed, and the recorded-day pieces are
+mirrored whole, outside the dated folders, with nothing deleted on either side.
 """
 
 from __future__ import annotations
@@ -26,7 +29,7 @@ SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "pi_brain_backup.sh"
 _SSH = """#!/bin/sh
 while [ "$1" = -o ]; do shift 2; done
 shift
-exec env HOME="$PI_HOME" sh -c "$*"
+cd "$PI_HOME" && exec env HOME="$PI_HOME" sh -c "$*"
 """
 _SCP = """#!/bin/sh
 while [ "$1" = -q ] || [ "$1" = -o ]; do if [ "$1" = -o ]; then shift 2; else shift; fi; done
@@ -62,7 +65,7 @@ class _Pi:
         )
 
     def day(self) -> Path:
-        (folder,) = (self.mac_home / ".jarvis" / "backups" / "pi-brain").iterdir()
+        (folder,) = (self.mac_home / ".jarvis" / "backups" / "pi-brain").glob("????-??-??")
         return folder
 
 
@@ -124,3 +127,35 @@ def test_the_copied_event_log_is_checked_where_it_landed(
     report = json.loads(capsys.readouterr().out)
     assert (code, report["ok"]) == (0, True)
     assert report["window"]["events"] == 3
+
+
+def test_the_recorded_day_is_mirrored_and_nothing_is_deleted(pi: _Pi) -> None:
+    """Whole pieces arrive under lifelog/, a piece still being written does not.
+
+    A piece gone from the Pi stays in the mirror.
+    """
+    day = pi.pi_root / "lifelog" / "audio" / "macbook" / "2026-10-23"
+    day.mkdir(parents=True)
+    (day / "20261023T210000.000Z_600000ms_a.caf").write_bytes(b"piece-a")
+    (day / ".20261023T211000.000Z_600000ms_b.caf.1.part").write_bytes(b"half")
+    first = pi.backup()
+    assert first.returncode == 0, first.stderr
+    backups = pi.mac_home / ".jarvis" / "backups" / "pi-brain"
+    mirror = backups / "lifelog" / "audio" / "macbook" / "2026-10-23"
+    assert sorted(one.name for one in mirror.iterdir()) == ["20261023T210000.000Z_600000ms_a.caf"]
+    assert "lifelog ok (1 pieces" in first.stdout
+    (day / "20261023T210000.000Z_600000ms_a.caf").unlink()
+    (day / "20261023T212000.000Z_600000ms_c.caf").write_bytes(b"piece-c")
+    assert pi.backup().returncode == 0
+    assert sorted(one.name for one in mirror.iterdir()) == [
+        "20261023T210000.000Z_600000ms_a.caf", "20261023T212000.000Z_600000ms_c.caf",
+    ]
+    assert (mirror / "20261023T210000.000Z_600000ms_a.caf").read_bytes() == b"piece-a"
+
+
+def test_a_pi_without_a_recorded_day_is_a_note_and_not_a_failed_backup(pi: _Pi) -> None:
+    """No lifelog folder on the Pi: exit 0, the databases copied and a note on stderr."""
+    done = pi.backup()
+    assert done.returncode == 0, done.stderr
+    assert "lifelog not pulled" in done.stderr
+    assert "backup done: 2 file(s)" in done.stdout

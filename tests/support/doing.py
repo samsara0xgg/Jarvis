@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from jarvis.decision.llm import ChatResult
+from jarvis.decision.llm import ChatResult, ToolCall
 from jarvis.runtime.doing_run import DoingSettings
 from jarvis.state import picture_notes as note_records
 from jarvis.state import places
@@ -117,8 +117,8 @@ def picture_row(world: World, name: str, moment: datetime, note: str) -> None:
 def world(tmp_path: Path) -> World:
     """10-07: the library 08:00-11:30, a cafe 12:00-13:00, the library 13:30-14:45; it is 15:00.
 
-    He said what he was doing at 09:05, the work state saw his screen at 10:00, and a picture of
-    noodles came at 12:20.
+    He said what he was doing at 09:05 and 10:00 (the work state saw his screen at 10:01, which is
+    not a clue), and a picture of noodles came at 12:20.
     """
     memory, log = tmp_path / "memory.db", tmp_path / "events.db"
     open_memory_db(memory).close()
@@ -129,14 +129,19 @@ def world(tmp_path: Path) -> World:
     visit_row(log, "v3", doing_at(13, 30), doing_at(14, 45), "UVic Library")
     say_words(memory, "r1", doing_at(9, 5), "allen", "我在图书馆写论文")
     say_words(memory, "r2", doing_at(9, 6), "jarvis", "好的，加油")
-    screen_row(log, doing_at(10), "Writing the thesis in Overleaf")  # what he is doing lately
+    say_words(memory, "r3", doing_at(10), "allen", "在 Overleaf 上改第三章")
+    screen_row(log, doing_at(10, 1), "Writing the thesis in Overleaf")  # not a clue (ADR 0395)
     world = World(memory, log, DaySources(VANCOUVER, None, memory))
     picture_row(world, "noodles", doing_at(12, 20), "A bowl of noodles on a wooden table")
     return world
 
 
 class Writer:
-    """Stands in for the doing preset's client: ``reply`` maps the prompt to its answer."""
+    """Stands in for the doing preset's client: ``reply`` maps the prompt to its answer.
+
+    ``reads`` are rounds of screen reads to ask for before answering, each a list of a call's
+    arguments; ``tool_choices`` the tool choice of each call.
+    """
 
     provider = "anthropic"
     model = "fake-haiku"
@@ -146,12 +151,24 @@ class Writer:
         self.prompts: list[str] = []
         self.systems: list[str] = []
         self.asked: list[list[dict[str, Any]]] = []
+        self.reads: list[list[dict[str, Any]]] = []
+        self.tool_choices: list[object] = []
 
-    def chat(self, *, messages: list[dict[str, Any]], system: str, **_kwargs: object) -> ChatResult:
+    def chat(self, *, messages: list[dict[str, Any]], system: str, **kwargs: object) -> ChatResult:
         prompt = str(messages[0]["content"])
         self.prompts.append(prompt)
         self.asked.append(messages)
         self.systems.append(system)
+        self.tool_choices.append(kwargs.get("tool_choice"))
+        if self.reads and kwargs.get("tools") and kwargs.get("tool_choice") != "none":
+            calls = tuple(
+                ToolCall(f"call-{len(self.asked)}-{n}", "read_screen", json.dumps(arguments))
+                for n, arguments in enumerate(self.reads.pop(0))
+            )
+            return ChatResult(
+                text=None, tool_calls=calls, finish_reason="tool_calls", input_tokens=100,
+                output_tokens=10, raw={}, model_used=self.model, tokens_in=100, tokens_out=10,
+            )
         return ChatResult(
             text=self.reply(prompt),
             tool_calls=(),

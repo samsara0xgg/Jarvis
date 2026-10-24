@@ -1,0 +1,16 @@
+{
+  "id": "weather-next-hour-low-chance-is-dry",
+  "tool": "weather",
+  "said": "do I need an umbrella right now",
+  "at": "2026-10-21T09:30:30-07:00",
+  "zone": "America/Vancouver",
+  "state": null,
+  "args": {},
+  "recording": "weather-next-hour-low-chance-is-dry.recording.json",
+  "expect": {
+    "result": [
+      {"path": "next_hour.now", "op": "eq", "value": "dry"},
+      {"path": "next_hour.starts_at", "op": "eq", "value": null}
+    ]
+  }
+}

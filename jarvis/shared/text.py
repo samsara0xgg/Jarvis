@@ -39,6 +39,19 @@ def is_english(text: str) -> bool:
     return len(_LATIN_WORD.findall(text)) > cjk
 
 
+def split_person(shown: str) -> tuple[str, str]:
+    """``Name <address>`` as (name, address); an address alone as ("", address).
+
+    The name may hold a comma (``Lee, Sam <lee@example.com>``), which ``email.utils.parseaddr``
+    cannot read unless it is quoted.
+    """
+    text = " ".join(shown.split())
+    if text.endswith(">") and "<" in text:
+        name, _, rest = text.rpartition("<")
+        return name.strip().strip('"').strip(), rest[:-1].strip()
+    return "", text
+
+
 def truncate_utf8(data: bytes, total_bytes: int) -> tuple[str, int, bool]:
     """Decode ``data`` as UTF-8, codepoint-safe, reporting the real shortfall.
 

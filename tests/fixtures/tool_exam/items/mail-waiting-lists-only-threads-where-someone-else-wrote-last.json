@@ -1,0 +1,43 @@
+{
+  "id": "mail-waiting-lists-only-threads-where-someone-else-wrote-last",
+  "tool": "mail",
+  "said": "which mails am I still owing an answer",
+  "at": "2026-10-21T11:00:00-07:00",
+  "zone": "America/Vancouver",
+  "state": null,
+  "args": {
+    "waiting": true
+  },
+  "recording": "mail-waiting-lists-only-threads-where-someone-else-wrote-last.recording.json",
+  "expect": {
+    "summary_must": [
+      "2 threads where someone else wrote last",
+      "Sam",
+      "Kim"
+    ],
+    "result": [
+      {
+        "path": "rows",
+        "op": "len",
+        "value": 2
+      },
+      {
+        "path": "rows[*].subject",
+        "op": "eq",
+        "value": "Can you review this"
+      },
+      {
+        "path": "rows[*].subject",
+        "op": "eq",
+        "value": "Passport photo"
+      }
+    ],
+    "result_must_not_mention": [
+      "Weekly digest",
+      "Your code is",
+      "Dinner plans",
+      "Team lunch"
+    ],
+    "checker": "mail_waiting_threads"
+  }
+}

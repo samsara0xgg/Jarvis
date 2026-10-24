@@ -9,9 +9,9 @@ entered and exited from one task, so :class:`McpServers` owns a private loop
 thread: one task per server holds the client open, and the synchronous
 handlers hop onto that loop for every call. Codex's ``enabled_tools`` narrows
 a server's menu; a server that lists ``browser_snapshot`` runs every tool
-behind the browser guard (ADR 0059). A server with Gmail's send and draft
-tools gets a ``gmail_send`` that replies inside a thread and names the
-signed-in address, and keeps ``gmail_createDraft`` off the menu (ADR 0063).
+behind the browser guard (ADR 0059). Mail is the ``mail`` tool's, not this
+layer's: a Gmail server's own send and draft tools are listed like any other
+and the ``mail`` tool supersedes them for ``tool_search`` (ADR 0366).
 
 A remote entry (``url``) authenticates with ``headers`` (``$VAR`` expanded
 from the daemon environment) or with ``auth: oauth``, whose token file lives
@@ -34,7 +34,6 @@ import threading
 from collections.abc import Mapping
 from concurrent.futures import Future
 from contextlib import AsyncExitStack, suppress
-from email.utils import parseaddr
 from functools import partial
 from typing import TYPE_CHECKING, Any, Final
 
@@ -80,10 +79,6 @@ _HTTP_TIMEOUT: Final = httpx2.Timeout(30.0, read=300.0)
 
 APPROVAL_MODES: Final = frozenset({"auto", "prompt", "writes", "approve"})
 """Codex's per-server / per-tool approval modes (ADR 0033); ``auto`` when unset."""
-
-_MAIL_TOOLS: Final = frozenset({"gmail_send", "gmail_createDraft", "gmail_sendDraft"})
-"""Google's Workspace server lists these; its send has no thread, its draft does (ADR 0063)."""
-
 
 def mcp_tool_name(server: str, name: str) -> str:
     """``mcp__<server>__<tool>``, squeezed into the chat API's function-name alphabet."""
@@ -208,56 +203,6 @@ def _error_text(text: str) -> bool:
     return isinstance(body, dict) and body.keys() == {"error"} and bool(body["error"])
 
 
-def _json_text(payload: Mapping[str, Any]) -> dict[str, Any]:
-    """The JSON object a server answered in its text block."""
-    body = json.loads(str(payload.get("text", "")))
-    if not isinstance(body, dict):
-        msg = f"answer is not a JSON object: {body!r}"
-        raise ToolError(msg, code="mcp_tool_error")
-    return body
-
-
-def _own_address(call: Callable[[str, Mapping[str, Any]], dict[str, Any]]) -> str:
-    """The signed-in Gmail address, read off the newest sent message; empty when unknown."""
-    try:
-        hits = _json_text(call("gmail_search", {"query": "in:sent", "maxResults": 1}))
-        first = (hits.get("messages") or [{}])[0]
-        if not first.get("id"):
-            return ""
-        sent = _json_text(call("gmail_get", {"messageId": first["id"], "format": "metadata"}))
-    except (ToolError, ValueError, TypeError, AttributeError):
-        return ""
-    return parseaddr(str(sent.get("from") or ""))[1]
-
-
-def _send_in_thread(
-    send: Callable[[Mapping[str, Any]], dict[str, Any]],
-    call: Callable[[str, Mapping[str, Any]], dict[str, Any]],
-    args: Mapping[str, Any],
-) -> dict[str, Any]:
-    """``gmail_send``; given a ``threadId``, a reply drafted into that thread, then sent."""
-    if not args.get("threadId"):
-        return send(args)
-    draft = _json_text(call("gmail_createDraft", args))
-    return call("gmail_sendDraft", {"draftId": str(draft.get("id", ""))})
-
-
-def _mail_send(listed: mcp_types.Tool, address: str) -> tuple[str, dict[str, Any]]:
-    """``gmail_send``'s description and schema with the reply thread and the sender (ADR 0063)."""
-    schema = dict(listed.input_schema)
-    schema["properties"] = {
-        **(schema.get("properties") or {}),
-        "threadId": {
-            "type": "string",
-            "description": "To reply, the threadId of the message you answer; the reply joins it.",
-        },
-    }
-    own = f" The signed-in account, the user's own address, is {address}." if address else ""
-    head = listed.description or listed.name
-    description = f"{head} To reply to a message, pass its threadId.{own}"
-    return description, schema
-
-
 class McpServers:
     """Every entered MCP client and the loop thread that keeps them open."""
 
@@ -296,7 +241,6 @@ class McpServers:
         self._listed: list[tuple[str, Client, mcp_types.Tool]] = []
         self._clients: dict[str, Client] = {}
         self._browsers: set[str] = set()
-        self._mail: dict[str, str] = {}  # ADR 0063: mail server -> its signed-in address
 
     def token_path(self, server: str) -> Path:
         """Where ``server``'s OAuth login lives; the login command reports it."""
@@ -414,10 +358,6 @@ class McpServers:
                 # Codex's `enabled_tools`: only the named tools reach the menu.
                 allowed = spec.get("enabled_tools")
                 listed = [t for t in every if allowed is None or t.name in allowed]
-                mail = {t.name for t in every} >= _MAIL_TOOLS
-                if mail:
-                    # ADR 0063: the card holds the draft; a reply goes out through gmail_send.
-                    listed = [t for t in listed if t.name != "gmail_createDraft"]
                 modes = [approval_mode(spec, one.name) for one in listed]
             except Exception:  # noqa: BLE001 — a missing binary, a refused URL, a hung handshake, a bad approval mode: warn, never fail boot.
                 LOGGER.warning(
@@ -427,8 +367,6 @@ class McpServers:
             self._clients[server] = client
             if any(t.name == SNAPSHOT_TOOL for t in every):
                 self._browsers.add(server)  # ADR 0059
-            if mail:
-                self._mail[server] = _own_address(partial(self._call, server, client))
             pairs = zip(listed, modes, strict=True)
             tools.extend(self._wrap(server, client, one, mode, spec) for one, mode in pairs)
             self.connected_servers.add(server)
@@ -464,10 +402,6 @@ class McpServers:
         if server in self._browsers:
             run = guarded(listed.name, run, partial(self._snapshot, server, client))
         description = listed.description or listed.title or listed.name
-        schema: Mapping[str, Any] = listed.input_schema
-        if server in self._mail and listed.name == "gmail_send":
-            run = partial(_send_in_thread, run, partial(self._call, server, client))
-            description, schema = _mail_send(listed, self._mail[server])
 
         def call(args: Mapping[str, Any], _ctx: ToolContext) -> dict[str, Any]:
             return run(args)
@@ -476,7 +410,7 @@ class McpServers:
         return Tool(
             name=name,
             description=description,
-            input_schema=schema,
+            input_schema=listed.input_schema,
             handler=call,
             allowed_callers=frozenset({CallerPrincipal.JARVIS_LLM}),
             risk_level="L3" if ask else ("L0" if read_only else "L1"),

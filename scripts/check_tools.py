@@ -56,14 +56,11 @@ PRE_STANDARD: dict[str, frozenset[str]] = {
     for name, rules in {
         "archive": "long",
         "ask_user": "long the-user",
-        "bus": "long",
         "disable_plugin": "the-user undescribed",
         "end_night_run": "the-user",
         "get_briefing": "undescribed",
-        "job_ledger": "the-user",
         "list_plugins": "the-user",
         "look_at_picture": "the-user",
-        "map_search": "long",
         "open_path": "the-user",
         "open_plugin": "long the-user undescribed",
         "open_url": "the-user",
@@ -75,7 +72,6 @@ PRE_STANDARD: dict[str, frozenset[str]] = {
         "remove_plugin": "the-user undescribed",
         "save_briefing": "undescribed",
         "save_knowledge": "the-user undescribed",
-        "save_place": "not-english undescribed",
         "screen_look": "the-user",
         "search_knowledge": "undescribed",
         "search_notes": "the-user",
@@ -83,8 +79,6 @@ PRE_STANDARD: dict[str, frozenset[str]] = {
         "set_voice": "long the-user undescribed",
         "show_on_dashboard": "long undescribed",
         "start_night_run": "the-user",
-        "weather": "long the-user",
-        "where_am_i": "long the-user",
     }.items()
 }
 
