@@ -75,7 +75,7 @@ final class Session: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
     private var sentFrames = 0, sentBytes = 0, captured = 0
     private var clear = 0
 
-    private var curtain: [NSWindow] = []
+    private var curtained = false
     private var awake: IOPMAssertionID = 0
     // A windowless background agent is napped and its work run at low priority: the same encoder took ~11 ms a frame here
     // against <1 ms in a foreground benchmark at 120 fps. While he is here it is latency-critical.
@@ -129,6 +129,7 @@ final class Session: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
             }
             authed = true
             let wantCurtain = json["curtain"] as? Bool ?? true
+            curtained = wantCurtain
             acks = json["acks"] as? Bool ?? false
             DispatchQueue.main.async { [self] in
                 if let old = Session.live { old.q.async { old.end() } }
@@ -170,8 +171,8 @@ final class Session: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
 
     // MARK: the screen
 
-    /// Main thread: wake the display and keep it awake while he is here (a sleeping display locks this Mac), fold every other display
-    /// into the main one so all windows are where the iPad can see them, lay the curtain, then capture.
+    /// Main thread: wake the display and keep it awake while he is here (a sleeping display locks this Mac), switch every other display
+    /// off so all windows are where the iPad can see them, lay the curtain, then capture.
     private func start(curtain wantCurtain: Bool) {
         var poke: IOPMAssertionID = 0
         IOPMAssertionDeclareUserActivity("Jarvis Remote" as CFString, kIOPMUserActiveLocal, &poke)
@@ -180,7 +181,7 @@ final class Session: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
         let folded = Displays.fold()
         // the windows take a moment to move and the display list to settle before the curtain and the capture look at it
         DispatchQueue.main.asyncAfter(deadline: .now() + (folded ? 2 : 0)) { [self] in
-            if wantCurtain { curtain = Curtain.lay() }
+            if wantCurtain { Curtain.lay() }
             Task { await capture() }
         }
     }
@@ -188,16 +189,11 @@ final class Session: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
     private func capture() async {
         print("session from \(conn.endpoint)")
         do {
-            // The curtain is this app's only windows: the stream leaves out the whole app, so the Mac shows black and the iPad the desktop.
-            // A just-ordered window can take a moment to reach the shareable list.
-            var content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
-            for _ in 0 ..< 10 where !curtain.isEmpty && !content.applications.contains(where: { $0.processID == getpid() }) {
-                try await Task.sleep(nanoseconds: 100_000_000)
-                content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
-            }
+            // The whole display, nothing left out: a filter that leaves windows out makes the window server compose a second picture
+            // every frame, and the encoder waited on it (~10 ms a frame). The curtain is the panel's gamma, after composition.
+            let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
             guard let display = content.displays.first(where: { $0.displayID == CGMainDisplayID() }) ?? content.displays.first else { return }
-            let me = content.applications.filter { $0.processID == getpid() }
-            let filter = SCContentFilter(display: display, excludingApplications: me, exceptingWindows: [])
+            let filter = SCContentFilter(display: display, excludingWindows: [])
             let mode = CGDisplayCopyDisplayMode(display.displayID)
             let fullW = mode?.pixelWidth ?? display.width * 2, fullH = mode?.pixelHeight ?? display.height * 2
             // ponytail: his iPad Pro 11" is 2420 px wide and shows the screen fit to its width; pixels past that only cost encode time
@@ -233,6 +229,7 @@ final class Session: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
         t.schedule(deadline: .now(), repeating: 1)
         t.setEventHandler { [self] in
             adapt()
+            if curtained { Curtain.lay() }   // display changes and ColorSync (Night Shift, True Tone) can put the curve back
             let now = (CGSessionCopyCurrentDictionary() as? [String: Any])?["CGSSessionScreenIsLocked"] as? Bool ?? false
             guard now != locked else { return }
             locked = now
@@ -377,11 +374,11 @@ final class Session: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
         guard authed else { return }
         let awake = awake
         DispatchQueue.main.async { [self] in
-            curtain.forEach { $0.close() }
             if awake != 0 { IOPMAssertionRelease(awake) }
             if let activity { ProcessInfo.processInfo.endActivity(activity) }
             guard Session.live === self else { return }
             Session.live = nil
+            Curtain.lift()
             Displays.unfold()
             let p = Process()
             p.executableURL = URL(fileURLWithPath: "/usr/bin/pmset")
@@ -396,6 +393,10 @@ final class Session: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
 enum Displays {
     private static var folded: [CGDirectDisplayID] = []
 
+    private static var mirrored = false
+
+    /// Switched off, as if unplugged, so their windows come to the main display (Jump Desktop does the same); mirroring them instead
+    /// cost a scaled 4K composite every frame, so it is only the fallback. Both are for this app only and undo themselves if it dies.
     static func fold() -> Bool {
         var ids = [CGDirectDisplayID](repeating: 0, count: 16), n: UInt32 = 0
         CGGetOnlineDisplayList(16, &ids, &n)
@@ -404,9 +405,14 @@ enum Displays {
         guard !others.isEmpty else { return false }
         var cfg: CGDisplayConfigRef?
         guard CGBeginDisplayConfiguration(&cfg) == .success else { return false }
-        others.forEach { CGConfigureDisplayMirrorOfDisplay(cfg, $0, main) }
-        let done = CGCompleteDisplayConfiguration(cfg, .forAppOnly)
-        print("fold \(others.count) display(s) into the main one: \(done.rawValue)")
+        others.forEach { _ = CGSConfigureDisplayEnabled(cfg, $0, false) }
+        var done = CGCompleteDisplayConfiguration(cfg, .forAppOnly)
+        mirrored = done != .success
+        if mirrored, CGBeginDisplayConfiguration(&cfg) == .success {
+            others.forEach { CGConfigureDisplayMirrorOfDisplay(cfg, $0, main) }
+            done = CGCompleteDisplayConfiguration(cfg, .forAppOnly)
+        }
+        print("\(mirrored ? "mirror" : "switch off") \(others.count) other display(s): \(done.rawValue)")
         guard done == .success else { return false }
         folded = Array(others)
         return true
@@ -416,25 +422,26 @@ enum Displays {
         guard !folded.isEmpty else { return }
         var cfg: CGDisplayConfigRef?
         guard CGBeginDisplayConfiguration(&cfg) == .success else { return }
-        folded.forEach { CGConfigureDisplayMirrorOfDisplay(cfg, $0, kCGNullDirectDisplay) }
+        for d in folded {
+            if mirrored { CGConfigureDisplayMirrorOfDisplay(cfg, d, kCGNullDirectDisplay) } else { _ = CGSConfigureDisplayEnabled(cfg, d, true) }
+        }
         CGCompleteDisplayConfiguration(cfg, .forAppOnly)
         folded = []
     }
 }
 
+// SkyLight's display switch, private (CoreGraphics has none); Jump Desktop Connect calls it to switch physical displays off.
+@_silgen_name("CGSConfigureDisplayEnabled")
+func CGSConfigureDisplayEnabled(_ config: CGDisplayConfigRef?, _ display: CGDirectDisplayID, _ enabled: Bool) -> CGError
+
 enum Curtain {
-    /// A black window above everything on every display, letting every click through.
-    static func lay() -> [NSWindow] {
-        NSScreen.screens.map { screen in
-            let w = NSWindow(contentRect: screen.frame, styleMask: .borderless, backing: .buffered, defer: false)
-            w.backgroundColor = .black
-            w.level = NSWindow.Level(rawValue: Int(CGShieldingWindowLevel()))
-            w.ignoresMouseEvents = true
-            w.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
-            w.isReleasedWhenClosed = false
-            w.setFrame(screen.frame, display: true)
-            w.orderFrontRegardless()
-            return w
-        }
+    /// Every panel goes black through its gamma curve (Jump Desktop Connect's values). Gamma applies after the screen is composed,
+    /// so the capture still sees the desktop; Quartz restores the curves itself if this process dies.
+    static func lay() {
+        var ids = [CGDirectDisplayID](repeating: 0, count: 16), n: UInt32 = 0
+        CGGetOnlineDisplayList(16, &ids, &n)
+        ids.prefix(Int(n)).forEach { CGSetDisplayTransferByFormula($0, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01) }
     }
+
+    static func lift() { CGDisplayRestoreColorSyncSettings() }
 }
