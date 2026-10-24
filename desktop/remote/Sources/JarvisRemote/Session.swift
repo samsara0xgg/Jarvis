@@ -65,7 +65,8 @@ final class Session: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
     private var lockWatch: DispatchSourceTimer?
     // the bitrate follows the link: down by a third in a second the link fell behind, up a little after three clear ones
     private static let topRate = 150_000_000, floorRate = 4_000_000, sharpRate = 60_000_000
-    private var rate = 40_000_000       // a start the tailnet carries; it climbs from here
+    private var rate = 20_000_000       // under what his tailnet carries (~25-30 Mbit/s measured); it climbs from here
+    private var encodeBusy: UInt64 = 0  // time spent inside the encode call this second: the encoder, not the link, capped him at ~74 fps
     private var stalls = 0
     private var sentFrames = 0, sentBytes = 0, captured = 0
     private var clear = 0
@@ -190,7 +191,10 @@ final class Session: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
             let me = content.applications.filter { $0.processID == getpid() }
             let filter = SCContentFilter(display: display, excludingApplications: me, exceptingWindows: [])
             let mode = CGDisplayCopyDisplayMode(display.displayID)
-            let w = mode?.pixelWidth ?? display.width * 2, h = mode?.pixelHeight ?? display.height * 2
+            let fullW = mode?.pixelWidth ?? display.width * 2, fullH = mode?.pixelHeight ?? display.height * 2
+            // ponytail: his iPad Pro 11" is 2420 px wide and shows the screen fit to its width; pixels past that only cost encode time
+            // (3024×1964 encoded at ~74 fps). Send the iPad's size in the hello if another iPad drives this Mac.
+            let w = min(fullW, 2420) / 2 * 2, h = fullH * w / fullW / 2 * 2
 
             let cfg = SCStreamConfiguration()
             cfg.width = w; cfg.height = h
@@ -236,11 +240,11 @@ final class Session: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
         let was = rate
         // one line a second while the screen moves: what the capture gave, what went, how much, and how often the link was full
         if captured > 0 {
-            print("1s: captured \(captured) sent \(sentFrames) \(sentBytes * 8 / 1_000_000) Mbit delivered \(delivered * 8 / 1_000_000) Mbit stalls \(stalls) unacked \(unackedBytes / 1000) kB rate \(rate / 1_000_000) ack avg \(ackCount > 0 ? ackSum / UInt64(ackCount) / 1_000_000 : 0) max \(ackMax / 1_000_000) ms")
+            print("1s: captured \(captured) sent \(sentFrames) \(sentBytes * 8 / 1_000_000) Mbit delivered \(delivered * 8 / 1_000_000) Mbit stalls \(stalls) unacked \(unackedBytes / 1000) kB rate \(rate / 1_000_000) ack avg \(ackCount > 0 ? ackSum / UInt64(ackCount) / 1_000_000 : 0) max \(ackMax / 1_000_000) ms encode \(encodeBusy / 1_000_000) ms")
         }
         // stalls while the link carried well under the bitrate are the link stuttering, not too little room: a lower bitrate cures nothing
         let roomy = acks && delivered * 8 < rate * 6 / 10
-        captured = 0; sentFrames = 0; sentBytes = 0; delivered = 0; ackCount = 0; ackSum = 0; ackMax = 0
+        captured = 0; sentFrames = 0; sentBytes = 0; delivered = 0; ackCount = 0; ackSum = 0; ackMax = 0; encodeBusy = 0
         if stalls > 0 {
             if !roomy { rate = max(rate * 2 / 3, Session.floorRate) }
             clear = 0
@@ -301,11 +305,13 @@ final class Session: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
         guard let encoder, !ended else { return }
         let props = needKey ? [kVTEncodeFrameOptionKey_ForceKeyFrame: true] as CFDictionary : nil
         needKey = false
+        let t0 = DispatchTime.now().uptimeNanoseconds
         VTCompressionSessionEncodeFrame(encoder, imageBuffer: pixels, presentationTimeStamp: t, duration: .invalid,
                                         frameProperties: props, infoFlagsOut: nil) { [self] status, _, out in
             guard status == noErr, let out else { return }
             q.async { self.ship(out) }
         }
+        encodeBusy += DispatchTime.now().uptimeNanoseconds - t0
     }
 
     /// Every encoded frame goes: a link that falls behind holds back the capture instead (above), so no frame is missing from the chain.
