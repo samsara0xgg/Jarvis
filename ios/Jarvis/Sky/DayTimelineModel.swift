@@ -213,6 +213,7 @@ struct TLSession: Equatable, Identifiable {
     var project: String?, account: String?  // `A` or `B`
     var right: String                       // how long
     var recap: String?                      // Claude Code's latest recap of it
+    var prompts: Int?                       // what he typed in it (0: it ran by itself); none from a brain that does not say
 
     /// what its row and its line in a group are called
     var name: String { title ?? "Claude Code" }

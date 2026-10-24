@@ -223,11 +223,42 @@ final class DayTimelineDoingRowsTests: XCTestCase {
         let by = Dictionary(uniqueKeysWithValues: d6.lines.map { ($0.id, $0) })
         XCTAssertEqual([by["scr1"]?.title, by["scr1"]?.detail, by["scr1"]?.right], ["用 iPhone", "微信 22 分钟 · Safari 8 分钟", "30 分钟"], "phone use: the device, the apps and minutes")
         XCTAssertEqual([by["med1"]?.title, by["med1"]?.detail, by["med1"]?.right], ["Music", "歌名 · 歌手", "25 分钟"], "media: the app and the top title")
-        XCTAssertEqual([by["msg1"]?.title, by["msg1"]?.detail, by["msg1"]?.right], ["Mia", "发 3 · 收 5", "15 分钟"], "messages: the conversation, what he sent and what came")
+        XCTAssertEqual([by["msg1"]?.title, by["msg1"]?.detail, by["msg1"]?.right], ["Mia", "发 3 · 收 5", "8 条"], "messages: the conversation, what he sent and what came, and how many: the span of a burst is no time spent")
         XCTAssertEqual([by["pc1"]?.title, by["pc1"]?.detail, by["pc1"]?.right], ["Mia", "打出 · Phone", "10 分钟"], "a call on the phone: the person, which way, how long")
         XCTAssertEqual([by["call1"]?.title, by["call1"]?.right], ["通话 · FaceTime", "15 分钟"], "a call on the Mac has no person: the app and how long")
         XCTAssertEqual([by["rem-rang"]?.title, by["rem-rang"]?.detail, by["rem-rang"]?.time, by["rem-rang"]?.right], ["吃药", "响过了", "14:10", ""])
         XCTAssertEqual(by["scr1"]?.mark, .icon("iphone"))
+    }
+
+    func testClaudeCodeIsALineAProjectWithTheSessionsThatRanByThemselvesInOne() throws {
+        let items = [
+            item("c1", "code", 600, 640, #""title": "接上天气", "project": "Jarvis", "prompts": 6"#),
+            item("c2", "code", 630, 700, #""project": "Jarvis", "prompts": 2"#),
+            item("c3", "code", 650, 670, #""title": "第三章", "project": "论文", "prompts": 1"#),
+            item("c4", "code", 610, 690, #""project": "Jarvis", "prompts": 0"#),
+            item("c5", "code", 620, 625, #""project": "Jarvis", "prompts": 0"#),
+        ]
+        let d = try entry(DayTimelineModel.build(try reply(items, spans: [span("d", 540, 720, "Jarvis", "work", items: ["c1", "c2", "c3", "c4", "c5"])]), now: 900), "d")
+        XCTAssertEqual(d.lines.map { $0.said == nil ? $0.title : "said" }, ["Jarvis", "said", "论文"], "a project he typed in is one line; the two that ran by themselves are one line, at the first of them")
+        XCTAssertEqual(d.lines.map(\.right), ["1 小时 40 分", "", "20 分钟"], "each project's time with its sessions' overlaps counted once")
+        XCTAssertEqual(d.lines[1].said, .background(2))
+        XCTAssertEqual(d.lines[0].mark, .icon("terminal.fill"))
+        let old = try entry(DayTimelineModel.build(try reply([item("c1", "code", 600, 640, #""title": "接上天气", "project": "bridge-cse_01""#)], spans: [span("d", 540, 720, "Jarvis", "work", items: ["c1"])]), now: 900), "d")
+        XCTAssertEqual(old.lines.map { [$0.title, $0.detail] }, [["接上天气", "bridge-cse_01"]], "a brain that does not say `prompts`: each session its own line, as before")
+    }
+
+    func testMessagesThatOnlyCameInOfOneAppAtAboutTheSameTimeAreOneLine() throws {
+        let items = [
+            item("m1", "messages", 840, 842, #""app": "小红书", "conversation": "A", "sent": 0, "received": 3"#),
+            item("m2", "messages", 846, 848, #""app": "小红书", "conversation": "B", "sent": 0, "received": 5"#),
+            item("m3", "messages", 850, 851, #""app": "小红书", "conversation": "A", "received": 4"#),
+            item("m4", "messages", 845, 847, #""app": "微信", "conversation": "Mia", "sent": 2, "received": 1"#),
+            item("m5", "messages", 880, 881, #""app": "小红书", "conversation": "C", "sent": 0, "received": 2"#),
+        ]
+        let d = try entry(DayTimelineModel.build(try reply(items, spans: [span("d", 830, 899, "歇会儿", "rest", items: ["m1", "m2", "m3", "m4", "m5"])]), now: 900), "d")
+        XCTAssertEqual(d.lines.map(\.id), ["d-heard-m1", "m4", "m5"], "three bursts that only came in, each within 10 minutes of the one before, are one line; one he wrote in and one later stay lines of their own")
+        XCTAssertEqual(d.lines[0].said, .received("小红书", people: 2, count: 12))
+        XCTAssertEqual(d.lines.map(\.right), ["", "3 条", "2 条"], "a burst says how many, not how long")
     }
 
     func testNothingElseIsALineOfTheOldListWhenThereAreNoStretches() throws {

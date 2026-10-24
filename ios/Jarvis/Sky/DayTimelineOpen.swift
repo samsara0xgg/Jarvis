@@ -223,6 +223,8 @@ struct TLOpenView: View {
         case .drift(let m, let s): Words.Timeline.drift(minutes: m, switches: s)
         case .onDevice(let device, let name): Words.Timeline.onDevice(device, name)
         case .more(let n): Words.Timeline.moreRuns(n)
+        case .background(let n): Words.Timeline.backgroundSessions(n)
+        case .received(let app, let people, let count): Words.Timeline.received(app, people: people, count: count)
         case nil: l.title
         }
     }

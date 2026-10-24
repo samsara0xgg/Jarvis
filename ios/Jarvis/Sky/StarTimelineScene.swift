@@ -53,7 +53,7 @@ enum TimelineFixture {
             (5, 1235.0, 1268.0, "论文第三章的数据", "论文", "b", "把三组实验的结果合成一张表，图还没画。"),
             (6, 1276.0, 1306.0, "给等你的卡片补测试", "Jarvis", "a", nil),
         ] as [(Int, Double, Double, String, String, String, String?)] {
-            var more: [String: Any] = ["id": "code-s\(n)", "title": title, "project": project, "account": account, "session_id": "s\(n)"]
+            var more: [String: Any] = ["id": "code-s\(n)", "title": title, "project": project, "account": account, "session_id": "s\(n)", "prompts": [1: 5, 2: 3, 3: 0, 4: 4, 5: 2, 6: 0][n] ?? 0]          // 0: it ran by itself
             if let recap { more["detail"] = recap }
             b.add("code", from, to, more)
         }
@@ -68,6 +68,8 @@ enum TimelineFixture {
                                                                                                       ["name": "小红书", "bundle": "com.xingin.discover", "minutes": 8, "category": "social"], ["name": "Safari", "bundle": "com.apple.mobilesafari", "minutes": 3, "category": "browser"]]])
             b.add("media", 860, 890, ["id": "media-demo-1", "device": "iPhone", "app": "Music", "active_s": 1620, "titles": [["title": "Sunday Morning", "artist": "Maroon 5"]], "route": "AirPods"])
             b.add("messages", 855, 872, ["id": "messages-demo-1", "device": "iPhone", "app": "WeChat", "conversation": "Mia", "is_group": false, "sent": 4, "received": 6])
+            b.add("messages", 858, 860, ["id": "messages-demo-3", "device": "iPhone", "app": "小红书", "conversation": "穿搭", "is_group": true, "sent": 0, "received": 7])          // two bursts that only came in: one line
+            b.add("messages", 864, 865, ["id": "messages-demo-4", "device": "iPhone", "app": "小红书", "conversation": "旅行", "is_group": true, "sent": 0, "received": 5])
             b.add("messages", 1262, 1270, ["id": "messages-demo-2", "device": "iPhone", "app": "WeChat", "conversation": "论文小组", "is_group": true, "sent": 2, "received": 9])
             b.add("phone_call", 868, 876, ["id": "phone_call-demo-1", "device": "iPhone", "app": "Phone", "direction": "received", "person": "妈妈", "duration_s": 480])
             // What he was doing, as the brain's doing lane serves it, with the items under each stretch (ADR 0307: a lasting item in every stretch it overlaps, a point in the one it falls in)
@@ -82,7 +84,7 @@ enum TimelineFixture {
                                            rows: [(575, 640, "t-tl", 56, 6, 3), (640, 685, "t-cc", 38, 4, 2)], alongside: ["t-wx"]))
             b.doing(685, 795, "开车去 A&W", "commute", "inferred", items: ["move-3", "move-4"], clues: ["先开车，再走了十分钟"])
             b.doing(795, 835, "吃午饭", "meal", "stated", items: ["stay-5", "payment-demo-1"])
-            b.doing(835, 890, "歇一会儿", "rest", "inferred", confidence: "low", detail: "回到家，用了一会儿手机，听着歌", place: "p-home", items: ["move-6", "stay-7", "screen-demo-1", "messages-demo-1", "media-demo-1", "phone_call-demo-1"],
+            b.doing(835, 890, "歇一会儿", "rest", "inferred", confidence: "low", detail: "回到家，用了一会儿手机，听着歌", place: "p-home", items: ["move-6", "stay-7", "screen-demo-1", "messages-demo-1", "messages-demo-3", "messages-demo-4", "media-demo-1", "phone_call-demo-1"],
                     clues: ["手机上微信用得最多", "耳机里在放歌", "妈妈来了一个电话"], question: ("这段你在做什么？", ["休息", "刷手机", "等车"]),
                     attention: b.attention(threads: [("t-wx", "微信", "social", "iPhone", 14, ["Mia"]), ("t-xhs", "小红书", "social", "iPhone", 8, [])],
                                            rows: [(850, 868, "t-wx", 14, 2, 2), (876, 885, "t-xhs", 8, 1, 1)], alongside: []))

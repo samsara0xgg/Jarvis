@@ -112,6 +112,15 @@ final class PageShots: XCTestCase {
         shot("15-row-upcoming")
     }
 
+    func testRowCodeAndMessages() {
+        _ = open("时间线:按在干嘛:doing-575")
+        sleep(2)
+        shot("17-row-code")
+        _ = open("时间线:按在干嘛:doing-835")
+        sleep(2)
+        shot("18-row-messages")
+    }
+
     func testRowStay() {
         _ = open("时间线:开:stay-14")
         sleep(2)

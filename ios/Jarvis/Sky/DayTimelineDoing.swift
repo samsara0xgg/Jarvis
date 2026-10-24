@@ -42,6 +42,8 @@ struct TLLine: Equatable, Identifiable {
         case drift(minutes: Int, switches: Int)
         case onDevice(String, String)           // the device it was on, and what
         case more(Int)                          // the runs past the first few
+        case background(Int)                    // Claude Code sessions that ran by themselves
+        case received(String, people: Int, count: Int)          // messages that only came in, of one app at about the same time
     }
     let id: String
     var time: String?               // `HH:mm`; none for what has no time of its own (what was on his phone alongside, the drift)
@@ -179,7 +181,9 @@ extension DayTimelineModel {
                                        detail: made.isEmpty ? nil : made.joined(separator: " · "), right: tlDur(max(1, minutes(x.row.ms ?? (x.t1 - x.t0) * 60_000))), span: x.t0...x.t1)))
         }
         let moments: Set<TLEntry.Kind> = runs.isEmpty ? [.talk, .stay, .sleep] : [.talk, .stay, .sleep, .work, .screen]
-        for x in inside where !moments.contains(x.row.kind) {
+        let (folded, foldedLines) = folds(s, st, inside: inside)
+        timed += foldedLines
+        for x in inside where !moments.contains(x.row.kind) && !folded.contains(x.item.id) {
             timed.append((max(x.row.t0, st.t0), line(x.row, in: st)))
         }
         var out = timed.enumerated().sorted { ($0.element.t, $0.offset) < ($1.element.t, $1.offset) }.map { $0.element.line }
@@ -204,13 +208,49 @@ extension DayTimelineModel {
         return out
     }
 
+    /// What a stretch says in fewer lines than its items: its Claude Code sessions a line a project, with the ones that ran by themselves (the brain's `prompts` 0) one line after them; and
+    /// messages that only came in, of one app within 10 minutes of each other, one line. A session the brain says nothing of `prompts` about is a line of its own, as before.
+    private static func folds(_ s: DaySpan, _ st: TLStretch, inside: [(item: DayItem, row: TLEntry)]) -> (ids: Set<String>, lines: [(t: Double, line: TLLine)]) {
+        func clamp(_ r: TLEntry) -> (Double, Double) { let a = max(r.t0, st.t0); return (a, max(a, min(r.t1 ?? a, st.t1))) }
+        var ids: Set<String> = [], out: [(t: Double, line: TLLine)] = []
+        let codes = inside.filter { $0.row.kind == .code && $0.item.prompts != nil }
+        let typed = Dictionary(grouping: codes.filter { ($0.item.prompts ?? 0) > 0 }) { tlText($0.item.project) ?? "Claude Code" }
+        for (name, xs) in typed {
+            let spans = xs.map { clamp($0.row) }.sorted { $0.0 < $1.0 }
+            var union = 0.0, edge = -Double.infinity
+            for (a, b) in spans { union += max(0, b - max(a, edge)); edge = max(edge, b) }
+            let t0 = spans[0].0
+            out.append((t0, TLLine(id: "\(s.id)-code-\(name)", time: clock(t0), mark: .icon("terminal.fill"), title: name, right: union >= 1 ? tlDur(tlInt(union)) : "", span: t0...edge)))
+        }
+        let alone = codes.filter { ($0.item.prompts ?? 0) <= 0 }
+        if let first = alone.map({ clamp($0.row).0 }).min() {
+            out.append((first, TLLine(id: "\(s.id)-code-alone", mark: .icon("terminal"), said: .background(alone.count))))
+        }
+        ids.formUnion(codes.map(\.item.id))
+        // bursts that only came in: by app, in time order, each within 10 minutes of the one before
+        let heard = inside.filter { $0.row.kind == .messages && ($0.item.sent ?? 0) <= 0 && ($0.item.received ?? 0) > 0 }.sorted { $0.row.t0 < $1.row.t0 }
+        for (app, xs) in Dictionary(grouping: heard, by: { tlText($0.item.app) ?? "" }) where !app.isEmpty {
+            var runs: [[(item: DayItem, row: TLEntry)]] = []
+            for x in xs {
+                if let last = runs.last?.last, x.row.t0 - (last.row.t1 ?? last.row.t0) <= 10 { runs[runs.count - 1].append(x) } else { runs.append([x]) }
+            }
+            for run in runs where run.count > 1 {
+                let (t0, _) = clamp(run[0].row), t1 = run.map { clamp($0.row).1 }.max() ?? t0
+                let people = Set(run.map { tlText($0.item.conversation) ?? $0.item.id }).count, count = run.reduce(0) { $0 + max(0, $1.item.received ?? 0) }
+                out.append((t0, TLLine(id: "\(s.id)-heard-\(run[0].item.id)", time: clock(t0), mark: .icon("message.fill"), said: .received(app, people: people, count: count), span: t0...t1)))
+                ids.formUnion(run.map(\.item.id))
+            }
+        }
+        return (ids, out.sorted { $0.t < $1.t })
+    }
+
     /// An item as a line inside a stretch: what its own row says, and at the right how long of it was in the stretch when it began before or went on after it, else what its row says there
     /// (how long, what it came to). Its time is when it began, or the stretch's start for what began before it.
     private static func line(_ row: TLEntry, in st: TLStretch) -> TLLine {
         let t0 = max(row.t0, st.t0), end = row.t1.map { min($0, st.t1) }
         var l = TLLine(id: row.id, time: clock(t0), mark: .icon(row.symbol), title: row.title, detail: row.detail, right: row.right, strong: row.strongRight, attachment: row.attachment,
                        span: t0...max(t0, end ?? t0))
-        if let full = row.t1, full - row.t0 >= 1, row.t0 < st.t0 || full > st.t1 {
+        if row.kind != .messages, let full = row.t1, full - row.t0 >= 1, row.t0 < st.t0 || full > st.t1 {          // messages say how many, not how long
             l.right = tlDur(tlInt((end ?? t0) - t0)); l.strong = false
         }
         return l
