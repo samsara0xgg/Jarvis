@@ -18,20 +18,16 @@ struct FootprintOutingPage: View {
 
     private var scrub: Int64? { moment?.ms }
     private let track: FootprintTrack?
-    private let end: Int64
-    private let curves: FootprintCurves
-    private let route: FootprintMapRoute
-    private let firstFixMs: Int64?, lastFixMs: Int64?
-    private var steps: [Step] { Step.list(model, outing, end: end, firstFixMs: firstFixMs, lastFixMs: lastFixMs) }          // read when drawn: a stop's street may come after the page
+    private let parts: FootprintOutingParts             // the map's marks, the numbers, the curves and the stops, as the trip's row opened draws them too
+    private var end: Int64 { parts.end }
+    private var curves: FootprintCurves { parts.curves }
+    private var route: FootprintMapRoute { parts.route }
+    private var fastestMs: Int64? { parts.fastestMs }
 
     init(model: FootprintModel, outing: FootprintOuting, phone: Bool = true, back: @escaping () -> Void) {
         self.model = model; self.outing = outing; self.phone = phone; self.back = back
-        let end = outing.end_ms ?? max(model.reply.now_ms, outing.points.last?.at_ms ?? outing.start_ms)
-        self.end = end
         track = model.tracks[outing.id]
-        curves = FootprintCurves(outing, endMs: end)
-        route = model.route(outing)
-        firstFixMs = route.points.first?.ms; lastFixMs = route.points.last?.ms
+        parts = FootprintOutingParts(model: model, outing: outing)
     }
 
     #if DEBUG
@@ -51,8 +47,8 @@ struct FootprintOutingPage: View {
             FootprintBeatCaption(beat: moment?.beat, model: model).frame(width: W).offset(y: 298)
             if phone { strip } else { head }
             VStack(alignment: .leading, spacing: 0) {
-                figures
-                curveBlock
+                parts.figures.frame(width: FootprintCurves.width, alignment: .leading).padding(.leading, 30)
+                parts.curveBlock(scrub: scrub) { held($0) }.padding(.leading, 30)
                 stops
             }
             .padding(.top, 459)
@@ -153,22 +149,68 @@ struct FootprintOutingPage: View {
         return day + " · " + time(outing.start_ms) + (outing.end_ms == nil ? "" : "–" + time(end))
     }
 
-    private func time(_ ms: Int64) -> String { clock(model.clock.minute(ms: ms)) }
+    private func time(_ ms: Int64) -> String { parts.time(ms) }
 
     // MARK: map
 
     private var mapView: some View {
         let top = phone ? 76.0 : 0.0          // on the phone the map runs 76 pt higher, to the top edge, and keeps its route where it stood
-        return FootprintMapView(routes: [route], places: places, tokens: tokens, dot: dot, follow: moment?.follow, lineWidth: 4.6,
+        return FootprintMapView(routes: [route], places: parts.places, tokens: parts.tokens, dot: dot, follow: moment?.follow, lineWidth: 4.6,
                          fitPadding: UIEdgeInsets(top: 44 + top, left: 30, bottom: 44, right: 115), fitKey: outing.id, touched: { player.touch() })
             .frame(width: W, height: 371 + top)
             .mask(LinearGradient(stops: [.init(color: phone ? .black : .clear, location: 0), .init(color: .black, location: phone ? 0 : 62 / 371), .init(color: .black, location: (340 + top) / (371 + top)), .init(color: .clear, location: 1)],
                                  startPoint: .top, endPoint: .bottom))
     }
 
+    /// the held time on the map: where he was, in the colour of his speed, with the time and the speed in its capsule; with no finger on a curve, the same at his fastest fix
+    private var dot: FootprintMapDot? {
+        guard let t = scrub ?? fastestMs, let c = moment?.coord ?? model.position(atMs: t) else { return nil }
+        let v = model.speedMps(atMs: t)
+        let label = time(t) + (v.map { "  " + Words.Footprint.held(speed: "\(Int(($0 * 3.6).rounded()))") } ?? "")
+        return FootprintMapDot(coord: c, ms: t, rgb: FootprintPaint.speed(mps: v ?? 0), label: label, held: scrub != nil)
+    }
+
+    // MARK: stops
+
+    private var stops: some View {
+        ScrollView(showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 10) {
+                ForEach(parts.steps) { StepRow(step: $0, time: time($0.t0), model: model) }
+            }
+            .padding(.horizontal, 30).padding(.top, 23).padding(.bottom, 130)
+        }
+        .scrollBounceBehavior(.basedOnSize)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+}
+
+/// What a trip shows wherever it is shown: the outing page above and a trip's row opened (Sky/RowStage.swift) draw the same marks on the map, numbers, curves and stops.
+@MainActor struct FootprintOutingParts {
+    let model: FootprintModel
+    let outing: FootprintOuting
+    let end: Int64
+    let curves: FootprintCurves
+    let route: FootprintMapRoute
+    let firstFixMs: Int64?, lastFixMs: Int64?
+
+    init(model: FootprintModel, outing: FootprintOuting) {
+        self.model = model; self.outing = outing
+        let end = outing.end_ms ?? max(model.reply.now_ms, outing.points.last?.at_ms ?? outing.start_ms)
+        self.end = end
+        curves = FootprintCurves(outing, endMs: end)
+        route = model.route(outing)
+        firstFixMs = route.points.first?.ms; lastFixMs = route.points.last?.ms
+    }
+
+    var steps: [Step] { Step.list(model, outing, end: end, firstFixMs: firstFixMs, lastFixMs: lastFixMs) }          // read when drawn: a stop's street may come after the page
+    func time(_ ms: Int64) -> String { clock(model.clock.minute(ms: ms)) }
+    /// where the cursor stands while no finger is on a curve: his fastest fix
+    var fastestMs: Int64? { outing.fastest?.at_ms }
     private func stay(_ id: String?) -> FootprintStay? { id.flatMap { id in model.reply.stays.first { $0.id == id } } }
 
-    private var places: [FootprintMapPlace] {
+    // MARK: map
+
+    var places: [FootprintMapPlace] {
         let first = route.points.first?.coord, last = route.points.last?.coord
         let from = stay(outing.from_stay), to = stay(outing.to_stay)
         func at(_ s: FootprintStay?, _ fallback: CLLocationCoordinate2D?) -> CLLocationCoordinate2D? {
@@ -186,26 +228,16 @@ struct FootprintOutingPage: View {
         return out
     }
 
-    private var tokens: [FootprintMapToken] {
+    var tokens: [FootprintMapToken] {
         outing.stops.sorted { $0.start_ms < $1.start_ms }.enumerated().map {
             FootprintMapToken(id: $1.id, coord: CLLocationCoordinate2D(latitude: $1.lat, longitude: $1.lng), number: $0 + 1, ms: $1.start_ms)
         }
     }
 
-    /// where the cursor stands while no finger is on a curve: his fastest fix
-    private var fastestMs: Int64? { outing.fastest?.at_ms }
-
-    /// the held time on the map: where he was, in the colour of his speed, with the time and the speed in its capsule; with no finger on a curve, the same at his fastest fix
-    private var dot: FootprintMapDot? {
-        guard let t = scrub ?? fastestMs, let c = moment?.coord ?? model.position(atMs: t) else { return nil }
-        let v = model.speedMps(atMs: t)
-        let label = time(t) + (v.map { "  " + Words.Footprint.held(speed: "\(Int(($0 * 3.6).rounded()))") } ?? "")
-        return FootprintMapDot(coord: c, ms: t, rgb: FootprintPaint.speed(mps: v ?? 0), label: label, held: scrub != nil)
-    }
-
     // MARK: numbers
 
-    private var figures: some View {
+    /// the four numbers (distance, how long, fastest, heart rate), as wide as they are given
+    var figures: some View {
         let w = Words.Footprint.self
         let dist = tlDistance(outing.distance_m).map(Self.split) ?? ("–", nil)
         let fast = outing.max_speed_mps.map { (w.held(speed: "\(Int(($0 * 3.6).rounded()))")) }.map(Self.split) ?? ("–", nil)
@@ -216,8 +248,6 @@ struct FootprintOutingPage: View {
             Figure(symbol: "speedometer", tint: RGB.done, label: w.fastest, value: fast.0, unit: fast.1)
             Figure(symbol: "heart.fill", tint: FootprintPaint.heart, label: w.heartRate, value: heart.0, unit: heart.1)
         }
-        .frame(width: FootprintCurves.width, alignment: .leading)
-        .padding(.leading, 30)
         .accessibilityElement(children: .contain)
     }
 
@@ -229,7 +259,8 @@ struct FootprintOutingPage: View {
 
     // MARK: curves
 
-    private var curveBlock: some View {
+    /// the speed curve and, where his watch was on, the heart rate's, 380 pt wide; `held` is a finger on either
+    func curveBlock(scrub: Int64?, held: @escaping (Int64?) -> Void) -> some View {
         let w = Words.Footprint.self
         return VStack(alignment: .leading, spacing: 0) {
             HStack {
@@ -247,7 +278,6 @@ struct FootprintOutingPage: View {
                 FootprintHeartCurve(c: curves, scrub: scrub ?? fastestMs) { held($0) }.padding(.top, 6)
             }
         }
-        .padding(.leading, 30)
     }
 
     private var ticks: some View {
@@ -263,23 +293,11 @@ struct FootprintOutingPage: View {
         .accessibilityHidden(true)
     }
 
-    // MARK: stops
-
-    private var stops: some View {
-        ScrollView(showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 10) {
-                ForEach(steps) { StepRow(step: $0, time: time($0.t0), model: model) }
-            }
-            .padding(.horizontal, 30).padding(.top, 23).padding(.bottom, 130)
-        }
-        .scrollBounceBehavior(.basedOnSize)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-    }
 }
 
 // MARK: figures
 
-private struct Figure: View {
+struct Figure: View {
     let symbol: String, tint: RGB, label: String, value: String, unit: String?
 
     var body: some View {
@@ -300,7 +318,7 @@ private struct Figure: View {
 
 // MARK: the list of stops
 
-private struct Step: Identifiable {
+struct Step: Identifiable {
     enum Kind { case depart(home: Bool), stop(Int), gap, arrive }
     let id: Int
     let kind: Kind
@@ -338,7 +356,7 @@ private struct Step: Identifiable {
     }
 }
 
-private struct StepRow: View {
+struct StepRow: View {
     let step: Step
     let time: String
     let model: FootprintModel
