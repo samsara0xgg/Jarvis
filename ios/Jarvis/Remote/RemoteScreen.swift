@@ -11,6 +11,7 @@ struct RemoteScreen: View {
     @State private var typed = ""
     @State private var pasteFailed = false
     @State private var trackpad = false
+    @State private var showKeys = true
     private var mac: RemoteMac { .shared }
 
     var body: some View {
@@ -68,6 +69,7 @@ struct RemoteScreen: View {
                     }
                     corner("magnifyingglass", Words.Remote.launcher) { live.canvas.chord(49, mods: 0x80000) }   // ⌥Space: Raycast's own default
                     corner("dock.rectangle", Words.Remote.dock) { live.canvas.showDock() }
+                    corner(showKeys ? "command.circle.fill" : "command", Words.Remote.keys) { showKeys.toggle() }
                     corner("keyboard", Words.Remote.keyboard) { live.canvas.toggleKeyboard() }
                 }
                 corner("xmark", Words.Remote.close, close)
@@ -75,6 +77,17 @@ struct RemoteScreen: View {
             Spacer()
         }
         .padding(12)
+    }
+
+    /// The keys he reaches for most when the iPad's own keyboard has no ⌘: edit, confirm, move between apps and windows.
+    @MainActor private static var shortcuts: [(label: String, code: Int, mods: Int)] {
+        let cmd = 0x100000, shift = 0x20000
+        return [
+            (Words.Remote.copy, 8, cmd), (Words.Remote.pasteKey, 9, cmd), (Words.Remote.undo, 6, cmd), (Words.Remote.redo, 6, cmd | shift),
+            (Words.Remote.selectAll, 0, cmd), (Words.Remote.enter, 36, 0), (Words.Remote.backspace, 51, 0), (Words.Remote.escape, 53, 0),
+            (Words.Remote.tab, 48, 0), (Words.Remote.switchApp, 48, cmd), (Words.Remote.find, 3, cmd), (Words.Remote.save, 1, cmd),
+            (Words.Remote.newTab, 17, cmd), (Words.Remote.closeWindow, 13, cmd), (Words.Remote.quitApp, 12, cmd),
+        ]
     }
 
     /// Hold to talk: what Qwen hears so far shows above the button; letting go types it into the Mac.
@@ -89,8 +102,22 @@ struct RemoteScreen: View {
                     .background(.ultraThinMaterial, in: Capsule())
                     .frame(maxWidth: 520)
             }
-            HStack {
-                Spacer()
+            HStack(alignment: .bottom, spacing: 12) {
+                if showKeys {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(Self.shortcuts, id: \.label) { k in
+                                Button(k.label) { live.canvas.chord(k.code, mods: k.mods) }
+                                    .font(.callout.weight(.medium))
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 12).frame(height: 40)
+                                    .background(.ultraThinMaterial, in: Capsule())
+                            }
+                        }
+                    }
+                    .frame(height: 60)
+                }
+                Spacer(minLength: 0)
                 Image(systemName: live.heard == nil ? "mic.fill" : "waveform")
                     .font(.system(size: 22, weight: .semibold))
                     .frame(width: 60, height: 60)

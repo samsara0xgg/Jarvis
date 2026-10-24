@@ -29,5 +29,22 @@ extension Words {
         static var trackpad: String { pick(zh: "触控板模式", en: "Trackpad mode") }
         static var launcher: String { pick(zh: "Raycast（⌥空格）", en: "Raycast (⌥Space)") }
         static var dock: String { pick(zh: "叫出程序坞", en: "Show the Dock") }
+        static var keys: String { pick(zh: "常用键", en: "Shortcuts") }
+        // the shortcut bar, in its order
+        static var copy: String { pick(zh: "复制", en: "Copy") }
+        static var pasteKey: String { pick(zh: "粘贴", en: "Paste") }
+        static var undo: String { pick(zh: "撤销", en: "Undo") }
+        static var redo: String { pick(zh: "重做", en: "Redo") }
+        static var selectAll: String { pick(zh: "全选", en: "Select all") }
+        static var enter: String { pick(zh: "回车", en: "Return") }
+        static var escape: String { pick(zh: "Esc", en: "Esc") }
+        static var backspace: String { pick(zh: "删除", en: "Delete") }
+        static var tab: String { pick(zh: "Tab", en: "Tab") }
+        static var switchApp: String { pick(zh: "切换应用", en: "Switch app") }
+        static var find: String { pick(zh: "查找", en: "Find") }
+        static var save: String { pick(zh: "保存", en: "Save") }
+        static var newTab: String { pick(zh: "新标签", en: "New tab") }
+        static var closeWindow: String { pick(zh: "关闭", en: "Close") }
+        static var quitApp: String { pick(zh: "退出应用", en: "Quit app") }
     }
 }
