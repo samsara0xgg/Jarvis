@@ -532,6 +532,43 @@ def test_a_session_record_holds_what_the_log_says_and_nothing_that_was_said(
     assert "leaky" not in blob
 
 
+def test_a_thread_session_is_named_by_its_briefs_first_line_and_keeps_nothing_else_of_it(
+    tmp_path: Path,
+) -> None:
+    """Only a ``Thread title:`` first line of a meta entry before his first prompt (ADR 0403)."""
+    root = tmp_path / ".claude" / "projects"
+    log = root / "-bridge" / f"{SESSION}.jsonl"
+    log.parent.mkdir(parents=True)
+    log.write_bytes(_log(
+        _entry("user", "2026-10-19T05:00:00.000Z", isMeta=True, message={"content": [
+            {"type": "text", "text": "  Thread title: 语音识别「135 亿」出错\nBODY-brief"}]}),
+        _entry("user", "2026-10-19T05:00:01.000Z", isMeta=True, message={
+            "content": "Thread title: BODY-second-meta"}),
+        _entry("user", "2026-10-19T05:00:02.000Z", message={"content": "BODY-user"}),
+    ))
+    late = root / "-late" / "1c3135fe-5d47-430f-933a-498ed40e5484.jsonl"
+    late.parent.mkdir(parents=True)
+    late.write_bytes(_log(
+        _entry("user", "2026-10-19T06:00:00.000Z", message={"content": "BODY-user"}),
+        _entry("user", "2026-10-19T06:00:01.000Z", isMeta=True, message={
+            "content": "Thread title: BODY-after-a-prompt"}),
+        _entry("user", "2026-10-19T06:00:02.000Z", message={"content": "Thread title: BODY-typed"}),
+    ))
+    sink = Recorder()
+    config = ShipConfig(tmp_path / "state.db", session_roots=(("b", root),))
+
+    Shipper(config, sink, State(config.state_path)).poll(int(time.time() * 1000))
+
+    by_id = {e["fields"]["session_id"]: e for e in sink.entries()}  # type: ignore[index]
+    named = by_id[SESSION]
+    assert (named["text"], named["fields"]["thread_title"]) == (  # type: ignore[index]
+        "语音识别「135 亿」出错", "语音识别「135 亿」出错",
+    )
+    unnamed = by_id["1c3135fe-5d47-430f-933a-498ed40e5484"]
+    assert (unnamed["text"], unnamed["fields"]["thread_title"]) == ("", None)  # type: ignore[index]
+    assert "BODY-" not in b"".join(body for _, body in sink.bodies).decode()
+
+
 def test_a_growing_session_ships_at_most_every_half_hour_and_when_it_goes_quiet(
     tmp_path: Path,
 ) -> None:
