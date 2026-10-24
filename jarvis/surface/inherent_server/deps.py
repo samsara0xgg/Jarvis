@@ -255,6 +255,11 @@ class InherentDeps:
     highlight_set: (
         Callable[[date, str, bool, str | None], Awaitable[list[dict[str, str]]]] | None
     ) = None
+    # ADR 0409: ``(day, at_ms, label)`` -> what ``mark_highlight`` answers for the item covering
+    # that minute, with its id, off the loop thread. LookupError (nothing covers it) is 404, a
+    # ValueError (a moment outside the day) 422; ``None`` leaves ``POST /inherent/day/mark``
+    # unregistered.
+    day_mark: Callable[[date, int, str | None], Awaitable[dict[str, Any]]] | None = None
     # ADR 0302: ``(day, span id, choice, text, (start, end))`` -> the span as now served, off the
     # loop thread; a span id or a stretch, not both. LookupError (no such span on that day) is
     # 404, a ValueError (a choice the span's question does not offer, a stretch outside the day or

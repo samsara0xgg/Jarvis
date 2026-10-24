@@ -2,7 +2,8 @@
 
 He names a day and a clock time; this folds that day, finds the item that covers the time (the
 shortest, so a picture sent inside a stay is the picture), keeps his mark in memory.db and answers
-with the item. The tool layer cannot reach the stores, so :meth:`HighlightMarks.mark` is what the
+with the item. His watch's 标一下 marks a moment the same way (:meth:`HighlightMarks.mark_at`,
+ADR 0409). The tool layer cannot reach the stores, so :meth:`HighlightMarks.mark` is what the
 runtime hands it.
 """
 
@@ -12,7 +13,7 @@ import threading
 import time as _time
 from contextlib import closing
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 from jarvis.execution.tools import ToolError
 from jarvis.state.day_highlights import (
@@ -29,9 +30,11 @@ from jarvis.state.event_log import open_runtime_event_log
 from jarvis.state.memory_db import append_highlight_mark, latest_highlight_marks, open_memory_db
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Mapping
     from datetime import date
     from pathlib import Path
+
+_MINUTE_MS: Final = 60_000
 
 
 class HighlightMarks:
@@ -64,40 +67,84 @@ class HighlightMarks:
         try:
             on_day = resolve_day(day, datetime.fromtimestamp(now_ms / 1000, sources.zone).date())
             moment = datetime.combine(on_day, parse_clock(at), sources.zone)
-            start_ms, end_ms = day_window(on_day, sources.zone)
+            window = day_window(on_day, sources.zone)
         except ValueError as exc:
             msg = f"mark_highlight: {exc}"
             raise ToolError(msg, code="invalid_arguments") from None
-        with closing(open_runtime_event_log(self._event_log)) as conn:
-            items = fold_day(conn, start_ms, end_ms, now_ms, sources).items
-        item = covering(items, int(moment.timestamp()) * 1000, now_ms)
-        if item is None:
+        try:
+            return self._mark(
+                memory_db, on_day, window, int(moment.timestamp()) * 1000, now_ms, on, label,
+            )[1]
+        except LookupError:
             msg = (
                 f"mark_highlight: nothing on {on_day.isoformat()} covers {at}; "
                 "ask him for a time inside what he means"
             )
-            raise ToolError(msg, code="no_item")
-        append_highlight_mark(
-            memory_db, day=on_day.isoformat(), item_id=str(item["id"]), on=on, label=label,
-            kind=str(item["kind"]), start_ms=int(item["start_ms"]),
-        )
-        start, end = int(item["start_ms"]), item["end_ms"]
-        when = clock_text(start, sources.zone)
-        if end is None:
-            when += "-" if item["state"] == "now" else ""  # still going, or a moment
-        elif int(end) != start:
-            when += f"-{clock_text(int(end), sources.zone)}"
-        found: dict[str, Any] = {
-            "status": "marked" if on else "unmarked",
-            "day": on_day.isoformat(),
-            "kind": item["kind"],
-            "when": when,
-        }
-        if on:
-            _line, shown = day_notes(memory_db, on_day.isoformat(), items, sources.zone)
-            found["label"] = next((h["label"] for h in shown if h["id"] == item["id"]), label)
-        return found
+            raise ToolError(msg, code="no_item") from None
 
+    def mark_at(self, on_day: date, at_ms: int, label: str | None) -> dict[str, Any]:
+        """Mark for him the item of ``on_day`` that covers the moment ``at_ms`` (ADR 0409).
+
+        What :meth:`mark` does for the clock time of the minute ``at_ms`` falls in: the same
+        item, the same row, the same answer, with the item's ``id`` added.
+
+        Raises:
+            ValueError: the day is outside the calendar, or ``at_ms`` is not inside it.
+            LookupError: no item of ``on_day`` covers that minute.
+            RuntimeError: there is no memory store to keep it in.
+        """
+        sources = self._sources
+        memory_db = sources.memory_db
+        if memory_db is None:
+            msg = "marks cannot be kept right now (no memory store)"
+            raise RuntimeError(msg)
+        window = day_window(on_day, sources.zone)
+        if not window[0] <= at_ms < window[1]:
+            msg = f"at_ms is not inside {on_day.isoformat()}"
+            raise ValueError(msg)
+        minute_ms = at_ms - at_ms % _MINUTE_MS
+        item, found = self._mark(
+            memory_db, on_day, window, minute_ms, int(self._clock() * 1000), True, label,  # noqa: FBT003 — a mark, never an unmark.
+        )
+        return {**found, "id": str(item["id"])}
+
+    def _mark(  # noqa: PLR0913 — the day, its window, the minute, the clock and the mark.
+        self, memory_db: Path, on_day: date, window: tuple[int, int], minute_ms: int,
+        now_ms: int, on: bool, label: str | None,  # noqa: FBT001 — the caller's argument.
+    ) -> tuple[Mapping[str, Any], dict[str, Any]]:
+        """The item covering the minute ``minute_ms`` of ``on_day``, marked; and the answer.
+
+        Raises:
+            LookupError: no item covers the minute.
+        """
+        zone = self._sources.zone
+        with self._lock:
+            with closing(open_runtime_event_log(self._event_log)) as conn:
+                items = fold_day(conn, window[0], window[1], now_ms, self._sources).items
+            item = covering(items, minute_ms, now_ms)
+            if item is None:
+                msg = f"nothing on {on_day.isoformat()} covers {clock_text(minute_ms, zone)}"
+                raise LookupError(msg)
+            append_highlight_mark(
+                memory_db, day=on_day.isoformat(), item_id=str(item["id"]), on=on, label=label,
+                kind=str(item["kind"]), start_ms=int(item["start_ms"]),
+            )
+            start, end = int(item["start_ms"]), item["end_ms"]
+            when = clock_text(start, zone)
+            if end is None:
+                when += "-" if item["state"] == "now" else ""  # still going, or a moment
+            elif int(end) != start:
+                when += f"-{clock_text(int(end), zone)}"
+            found: dict[str, Any] = {
+                "status": "marked" if on else "unmarked",
+                "day": on_day.isoformat(),
+                "kind": item["kind"],
+                "when": when,
+            }
+            if on:
+                _line, shown = day_notes(memory_db, on_day.isoformat(), items, zone)
+                found["label"] = next((h["label"] for h in shown if h["id"] == item["id"]), label)
+        return item, found
 
     def set_item(
         self, on_day: date, item_id: str, on: bool, label: str | None,  # noqa: FBT001 — the route's argument.

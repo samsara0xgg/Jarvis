@@ -28,6 +28,7 @@ from jarvis.runtime.daemon.routes import (
     mail_letter,
     mail_summary,
     mail_trash,
+    mark_day,
     mark_mail_read,
     model_takes_images,
     moment_hold,
@@ -141,6 +142,11 @@ def build_deps(  # noqa: PLR0913 - one declarative table: each route's reads, bo
     # ADR 0147: the Dashboard's mail page exists only with ``dashboard.mail.enabled``.
     mail_home = None if runtime.mail_page is None else runtime.home
     local_zone = runtime.config.zone
+    # ADR 0296, 0409: his taps on a row and his watch's 标一下 write through one writer, one lock.
+    marks = (
+        None if runtime.memory is None
+        else HighlightMarks(event_log_path, day_sources(runtime, runtime.memory.db_path))
+    )
     return InherentDeps(
         submit_callable=submit_callable,
         attachments=runtime.attachments,
@@ -241,16 +247,8 @@ def build_deps(  # noqa: PLR0913 - one declarative table: each route's reads, bo
             shipped=runtime.runtime_paths.root / IMPORTS_DIRNAME,
             weather=None if runtime.home is None else runtime.home.day_weather_card,
         ),
-        highlight_set=(
-            None if runtime.memory is None
-            else functools.partial(
-                set_highlight,
-                HighlightMarks(
-                    runtime.runtime_paths.event_log,
-                    day_sources(runtime, runtime.memory.db_path),
-                ),
-            )
-        ),
+        highlight_set=None if marks is None else functools.partial(set_highlight, marks),
+        day_mark=None if marks is None else functools.partial(mark_day, marks),
         doing_answer=(
             None if runtime.memory is None
             else functools.partial(

@@ -26,6 +26,7 @@ from jarvis.surface.inherent_server.conversation import (
 )
 from jarvis.surface.inherent_server.data import register_data_routes
 from jarvis.surface.inherent_server.day import (
+    register_day_mark_route,
     register_day_route,
     register_doing_answer_route,
     register_doing_tidy_route,
@@ -119,6 +120,7 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: PLR0915 — one closed r
     register_footprint_route(app, deps)
     register_usage_history_route(app, deps)
     register_highlight_route(app, deps)
+    register_day_mark_route(app, deps)
     register_doing_answer_route(app, deps)
     register_doing_tidy_route(app, deps)
     register_commitment_route(app, deps)

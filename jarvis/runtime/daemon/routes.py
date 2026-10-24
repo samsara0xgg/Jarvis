@@ -291,6 +291,13 @@ async def set_highlight(
     return await asyncio.to_thread(marks.set_item, day, item_id, on, label)
 
 
+async def mark_day(
+    marks: HighlightMarks, day: date, at_ms: int, label: str | None,
+) -> dict[str, Any]:
+    """``POST /inherent/day/mark`` (ADR 0409): his mark of a moment, written off the loop thread."""
+    return await asyncio.to_thread(marks.mark_at, day, at_ms, label)
+
+
 async def answer_doing(  # noqa: PLR0913 — the route's day, span or stretch, and his words.
     answers: DoingAnswers, day: date, span_id: str | None, choice: str | None, text: str | None,
     stretch: tuple[int, int] | None,

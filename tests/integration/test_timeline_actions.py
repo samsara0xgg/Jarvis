@@ -1,10 +1,12 @@
-"""ADR 0296, 0299 — the day timeline's three buttons are routes a paired device can press.
+"""ADR 0296, 0299, 0409 — the day timeline's buttons are routes a paired device can press.
 
 Through the real FastAPI app, guarded as the daemon guards it (local key on loopback, a paired
 device's token from any other peer), over a real event log and memory.db in ``tmp_path``:
 
 - ``POST /inherent/day/highlight``: his mark, written as the ``mark_highlight`` tool writes it; his
   marks win over hers; the cap of five is a 409 that drops nothing; idempotent;
+- ``POST /inherent/day/mark`` (ADR 0409, his watch's 标一下): a moment marks what covers it, the
+  same row and answer as saying that time to her;
 - ``POST /inherent/commitments/{hex}``: confirms ``thing-<hex>`` in the ledger of his things, or
   closes it as cancelled, "not mine", both by him;
 - ``POST /inherent/memory/places``: ``places.save``, as ``save_place`` writes it, origin ``page``;
@@ -18,12 +20,18 @@ import functools
 import json
 import sqlite3
 from contextlib import closing
-from datetime import UTC
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 import pytest
 
-from jarvis.runtime.daemon.routes import act_commitment, serve_today, set_highlight, set_todo
+from jarvis.runtime.daemon.routes import (
+    act_commitment,
+    mark_day,
+    serve_today,
+    set_highlight,
+    set_todo,
+)
 from jarvis.runtime.memory_page import MemoryPage
 from jarvis.runtime.things_mirror import ThingsMirror
 from jarvis.shared import lang
@@ -35,12 +43,15 @@ from tests.support.commitments import ZONE as COMMITMENT_ZONE
 from tests.support.commitments import local_at as commitment_at
 from tests.support.day_highlights import (
     DAY_KEY,
+    NOW_MS,
+    TODAY_KEY,
     Dispatcher,
     ids_of,
     marks_of,
     moment_ms,
     picture_note,
     served_day,
+    visit_row,
     work_id,
 )
 from tests.support.home_routes import LIST as TODO_LIST
@@ -58,6 +69,7 @@ if TYPE_CHECKING:
     from jarvis.state.ledger import LedgerSources
 
 HIGHLIGHT = "/inherent/day/highlight"
+MARK = "/inherent/day/mark"
 PLACES = "/inherent/memory/places"
 
 
@@ -252,6 +264,139 @@ def test_a_brain_without_a_memory_store_has_no_highlight_route(tmp_path: Path) -
     peers = peers_with(tmp_path)
     body = {"day": DAY_KEY, "id": "v3", "on": True}
     assert peers.local.post(HIGHLIGHT, json=body).status_code == 404
+
+
+# --- a moment, from his watch ---------------------------------------------------------------
+
+
+@pytest.fixture
+def watch(tmp_path: Path) -> Day:
+    """The same stays, with both routes wired to one writer as the daemon wires them."""
+    src = ledger_world(tmp_path)
+    stays_of(src)
+    marks = marks_of(src)
+    peers = peers_with(
+        tmp_path,
+        highlight_set=functools.partial(set_highlight, marks),
+        day_mark=functools.partial(mark_day, marks),
+    )
+    return Day(src, peers, tmp_path)
+
+
+def _tap(
+    peers: Peers, at: datetime, *, label: str | None = None, on_day: str = DAY_KEY,
+) -> Any:  # noqa: ANN401 — a response
+    body: dict[str, Any] = {"day": on_day, "at_ms": moment_ms(at) + 37_000}  # mid-minute
+    if label is not None:
+        body["label"] = label
+    return peers.local.post(MARK, json=body)
+
+
+def test_a_moment_marks_what_covers_it_as_saying_that_time_does(
+    watch: Day, tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    """The tool told 09:10 in another world writes the same row and answers the same."""
+    reply = _tap(watch.peers, ledger_at(7, 9, 10), label="Long lunch")
+    assert reply.status_code == 200
+    assert reply.json() == {"ok": True, "marked": {
+        "status": "marked", "day": DAY_KEY, "kind": "stay", "when": "09:00-09:30",
+        "label": "Long lunch", "id": "v3",
+    }}
+    assert served_day(watch.src)["highlights"] == [{"id": "v3", "label": "Long lunch", "by": "him"}]
+
+    other = ledger_world(tmp_path_factory.mktemp("tool"))
+    stays_of(other)
+    said = Dispatcher(tmp_path_factory.mktemp("tool-log"), other)(
+        {"day": DAY_KEY, "time": "09:10", "label": "Long lunch"},
+    )
+    assert said == {k: v for k, v in reply.json()["marked"].items() if k != "id"}
+    assert _rows(watch.src) == _rows(other)
+
+
+def test_of_what_covers_the_moment_the_shortest_is_marked(watch: Day) -> None:
+    """The stay over the longer work block, and a picture sent inside a stay over the stay."""
+    assert _tap(watch.peers, ledger_at(7, 13, 10)).json()["marked"]["id"] == "v7"
+    assert _tap(watch.peers, ledger_at(7, 13, 40)).json()["marked"]["id"] == work_id(7, 13)
+    picture_note(watch.src, "a" * 32, ledger_at(7, 9, 10), "A bowl of pho.")
+    marked = _tap(watch.peers, ledger_at(7, 9, 10)).json()["marked"]
+    assert (marked["id"], marked["kind"], marked["when"]) == (
+        f"picture-{'a' * 32}", "picture", "09:10",
+    )
+
+
+def test_a_second_tap_writes_again_as_saying_it_twice_does(watch: Day) -> None:
+    """Two rows, one highlight; as with the tool, the newest row's label is the one shown."""
+    _tap(watch.peers, ledger_at(7, 9, 10), label="Long lunch")
+    again = _tap(watch.peers, ledger_at(7, 9, 20))
+    assert again.json()["marked"]["label"] == "stay 09:00"
+    assert len(_rows(watch.src)) == 2
+    assert served_day(watch.src)["highlights"] == [{"id": "v3", "label": "stay 09:00", "by": "him"}]
+
+
+def test_a_tap_now_marks_the_stay_he_is_still_in(watch: Day) -> None:
+    """The watch sends this moment: a stay still going covers it, and says so."""
+    visit_row(watch.src, "here", ledger_at(8, 14), place="Library")
+    reply = watch.peers.local.post(MARK, json={"day": TODAY_KEY, "at_ms": NOW_MS - 20_000})
+    assert reply.status_code == 200
+    marked = reply.json()["marked"]
+    assert (marked["id"], marked["day"], marked["when"]) == ("here", TODAY_KEY, "14:00-")
+
+
+def test_a_moment_nothing_covers_is_a_404_and_writes_nothing(watch: Day) -> None:
+    """Between two stays: nothing is guessed from the nearest."""
+    refused = _tap(watch.peers, ledger_at(7, 7, 45))
+    assert refused.status_code == 404
+    assert refused.json()["detail"] == f"nothing on {DAY_KEY} covers 07:45"
+    assert _rows(watch.src) == []
+
+
+def test_his_watch_is_not_held_to_the_five_his_taps_are(watch: Day) -> None:
+    """As when he says it: the row is written even with five of his marks standing."""
+    for n in range(1, 6):
+        assert _mark(watch.peers, f"v{n}").status_code == 200
+    assert _mark(watch.peers, "v6").status_code == 409
+    assert _tap(watch.peers, ledger_at(7, 12, 10)).status_code == 200
+    assert [row[1] for row in _rows(watch.src)] == ["v1", "v2", "v3", "v4", "v5", "v6"]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"day": DAY_KEY},
+        {"at_ms": moment_ms(ledger_at(7, 9, 10))},
+        {"day": "today", "at_ms": moment_ms(ledger_at(7, 9, 10))},
+        {"day": "2026-13-01", "at_ms": moment_ms(ledger_at(7, 9, 10))},
+        {"day": DAY_KEY, "at_ms": moment_ms(ledger_at(8, 9, 10))},
+        {"day": DAY_KEY, "at_ms": moment_ms(ledger_at(7, 0)) - 1},
+        {"day": DAY_KEY, "at_ms": -1},
+        {"day": DAY_KEY, "at_ms": float(moment_ms(ledger_at(7, 9, 10)))},
+        {"day": DAY_KEY, "at_ms": str(moment_ms(ledger_at(7, 9, 10)))},
+        {"day": DAY_KEY, "at_ms": True},
+        {"day": DAY_KEY, "at_ms": moment_ms(ledger_at(7, 9, 10)), "label": "l" * 25},
+        {"day": DAY_KEY, "at_ms": moment_ms(ledger_at(7, 9, 10)), "label": 7},
+    ],
+)
+def test_a_mark_of_the_wrong_shape_or_outside_its_day_is_a_422_and_writes_nothing(
+    watch: Day, body: dict[str, Any],
+) -> None:
+    """The day, the moment inside it and the label are checked before anything is written."""
+    assert watch.peers.local.post(MARK, json=body).status_code == 422
+    assert _rows(watch.src) == []
+
+
+def test_the_mark_route_is_for_the_local_key_and_paired_devices_alone(watch: Day) -> None:
+    """The watch reaches it through the phone's pairing; nobody without one."""
+    body = {"day": DAY_KEY, "at_ms": moment_ms(ledger_at(7, 9, 10))}
+    refused_without_credentials(watch.peers, MARK, body)
+    assert _rows(watch.src) == []
+    assert watch.peers.paired.post(MARK, json=body).status_code == 200
+    assert ids_of(served_day(watch.src)) == ["v3"]
+
+
+def test_a_brain_without_a_memory_store_has_no_mark_route(tmp_path: Path) -> None:
+    """Not wired: the route is not there."""
+    body = {"day": DAY_KEY, "at_ms": moment_ms(ledger_at(7, 9, 10))}
+    assert peers_with(tmp_path).local.post(MARK, json=body).status_code == 404
 
 
 # --- commitments -----------------------------------------------------------------------------

@@ -7,6 +7,8 @@
   outings between them, each with its route, stops, distance, speeds and heart rate
 - ``POST /inherent/day/highlight`` — ADR 0296; body ``{"day", "id", "on", "label"?}`` marks or
   unmarks one item of a day as a highlight for him; ``{"ok", "highlights"}``
+- ``POST /inherent/day/mark`` — ADR 0409; body ``{"day", "at_ms", "label"?}`` marks for him the
+  item that covers that moment, as ``mark_highlight`` does; ``{"ok", "marked"}``
 - ``POST /inherent/day/answer`` — ADR 0302; body ``{"day", "span_id", "choice"?, "text"?}`` is
   his answer about a span of what he was doing; ``{"ok", "span"}``
 - ``POST /inherent/day/tidy`` — ADR 0310; no body: today's newest part of the doing lane is
@@ -91,6 +93,15 @@ _ITEM_ID: Final = r"^[A-Za-z0-9_\-=+/.|:@]{1,256}$"
 """The id of a day-line item: ``jarvis.shared.about``'s id set."""
 
 
+def _fitting_label(value: str | None) -> str | None:
+    """His label trimmed, blank as none; over :data:`LABEL_MAX_CHARS` is refused."""
+    label = (value or "").strip() or None
+    if label is not None and len(label) > LABEL_MAX_CHARS:
+        msg = f"label is at most {LABEL_MAX_CHARS} characters"
+        raise ValueError(msg)
+    return label
+
+
 class HighlightRequest(BaseModel):
     """Body of ``POST /inherent/day/highlight`` (ADR 0296): his mark on one item of a day."""
 
@@ -102,11 +113,20 @@ class HighlightRequest(BaseModel):
     @field_validator("label")
     @classmethod
     def _label_fits(cls, value: str | None) -> str | None:
-        label = (value or "").strip() or None
-        if label is not None and len(label) > LABEL_MAX_CHARS:
-            msg = f"label is at most {LABEL_MAX_CHARS} characters"
-            raise ValueError(msg)
-        return label
+        return _fitting_label(value)
+
+
+class DayMarkRequest(BaseModel):
+    """Body of ``POST /inherent/day/mark`` (ADR 0409): his mark of what covers a moment."""
+
+    day: str = Field(min_length=10, max_length=10, pattern=r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
+    at_ms: StrictInt = Field(ge=0)
+    label: str | None = Field(default=None, max_length=200)
+
+    @field_validator("label")
+    @classmethod
+    def _label_fits(cls, value: str | None) -> str | None:
+        return _fitting_label(value)
 
 
 class DoingAnswerRequest(BaseModel):
@@ -188,6 +208,38 @@ def register_highlight_route(app: FastAPI, deps: InherentDeps) -> None:
             LOGGER.warning("highlight route failed: %s: %s", type(exc).__name__, exc)
             raise HTTPException(status_code=502, detail=str(exc)[:200]) from None
         return {"ok": True, "highlights": highlights}
+
+
+def register_day_mark_route(app: FastAPI, deps: InherentDeps) -> None:
+    """ADR 0409: he marks a moment of a day, and what covers it is a highlight, as said aloud."""
+    if deps.day_mark is None:
+        return
+    day_mark = deps.day_mark
+
+    @app.post("/inherent/day/mark", status_code=200)
+    async def day_mark_at(req: DayMarkRequest) -> dict[str, Any]:
+        """``{ok, marked}``: ``marked`` is ``mark_highlight``'s answer for that minute, with ``id``.
+
+        ``{status, day, kind, when, label, id}`` of the item marked: of the items that cover the
+        minute ``at_ms`` falls in, the shortest. 422 for a day that is not one, an ``at_ms`` that
+        is not a whole number of milliseconds inside that day, or a label of the wrong shape; 404
+        when nothing on that day covers the minute. As with the tool, each mark writes a row, and
+        none is refused for the cap of five that ``/inherent/day/highlight`` holds his taps to.
+        """
+        try:
+            on_day = parse_day(req.day)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)[:200]) from None
+        try:
+            marked = await day_mark(on_day, req.at_ms, req.label)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)[:200]) from None
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)[:200]) from None
+        except Exception as exc:  # noqa: BLE001 — a store that cannot be written is the page's 502.
+            LOGGER.warning("day mark route failed: %s: %s", type(exc).__name__, exc)
+            raise HTTPException(status_code=502, detail=str(exc)[:200]) from None
+        return {"ok": True, "marked": marked}
 
 
 def register_doing_answer_route(app: FastAPI, deps: InherentDeps) -> None:
