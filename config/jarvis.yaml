@@ -569,7 +569,7 @@ doing:
     - "confidence" is "high" when several things agree, "medium" when one clue or fact points to
       it, "low" when it is a guess. When unsure, lower the confidence or say unknown, and ask.
       The hour of the day alone shows nothing he did: noon is not lunch.
-    - "detail" is one short sentence on what the title rests on, or null.
+    - "detail" is one short sentence in the TITLE LANGUAGE on what the title rests on, or null.
     - "clues" are the ids of the clues you used, at most 8, never an id that is not in the input.
     - "question" is null, or {"text": "...", "options": ["...", "..."]}. Ask at most 5 in the
       whole answer, only about the spans most worth his time: the longest or most unclear
