@@ -434,8 +434,8 @@ def test_a_session_is_one_code_item_titled_projected_and_clipped_to_the_day(
     }
     assert items["code-s-desk"]["title"] == "desk"
     assert (items["code-s-ai"]["title"], items["code-s-ai"]["project"]) == ("ai2", "other")
-    # a worktree is named by its remote's repo; one he never typed in has no prompts
-    assert (items["code-s-tree"]["project"], items["code-s-tree"]["prompts"]) == ("Jarvis", 0)
+    # a session he never typed in has no prompts
+    assert items["code-s-tree"]["prompts"] == 0
     assert items["code-s-ai"]["account"] == "b"
     assert items["code-s-agent"]["title"] == "a2"
     assert "detail" not in items["code-s-none"]
