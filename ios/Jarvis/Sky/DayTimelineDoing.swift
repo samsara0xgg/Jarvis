@@ -123,6 +123,7 @@ extension DayTimelineModel {
         e.note = tlText(s.detail)
         e.detail = line(e, solo: true)
         e.unsure = !hole && (s.question != nil || (s.basis == "inferred" && s.confidence == "low"))
+        e.commute = s.category == "commute"
         if hole || e.unsure {
             let options = (s.question?.options ?? []).compactMap { tlText($0) }
             e.ask = TLAsk(text: tlText(s.question?.text), options: options, yes: hole || !options.isEmpty ? nil : tlText(s.title), hole: hole)

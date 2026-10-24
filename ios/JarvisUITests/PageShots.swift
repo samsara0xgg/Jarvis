@@ -79,6 +79,30 @@ final class PageShots: XCTestCase {
         shot("11-card-tidying")
     }
 
+    func testRowTrip() {
+        _ = open("足迹:今天开")
+        sleep(3)
+        shot("12-row-trip")
+    }
+
+    func testRowNight() {
+        _ = open("时间线:开:sleep-0")
+        sleep(2)
+        shot("13-row-night")
+    }
+
+    func testRowGuess() {
+        _ = open("时间线:按在干嘛:doing-1055")
+        sleep(2)
+        shot("14-row-guess")
+    }
+
+    func testRowUpcoming() {
+        _ = open("时间线:开:陶艺课")
+        sleep(2)
+        shot("15-row-upcoming")
+    }
+
     func testMap() {
         _ = open("足迹")
         shot("4-map-day")

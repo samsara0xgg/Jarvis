@@ -17,8 +17,10 @@ extension TLEntry {
     /// About how tall what it opens to where it stands is, before it is drawn: how far up the list can carry it, near the list's end.
     var unfoldGuess: Double {
         switch kind {
-        case .segment: return (ask != nil ? 40 : 0) + 28 * Double(lines.count) + (knows != nil ? 30 : 0) + 12
-        case .sleep: return 110
+        case .segment: return (ask != nil ? 40 : 0) + 28 * Double(lines.count) + (knows != nil ? 30 : 0) + 12 + (unsure && ask != nil ? 110 : 0)
+        case .sleep: return 260
+        case .trip: return 560
+        case .segment where commute: return 560
         case .stay: return (place?.onMap == true ? 132 : 0) + 20 * Double(more.count) + 60
         default: return 60 + 20 * Double(more.count)
         }
@@ -44,7 +46,7 @@ struct TLOpenView: View {
 
     var body: some View {
         Group {
-            if e.kind == .segment { segment } else { other }
+            if e.kind == .segment && !e.commute { segment } else { other }          // a stretch on the way opens to its trip
         }
         .padding(.bottom, inPlace ? 12 : 0)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -58,7 +60,7 @@ struct TLOpenView: View {
     // MARK: a stretch of what he was doing
 
     private enum Part: Identifiable {
-        case ask, said(String), line(TLLine), links, why(String), note(String)
+        case ask, said(String), line(TLLine), links, why(String), note(String), guess, heading(String)
         var id: String {
             switch self {
             case .ask: "ask"
@@ -67,6 +69,8 @@ struct TLOpenView: View {
             case .links: "links"
             case .why: "why"
             case .note: "note"
+            case .guess: "guess"
+            case .heading(let h): "h-" + h
             }
         }
     }
@@ -74,6 +78,15 @@ struct TLOpenView: View {
     /// what a stretch says, in order: what it asks (or his answer, once he has given it), its lines, 依据 and what it opens to, and why what he did did not go
     private var parts: [Part] {
         var out: [Part] = []
+        // a stretch she is not sure of (跨端UI标准 §11): her guess and why first, what she saw, then 对不对？ with the ways to say it
+        if e.unsure, e.ask != nil, tl.chosen[e.id] == nil, interactive {
+            out.append(.guess)
+            if !e.lines.isEmpty { out.append(.heading(Words.PhoneRow.sawWhat)) }
+            out += e.lines.map { Part.line($0) }
+            out += [.heading(Words.PhoneRow.rightOrNot), .ask]
+            if let n = tl.notes[e.id] { out.append(.note(n)) }
+            return out
+        }
         if let said = tl.chosen[e.id] { out.append(.said(said)) } else if e.ask != nil, interactive { out.append(.ask) }
         out += e.lines.map { Part.line($0) }
         if let k = e.knows, interactive { out.append(.links); if why { out.append(.why(k)) } }
@@ -107,6 +120,8 @@ struct TLOpenView: View {
             .buttonStyle(.plain))
         case .why(let k):
             column(Text(k).font(.system(size: 12)).lineSpacing(3).foregroundStyle(Look.ink2).fixedSize(horizontal: false, vertical: true).padding(.bottom, 6)).transition(.opacity)
+        case .guess: column(guessCard)
+        case .heading(let h): column(StageHeading(text: h))
         case .note(let n):
             column(Text(n).font(.system(size: 12.5)).foregroundStyle(SetColor.red.opacity(0.92)).fixedSize(horizontal: false, vertical: true).padding(.vertical, 4)).transition(.opacity)
         }
@@ -116,18 +131,36 @@ struct TLOpenView: View {
     /// writing a line of his own last, which becomes a field. While his answer is on its way the chips wait.
     @ViewBuilder private var askLine: some View {
         if let a = e.ask {
-            let busy = tl.choosing == e.id
+            let busy = tl.choosing == e.id, guess = e.unsure
             TLFlow(spacing: 6) {
-                Text(a.text ?? (a.hole ? Words.Timeline.fillIn : Words.Timeline.isIt(a.yes ?? e.title))).font(.system(size: 13.5)).foregroundStyle(Look.ink)
-                    .fixedSize(horizontal: false, vertical: true).frame(minHeight: 26).padding(.trailing, 2)
-                ForEach(a.options, id: \.self) { o in chip(o) { tl.choose(e, choice: o, text: nil) } }
-                if let y = a.yes { chip(Words.Timeline.yes) { tl.choose(e, choice: nil, text: y) } }
-                if writing { field } else { chip(Words.Timeline.writeLine, quiet: true) { writing = true; DispatchQueue.main.async { writingFocus = true } } }
+                if guess {          // 对的 / 不对，跟她说, then her other ways of saying it, a tap each
+                    chip(Words.PhoneRow.right) { tl.choose(e, choice: nil, text: a.yes ?? e.title) }
+                    if writing { field } else { chip(Words.PhoneRow.notRight, quiet: true) { writing = true; DispatchQueue.main.async { writingFocus = true } } }
+                    ForEach(a.options, id: \.self) { o in chip(o) { tl.choose(e, choice: o, text: nil) } }
+                } else {
+                    Text(a.text ?? (a.hole ? Words.Timeline.fillIn : Words.Timeline.isIt(a.yes ?? e.title))).font(.system(size: 13.5)).foregroundStyle(Look.ink)
+                        .fixedSize(horizontal: false, vertical: true).frame(minHeight: 26).padding(.trailing, 2)
+                    ForEach(a.options, id: \.self) { o in chip(o) { tl.choose(e, choice: o, text: nil) } }
+                    if let y = a.yes { chip(Words.Timeline.yes) { tl.choose(e, choice: nil, text: y) } }
+                    if writing { field } else { chip(Words.Timeline.writeLine, quiet: true) { writing = true; DispatchQueue.main.async { writingFocus = true } } }
+                }
             }
             .opacity(busy ? 0.5 : 1).allowsHitTesting(!busy)
             .animation(.easeOut(duration: 0.15), value: busy)
             .frame(minHeight: 36, alignment: .leading).padding(.bottom, 4)
         }
+    }
+
+    /// her guess, on a small card: what she thinks it was and why (依据), else the guess alone
+    private var guessCard: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(Words.PhoneRow.unsure).font(.system(size: Look.small, weight: .medium)).foregroundStyle(Look.waits)
+            Text(e.knows ?? e.note ?? Words.PhoneRow.guess(e.title)).font(.system(size: 13.5)).foregroundStyle(Look.ink).lineSpacing(3).fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(12).frame(maxWidth: .infinity, alignment: .leading)
+        .background(Look.card, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Look.waits.opacity(0.25), lineWidth: 0.6))
+        .padding(.bottom, 4)
     }
 
     private func chip(_ text: String, quiet: Bool = false, _ action: @escaping () -> Void) -> some View {
@@ -211,26 +244,67 @@ struct TLOpenView: View {
 
     // MARK: anything else
 
+    /// a trip and a night take the row's whole width (their map, curves and bars); the rest begins where the row's words do
+    private var wide: Bool { e.kind == .trip || e.kind == .sleep || e.commute }
+    /// something not yet happened that came from somewhere: an event or a reminder still to come
+    private var upcoming: Bool { e.later && (e.kind == .event || e.kind == .reminder) }
+
     private var other: some View {
-        column(VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 12) {
             if interactive, tl.renaming == e.id { renameField }         // first, so that it is up under the place's name whatever else the place has to show, clear of the keyboard
             content
             if interactive, tl.renaming != e.id { buttons }
             if interactive, let note = tl.notes[e.id] { Text(note).font(.system(size: 12.5)).foregroundStyle(SetColor.red.opacity(0.92)).fixedSize(horizontal: false, vertical: true).transition(.opacity) }
         }
-        .padding(.top, inPlace ? 2 : 0))
+        .padding(.horizontal, inPlace && wide ? 10 : 0).padding(.vertical, inPlace && wide ? 12 : 0)          // 10 + the curves' 380 + 10: the row's 400
+        .background { if inPlace && wide { RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Look.card) } }          // over the list's rail, which would run through its map and curves
+        .padding(.top, inPlace ? 2 : 0)
+        .padding(.leading, inPlace && !wide ? TLColumns.text : 0).padding(.trailing, inPlace && !wide ? TLColumns.arrow : 0)
         .modifier(TLRiseIn(rank: 0, on: inPlace && interactive, reduce: reduce))
     }
 
     @ViewBuilder private var content: some View {
+        if upcoming { upcomingParts } else {
         switch e.kind {
         case .stay: stay
         case .picture: picture
         case .work: work
-        case .sleep: sleep
+        case .trip: TripStage(e: e, tl: tl, engine: engine)
+        case .sleep: NightStage(e: e, health: tl.reply.map { tl.model($0).body } ?? [], tl: tl, engine: engine)
         case .code: code
+        case .segment where e.commute: TripStage(e: e, tl: tl, engine: engine)
         case .now, .pause, .segment: EmptyView()
         default: facts(e.more)
+        }
+        }
+    }
+
+    // MARK: something not yet happened
+
+    /// 从哪来的: what the row came from, as the brain says it (the mail, the calendar, the reminder); 怎么去: the time to leave for it, where the day has one in the two hours before it
+    private var upcomingParts: some View {
+        let leave = tl.reply.flatMap { r in tl.model(r).entries.last { $0.kind == .departure && $0.t0 <= e.t0 && $0.t0 >= e.t0 - 120 } }
+        return VStack(alignment: .leading, spacing: 10) {
+            if e.detail != nil || !e.more.isEmpty {
+                StageHeading(text: Words.PhoneRow.fromWhere)
+                VStack(alignment: .leading, spacing: 4) {
+                    if let d = e.detail { Text(d).font(.system(size: Look.small)).foregroundStyle(Look.ink3) }
+                    facts(e.more)
+                }
+                .padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                .background(Look.card, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
+            if let l = leave {
+                StageHeading(text: Words.PhoneRow.howToGo)
+                HStack(spacing: 10) {
+                    Text(l.time).font(Look.figures(11.5)).foregroundStyle(Look.ink2).frame(width: 40, alignment: .leading)
+                    Image(systemName: l.symbol.isEmpty ? "figure.walk" : l.symbol).font(.system(size: 12)).foregroundStyle(Look.ink2).frame(width: 16)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(l.title).font(.system(size: 13.5)).foregroundStyle(Look.ink)
+                        if let d = l.detail { Text(d).font(.system(size: 11.5)).foregroundStyle(Look.ink2) }
+                    }
+                }
+            }
         }
     }
 
@@ -358,12 +432,12 @@ struct TLOpenView: View {
 
     /// What can be done with it, as chips: what the row opened is for first, in the light fill. Asking her is the long press's, and 这段在干嘛 is the last line of that menu.
     @ViewBuilder private var buttons: some View {
-        let doing = e.actions.filter { $0 != .ask && $0 != .sayWhat }.sorted { rank($0) < rank($1) }
+        let doing = e.actions.filter { ($0 != .ask || upcoming) && $0 != .sayWhat }.sorted { rank($0) < rank($1) }          // 问她 is the long press's, and a chip of its own on what is still to come
         if !doing.isEmpty {
             TLFlow(spacing: 6) {
                 ForEach(doing, id: \.self) { a in
                     Button { tl.perform(a, on: e, engine: engine) } label: {
-                        Text(a.title).font(.system(size: 12.5, weight: .medium)).lineLimit(1).fixedSize()
+                        Text(upcoming && a == .confirm ? Words.PhoneRow.going : upcoming && a == .deny ? Words.PhoneRow.notGoing : a.title).font(.system(size: 12.5, weight: .medium)).lineLimit(1).fixedSize()
                             .foregroundStyle(strong(a) ? AT.navy : Look.ink)
                             .padding(.horizontal, 11).frame(height: 26)
                             .background(strong(a) ? AT.pale : Color.white.opacity(0.07), in: Capsule())

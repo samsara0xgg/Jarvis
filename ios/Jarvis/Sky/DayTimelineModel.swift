@@ -269,6 +269,7 @@ struct TLEntry: Identifiable, Equatable {
     var cut = false                 // its own words are cut short at the right of the columns (`cutShort`, measured once when the day is built, not whenever a row asks)
     var unknown = false             // a stretch nobody could say anything of: its title is `没有记录`, in the muted colour
     var unsure = false              // a stretch she is not sure of: a question mark after its title
+    var commute = false             // a stretch on the way somewhere: it opens to its trip (Sky/RowStage.swift)
     var ask: TLAsk?                 // a stretch: what it asks him, in one line when it is opened
     var lenses: Set<TLLens> = []    // a stretch: the kinds of the day's numbers that have something inside it (a talk too, which is not drawn)
     var at: String?                 // a stretch: the place he was at, which its line says when no group under that place's name holds it

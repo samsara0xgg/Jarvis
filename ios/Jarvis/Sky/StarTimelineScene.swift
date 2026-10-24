@@ -289,6 +289,13 @@ extension StarEngine {
         case "放":
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { FootprintHooks.play?() }
         case "来回": DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [self] in sceneRounds() }          // her card over his day on the map
+        case "今天开":                                                             // the footprint's day on 今天, its first trip opened where it stands (the trip's row opened, Sky/RowStage.swift)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [self] in
+                ui.footprintOpen = false
+                guard let r = ui.tl.reply else { return }
+                let m = ui.tl.model(r)
+                if let e = m.entries.first(where: { $0.kind == .trip }) { ui.tl.unfold(e, in: m, room: TLLayout.viewport) }
+            }
         case "开":
             let want = parts.count > 2 ? parts[2] : "0"
             let pick = reply.outings.first { $0.id == want } ?? Int(want).flatMap { reply.outings.indices.contains($0) ? reply.outings[$0] : nil }
@@ -330,7 +337,7 @@ extension StarEngine {
         // a row brought into view, or opened where it stands as a tap opens it
         func show(_ id: String, open: Bool) {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [self] in
-                if open, let e = model.entries.first(where: { $0.id == id }) { ui.tl.unfold(e, in: model, room: TLLayout.viewport); return }
+                if open, let e = model.entries.first(where: { $0.id == id || $0.title == id }) { ui.tl.unfold(e, in: model, room: TLLayout.viewport); return }          // by its id, or its title
                 if let y = model.top(of: id) { ui.tl.scroll(to: max(0, y - 90), animated: false) }
             }
         }
