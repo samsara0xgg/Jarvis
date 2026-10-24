@@ -5,8 +5,8 @@ import SwiftUI
 /// (listen, think, answer), a card (reminder, leave, morning, unsure), a page (today, ride, and today scrolled to its end), 设置 (and scrolled to its end),
 /// and the complications' gallery. `cycle` steps a talk listen → think → answer every 3 s, for her face changes.
 enum WatchScene: String {
-    case home, waiting, aod, listen, think, answer, reminder, leave, morning, unsure, today, ride, complications, cycle
-    case todayEnd = "today-end", settings, settingsMore = "settings-more"
+    case home, waiting, aod, listen, think, answer, reminder, leave, morning, unsure, mark, today, ride, complications, cycle
+    case markMissed = "mark-missed", todayEnd = "today-end", settings, settingsMore = "settings-more"
 
     static var current: WatchScene? { UserDefaults.standard.string(forKey: "watchScene").flatMap(WatchScene.init(rawValue:)) }
 
@@ -19,6 +19,8 @@ enum WatchScene: String {
         case .leave: m.adopt(.sampleLeaving)
         case .morning: m.adopt(.sampleMorning); WatchCard.morningUntil = 24; UserDefaults.standard.removeObject(forKey: "watch.morningSeen")
         case .unsure: m.adopt(.sampleUnsure)
+        case .mark: m.adopt(.sampleQuiet); m.markCard = .marked(id: "stay-1", day: "2026-10-20", when: "21:30-", title: "在 Studio 4，和 Mia")
+        case .markMissed: m.adopt(.sampleQuiet); m.markCard = .markMissed("这会儿没有可标的")
         default: m.adopt(.sampleQuiet)
         }
         m.startTalk = { m.talk = .listening(heard: "") }

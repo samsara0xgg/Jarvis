@@ -19,12 +19,16 @@ final class WatchModel {
     private(set) var day: WatchDay? = WatchDayStore.load()
     var talk: Talk = .idle
     var phoneReachable = false
+    /// 标一下's card: what the phone said of the last one (`.marked` or `.markMissed`), until it is put away
+    var markCard: WatchCard?
 
     // set by the link to the phone
     @ObservationIgnored var startTalk: () -> Void = {}
     @ObservationIgnored var endTalk: () -> Void = {}
     @ObservationIgnored var cancelTalk: () -> Void = {}
     @ObservationIgnored var answer: (_ id: String, _ action: String) -> Void = { _, _ in }
+    @ObservationIgnored var mark: () -> Void = {}
+    @ObservationIgnored var unmark: (_ day: String, _ id: String) -> Void = { _, _ in }
 
     /// a new day from the phone: the words follow its language, and the complications draw it
     func adopt(_ d: WatchDay) {
@@ -42,6 +46,8 @@ final class WatchModel {
         case .thinking: if case .listening(let h) = talk { talk = .thinking(heard: h) } else { talk = .thinking(heard: "") }
         case .reply(_, let spoken, let written, let card): talk = .answer(spoken: spoken, written: written, card: card)
         case .failed(_, let reason): talk = .failed(reason)
+        case .marked(let id, let day, let when, let title): markCard = .marked(id: id, day: day, when: when, title: title)
+        case .markMissed(let reason): markCard = .markMissed(reason)
         }
     }
 }

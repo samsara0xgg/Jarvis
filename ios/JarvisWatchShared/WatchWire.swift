@@ -101,6 +101,8 @@ enum WatchAsk: Codable, Equatable {
     case talkEnd(id: UUID)                  // he stopped (a tap, or the watch heard the pause)
     case talkCancel(id: UUID)
     case charge(percent: Int, state: String, at: Date)   // the watch's charge in whole percent, `charging`, `full` or `unplugged`, when it read it (ADR 0377)
+    case mark(at: Date, label: String?)     // 标一下: what covers this moment of today (ADR 0409); a tap carries no label, and replaces one said aloud
+    case unmark(day: String, id: String)    // its 撤销
 }
 
 /// From the phone to the watch.
@@ -109,6 +111,8 @@ enum WatchTell: Codable, Equatable {
     case thinking(talk: UUID)                                // the words went to the brain
     case reply(talk: UUID, spoken: String, written: String, card: WatchDay.Waiting?)   // her answer; a card she put up comes with it, its buttons under her words
     case failed(talk: UUID, reason: String)                  // in the words table's language
+    case marked(id: String, day: String, when: String, title: String)   // 标一下 took: the item marked, its time (`21:30-`) and what it is
+    case markMissed(reason: String)                          // it did not: nothing covers the moment, or the brain could not be reached
 }
 
 /// The last day the phone sent, kept in the App Group so the complications draw it too.

@@ -55,6 +55,7 @@ struct WatchCardView: View {
         case .answer(_, _, let a?): (a.id, a.actions)
         case .waiting(let w) where !w.actions.isEmpty: (w.id, w.actions)
         case .morning: ("morning", [.init(id: "today", title: Words.Watch.seeToday), .init(id: "ok", title: Words.Watch.ok)])
+        case .marked(let id, _, _, _): (id, [.init(id: "done", title: Words.Watch.done), .init(id: "undo", title: Words.Watch.undo)])
         case .unsure(let u): (u.id, [.init(id: "unsure", title: Words.Watch.yes), .init(id: "talk", title: Words.Watch.no)])   // 对: WatchActionID.unsure on the phone
         default: nil
         }
@@ -91,6 +92,13 @@ struct WatchCardView: View {
                 }
                 .padding(.top, 1)
                 if !u.line.isEmpty { line(u.line) }
+            case .marked(_, _, let when, let title):
+                label("star", Words.Watch.markedAt(when.replacingOccurrences(of: "-", with: "–")), WatchTheme.warm)
+                Text(Words.Watch.markedTitle).font(.system(size: 18, weight: .semibold)).foregroundStyle(WatchTheme.ink).padding(.top, 1)
+                if !title.isEmpty { line(title) }
+            case .markMissed(let reason):
+                label("star", Words.Watch.mark, WatchTheme.muted)
+                Text(reason).font(.system(size: 16.5, weight: .semibold)).foregroundStyle(WatchTheme.ink).padding(.top, 1)
             }
             if let a = actions {
                 HStack(spacing: 6) {

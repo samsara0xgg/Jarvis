@@ -42,6 +42,13 @@ extension Words {
         static var yes: String { pick(zh: "对", en: "Yes") }
         static var no: String { pick(zh: "不是", en: "No") }
 
+        /// 标一下: its entry, and its card (`标好了 · 21:30–`, `这一刻记下了`, what was marked, 撤销 and 好了)
+        static var mark: String { pick(zh: "标一下", en: "Mark this") }
+        static func markedAt(_ when: String) -> String { pick(zh: "标好了 · \(when)", en: "Marked · \(when)") }
+        static var markedTitle: String { pick(zh: "这一刻记下了", en: "Moment kept") }
+        static var undo: String { pick(zh: "撤销", en: "Undo") }
+        static var done: String { pick(zh: "好了", en: "Done") }
+
         static var doubleTap: String { pick(zh: "双击", en: "Double tap") }
         static var listening: String { pick(zh: "在听", en: "Listening") }
         static var thinking: String { pick(zh: "在想", en: "Thinking") }

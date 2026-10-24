@@ -55,7 +55,7 @@ struct WatchRoot: View {
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 10)) { ctx in          // 该出门了 comes up and counts down by the clock
-            let card = WatchCard.top(answer: answerCard, day: model.day, queue: queue, answered: answered, leaveDismissed: leaveDismissed, now: ctx.date,
+            let card = WatchCard.top(answer: answerCard, mark: model.markCard, day: model.day, queue: queue, answered: answered, leaveDismissed: leaveDismissed, now: ctx.date,
                                      morningSeen: morningSeen, putAway: putAway)
             stage(card, now: ctx.date)
                 .onChange(of: card != nil) { _, up in if up { withAnimation(Self.spring) { page = .home } } }          // a card lies over her in the middle
@@ -83,7 +83,11 @@ struct WatchRoot: View {
             try? await Task.sleep(for: .seconds(t.timeIntervalSinceNow))
             if !Task.isCancelled { WatchHaptics.play(.leave) }
         }
-        .onOpenURL { if $0.scheme == "jarvis-watch", $0.host == "talk" { page = .home; model.startTalk() } }
+        .onOpenURL { url in
+            guard url.scheme == "jarvis-watch" else { return }
+            if url.host == "talk" { page = .home; model.startTalk() }
+            if url.host == "mark", WatchSettings.markReady { mark() }
+        }
     }
 
     private func stage(_ card: WatchCard?, now: Date) -> some View {
@@ -134,7 +138,7 @@ struct WatchRoot: View {
                 .tag(Page.home)
                 if let day = model.day {
                     WatchTodayPage(day: day, answered: answered, open: openCard, answer: { id, action in send(id, action) },
-                                   openSettings: { settingsOpen = true }, atEnd: atEnd).tag(Page.today)
+                                   openSettings: { settingsOpen = true }, mark: WatchSettings.markReady ? { mark() } : nil, atEnd: atEnd).tag(Page.today)
                 }
                 if let r = model.day?.ride { WatchRideView(ride: r).tag(Page.ride) }
             }
@@ -213,6 +217,8 @@ struct WatchRoot: View {
         case .leave: "leave"
         case .morning: "morning"
         case .unsure(let u): "unsure." + u.id
+        case .marked(let id, _, _, _): "marked." + id
+        case .markMissed: "markMissed"
         }
     }
 
@@ -220,6 +226,13 @@ struct WatchRoot: View {
     private func openCard(_ id: String) {
         queue.removeAll { $0 == id }
         queue.insert(id, at: 0)
+    }
+
+    /// 标一下: the phone marks what covers this moment, and its answer comes up as a card
+    private func mark() {
+        model.markCard = nil
+        model.mark()
+        WatchHaptics.play(.listening)
     }
 
     private func send(_ id: String, _ action: String) {
@@ -235,6 +248,9 @@ struct WatchRoot: View {
         case .morning:                                          // 看今天 opens 今天要办的; 好 puts it away
             dismiss(card)
             if action == "today" { withAnimation(Self.spring) { page = .today } }
+        case .marked(let id, let day, _, _):                    // 好了 puts it away; 撤销 takes the mark back
+            dismiss(card)
+            if action == "undo" { model.unmark(day, id) }
         case .unsure:                                           // 对 goes to the phone; 不是 is said to her
             dismiss(card)
             if action == "talk" { model.startTalk() } else { model.answer(id, action) }
@@ -251,6 +267,7 @@ struct WatchRoot: View {
         case .leave(let t): leaveDismissed = t
         case .morning: morningSeen = model.day?.date ?? ""
         case .unsure(let u): _ = withAnimation(Self.spring) { putAway.insert(u.id) }
+        case .marked, .markMissed: model.markCard = nil
         }
     }
 }

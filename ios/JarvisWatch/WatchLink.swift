@@ -28,7 +28,9 @@ final class WatchLink: NSObject, WCSessionDelegate {
         model.startTalk = { [weak self] in self?.beginTalk() }
         model.endTalk = { [weak self] in self?.endTalk() }
         model.cancelTalk = { [weak self] in self?.cancelTalk() }
-        model.answer = { [weak self] id, action in self?.answer(id, action) }
+        model.answer = { [weak self] id, action in self?.post(.answer(id: id, action: action)) }
+        model.mark = { [weak self] in self?.post(.mark(at: .now, label: nil)) }
+        model.unmark = { [weak self] day, id in self?.post(.unmark(day: day, id: id)) }
         session.delegate = self
         session.activate()
         adopt(session.receivedApplicationContext)
@@ -59,9 +61,9 @@ final class WatchLink: NSObject, WCSessionDelegate {
         if session.isReachable { session.sendMessage(WatchWire.encode(a), replyHandler: nil, errorHandler: nil) }
     }
 
-    /// An answer is never lost: when the phone cannot be reached it is queued, and the phone gets it when it can.
-    private func answer(_ id: String, _ action: String) {
-        let a = WatchWire.encode(WatchAsk.answer(id: id, action: action))
+    /// An answer (and a 标一下, and its 撤销) is never lost: when the phone cannot be reached it is queued, and the phone gets it when it can.
+    private func post(_ ask: WatchAsk) {
+        let a = WatchWire.encode(ask)
         if session.isReachable {
             session.sendMessage(a, replyHandler: nil, errorHandler: { [weak self] _ in Task { @MainActor in self?.session.transferUserInfo(a) } })
         } else {
@@ -108,11 +110,12 @@ final class WatchLink: NSObject, WCSessionDelegate {
         let id: UUID
         switch t {
         case .heard(let i, _, _), .thinking(let i), .reply(let i, _, _, _), .failed(let i, _): id = i
+        case .marked, .markMissed: WatchModel.shared.tell(t); trace("phone told: mark"); return          // 标一下's answer, of no talk
         }
         guard id == talk else { return }
         switch t {
         case .thinking, .reply, .failed: mic.stop()             // the phone has what it needs
-        case .heard: break
+        case .heard, .marked, .markMissed: break
         }
         WatchModel.shared.tell(t)
         switch t {
@@ -120,6 +123,7 @@ final class WatchLink: NSObject, WCSessionDelegate {
         case .thinking: trace("phone told: thinking")
         case .reply: trace("phone told: reply")
         case .failed: trace("phone told: failed")
+        case .marked, .markMissed: break
         }
     }
 

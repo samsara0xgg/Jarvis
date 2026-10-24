@@ -74,6 +74,46 @@ final class DayActionsTests: XCTestCase {
         }
     }
 
+    // MARK: 标一下 (ADR 0409)
+
+    func testAMarkIsAPostOfTheDayAndTheMomentAndTheBrainSaysWhatItMarked() async throws {
+        Stub.handler = { _ in (200, #"{"ok": true, "marked": {"status": "marked", "day": "2026-10-24", "kind": "stay", "when": "21:30-", "label": null, "id": "stay-13"}}"#) }
+        let a = try await BrainClient.markDay(day: "2026-10-24", atMs: 1_792_900_000_123, label: nil, bases: [pi], token: "tok")
+        XCTAssertEqual(a, .marked(id: "stay-13", day: "2026-10-24", when: "21:30-"))
+        XCTAssertEqual(Stub.seen.map(\.method), ["POST"])
+        XCTAssertEqual(Stub.seen.map(\.path), ["/inherent/day/mark"])
+        XCTAssertEqual(Stub.seen.map(\.auth), ["Bearer tok"])
+        XCTAssertEqual(try body() as NSDictionary, ["day": "2026-10-24", "at_ms": 1_792_900_000_123] as NSDictionary)          // a tap carries no label
+    }
+
+    func testTheBrainsAnswerToAMarkByItsStatus() async throws {
+        let cases: [(Int, String, MarkAnswer)] = [
+            (404, #"{"detail": "nothing on 2026-10-24 covers 21:50"}"#, .nothing),
+            (404, #"{"detail": "Not Found"}"#, .failed),          // a brain without the route
+            (422, #"{"detail": "x"}"#, .failed),
+            (502, #"{"detail": "x"}"#, .failed),
+            (200, #"{"ok": true}"#, .failed),                   // no item in the answer
+        ]
+        for (status, text, want) in cases {
+            Stub.seen = []
+            Stub.handler = { _ in (status, text) }
+            let a = try await BrainClient.markDay(day: "2026-10-24", atMs: 1, label: nil, bases: [pi, mac], token: "tok")
+            XCTAssertEqual(a, want, "\(status) \(text)")
+            XCTAssertEqual(Stub.seen.count, 1, "\(status): the route's own answer, one try")
+        }
+    }
+
+    func testUndoingAMarkIsTheHighlightRouteTurnedOff() async throws {
+        Stub.handler = { _ in (200, #"{"ok": true, "highlights": []}"#) }
+        let ok = try await BrainClient.unmarkDay(day: "2026-10-24", id: "stay-13", bases: [pi], token: "tok")
+        XCTAssertTrue(ok)
+        XCTAssertEqual(Stub.seen.map(\.path), ["/inherent/day/highlight"])
+        XCTAssertEqual(try body() as NSDictionary, ["day": "2026-10-24", "id": "stay-13", "on": false] as NSDictionary)
+        Stub.handler = { _ in (404, #"{"detail": "no item"}"#) }
+        let gone = try await BrainClient.unmarkDay(day: "2026-10-24", id: "stay-13", bases: [pi], token: "tok")
+        XCTAssertFalse(gone)
+    }
+
     // MARK: a commitment
 
     func testAConfirmOrACancelIsAPostToTheCommitmentWithOnlyTheAction() async throws {

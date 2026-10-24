@@ -44,6 +44,7 @@ struct WatchTodayPage: View {
     var open: (_ id: String) -> Void
     var answer: (_ id: String, _ action: String) -> Void
     var openSettings: () -> Void
+    var mark: (() -> Void)?    // 标一下, when the brain has its route
     var atEnd = false          // opens scrolled to the bottom (the debug scenes)
 
     var body: some View {
@@ -76,6 +77,13 @@ struct WatchTodayPage: View {
                 }
                 if day.headline == nil, waiting.isEmpty, day.next.isEmpty {
                     Text(Words.Watch.nothingMore).font(.system(size: 13)).foregroundStyle(WatchTheme.muted).padding(.top, 16)
+                }
+                if let mark {
+                    Button(action: mark) {
+                        WatchRowView(symbol: "star", color: WatchTheme.warm, title: Words.Watch.mark, sub: "", right: "") { EmptyView() }
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.top, 14)
                 }
                 Button(action: openSettings) {
                     WatchRowView(symbol: "gearshape", color: WatchTheme.icon, title: Words.Watch.settings, sub: "", right: "") {
@@ -194,6 +202,8 @@ enum WatchSettings {
     static let speaks = "watch.speaks"                      // 她说出声: off, words only
     static let headphonesOnly = "watch.speaksHeadphonesOnly"  // 只在戴耳机时: shown once she speaks
     static let taps = "watch.taps"                          // 提醒时轻敲: on
+    /// 标一下's entry (今天要办的, jarvis-watch://mark): on once POST /inherent/day/mark (ADR 0409) is live on the Pi
+    static let markReady = false
 }
 
 /// the bus he is on: how many stops, where to, the stops as dots on a line, and the tap he will get

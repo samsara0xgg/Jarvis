@@ -12,6 +12,9 @@ extension Words {
         static var heardNothing: String { pick(zh: "没听清", en: "I didn't catch that") }
         static var tooLong: String { pick(zh: "这个问题太长了，说短一点。", en: "That was too long. Say it shorter.") }
         static var cannotListen: String { pick(zh: "这台设备不能在本地识别语音", en: "This device cannot recognize speech") }
+        /// 标一下 that found nothing to mark, or did not go through
+        static var nothingToMark: String { pick(zh: "这会儿没有可标的", en: "Nothing to mark right now") }
+        static var notMarked: String { pick(zh: "没标上", en: "Not marked") }
         static var turnFailed: String { pick(zh: "这一轮没做成。", en: "That turn did not go through.") }
         static var micOff: String { pick(zh: "麦克风没打开", en: "The microphone is off for Jarvis") }
         /// an answer that did not come in time: the turn goes on and is in today's conversation

@@ -88,4 +88,12 @@ final class WatchCardTests: XCTestCase {
         XCTAssertEqual(top(d, queue: ["med"], at: clock(7, 42)), .waiting(item("med")))
         XCTAssertEqual(top(d, at: clock(7, 42)), .leave(clock(7, 50)))
     }
+
+    func testAMarksAnswerIsUnderHerAnswerAndOverWhatWaits() {
+        let mark = WatchCard.marked(id: "stay-13", day: "2026-10-24", when: "21:30-", title: "在 Studio 4")
+        let answer = WatchCard.answer(spoken: "好", written: "", action: nil)
+        XCTAssertEqual(WatchCard.top(answer: nil, mark: mark, day: day(waiting: ["med"], leaveIn: 60), queue: ["med"], answered: [], leaveDismissed: nil, now: now), mark)
+        XCTAssertEqual(WatchCard.top(answer: answer, mark: mark, day: nil, queue: [], answered: [], leaveDismissed: nil, now: now), answer)
+        XCTAssertEqual(WatchCard.top(answer: nil, mark: .markMissed("这会儿没有可标的"), day: nil, queue: [], answered: [], leaveDismissed: nil, now: now), .markMissed("这会儿没有可标的"))
+    }
 }

@@ -11,14 +11,17 @@ final class WatchWireTests: XCTestCase {
 
     func testEveryAskRoundTrips() {
         let asks: [WatchAsk] = [.refresh, .answer(id: "reminder-1", action: "ack"), .talkStart(id: talk), .talkEnd(id: talk), .talkCancel(id: talk),
-                              .charge(percent: 87, state: "charging", at: Date(timeIntervalSince1970: 1_790_000_123.456))]
+                              .charge(percent: 87, state: "charging", at: Date(timeIntervalSince1970: 1_790_000_123.456)),
+                              .mark(at: Date(timeIntervalSince1970: 1_790_000_123.456), label: nil), .mark(at: Date(timeIntervalSince1970: 1_790_000_000), label: "陶艺课"),
+                              .unmark(day: "2026-10-24", id: "stay-13")]
         for a in asks { XCTAssertEqual(WatchWire.decode(WatchAsk.self, WatchWire.encode(a)), a) }
     }
 
     func testEveryTellRoundTrips() {
         let tells: [WatchTell] = [.heard(talk: talk, text: "明天几点", final: false), .heard(talk: talk, text: "明天几点", final: true), .thinking(talk: talk),
                                   .reply(talk: talk, spoken: "八点", written: "", card: nil), .reply(talk: talk, spoken: "要吗", written: "详细", card: card),
-                                  .failed(talk: talk, reason: "连不上大脑")]
+                                  .failed(talk: talk, reason: "连不上大脑"),
+                                  .marked(id: "stay-13", day: "2026-10-24", when: "21:30-", title: "在 Studio 4"), .markMissed(reason: "这会儿没有可标的")]
         for t in tells { XCTAssertEqual(WatchWire.decode(WatchTell.self, WatchWire.encode(t)), t) }
     }
 

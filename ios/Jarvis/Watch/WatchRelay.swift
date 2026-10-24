@@ -131,6 +131,12 @@ final class WatchRelay: NSObject, WCSessionDelegate {
         case .talkStart(let id): startTalk(id)
         case .talkEnd(let id): finishTalk(id)
         case .talkCancel(let id): cancelTalk(id)
+        case .mark(let at, let label): mark(at, label)
+        case .unmark(let day, let id):
+            guard !Self.fixture else { return }
+            Task { @MainActor in
+                if (try? await BrainLink.shared.call({ try await BrainClient.unmarkDay(day: day, id: id, bases: $0, token: $1) })) == true { BrainLink.shared.opened() }
+            }
         case .charge(let percent, let state, let at):          // as the phone's own charge (PowerCollector): under the same switch
             guard DeviceRole.senses, ReportMemory.isOn(.focusAlarm) else { return }
             Reporter.shared.emit([.state(.watchBattery(percent: percent), at: at, detail: state)])
@@ -175,6 +181,31 @@ final class WatchRelay: NSObject, WCSessionDelegate {
             guard let day = sent, let u = day.unsure, u.id == id, !Self.fixture else { return }
             Task { @MainActor in if await TLBrain.live.choose(day.date, id, nil, u.yes) == .done { BrainLink.shared.opened() } }
         default: break
+        }
+    }
+
+    /// 标一下 from the wrist: what covers that moment of today is marked, and the wrist is told what it was
+    private func mark(_ at: Date, _ label: String?) {
+        let day = Cal.cur.iso(floorDay(NOW1))
+        #if DEBUG
+        if Self.fixture || Self.stub { return tell(.marked(id: "stay-demo", day: day, when: "21:30-", title: sent?.current?.title ?? "")) }
+        #endif
+        Task { @MainActor in
+            let a = (try? await BrainLink.shared.call { try await BrainClient.markDay(day: day, atMs: Int64(at.timeIntervalSince1970 * 1000), label: label, bases: $0, token: $1) }) ?? .failed
+            trace("mark: \(a)")
+            tell(Self.told(a, title: { id in
+                BrainLink.shared.days[day].flatMap { r in DayTimelineModel.build(r, now: nil).entries.first { $0.id == id }?.title } ?? self.sent?.current?.title ?? ""
+            }))
+            if case .marked = a { BrainLink.shared.opened() }
+        }
+    }
+
+    /// what the wrist is told of the brain's answer to 标一下; `title` names the item marked
+    static func told(_ a: MarkAnswer, title: (String) -> String) -> WatchTell {
+        switch a {
+        case .marked(let id, let day, let when): .marked(id: id, day: day, when: when, title: title(id))
+        case .nothing: .markMissed(reason: Words.Relay.nothingToMark)
+        case .failed: .markMissed(reason: Words.Relay.notMarked)
         }
     }
 

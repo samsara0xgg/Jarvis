@@ -54,6 +54,20 @@ enum SpanAnswer: Equatable {
     static func read(status: Int, data: Data) -> SpanAnswer { (200...299).contains(status) ? .done : .failed }
 }
 
+/// the brain's answer to 标一下 (`POST /inherent/day/mark`, ADR 0409): the item covering the minute is marked for him, and the brain says which and when
+enum MarkAnswer: Equatable {
+    case marked(id: String, day: String, when: String)  // 200: `when` is `HH:MM-HH:MM`, `HH:MM-` (still going) or `HH:MM` (a moment)
+    case nothing                                        // the route's own 404: nothing on the day covers that minute
+    case failed                                         // 422, 502, a brain without the route, or no answer at all
+
+    static func read(status: Int, data: Data) -> MarkAnswer {
+        if status == 404 { return BrainRoute.missing(data) ? .failed : .nothing }
+        guard (200...299).contains(status), let o = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let m = o["marked"] as? [String: Any], let id = m["id"] as? String else { return .failed }
+        return .marked(id: id, day: m["day"] as? String ?? "", when: m["when"] as? String ?? "")
+    }
+}
+
 /// the brain's answer to 理一下 (`POST /inherent/day/tidy`, ADR 0310): a model writes today's doing lane afresh while the request waits, and the brain answers `{ok, written, outcome}`
 enum TidyAnswer: Equatable {
     case written                    // ok and written: today has a new run, to be asked for again
@@ -99,6 +113,22 @@ extension BrainClient {
         let body = try JSONSerialization.data(withJSONObject: o)
         let r = try await send("POST", "/inherent/day/answer", body: body, also: [404, 422, 502], bases: bases, token: token, unauthorized: .revoked)
         return SpanAnswer.read(status: r.status, data: r.data)
+    }
+
+    /// 标一下: mark what covers the minute `atMs` (epoch milliseconds) falls in, on `day` (`YYYY-MM-DD`); `label` replaces any he gave, none clears it.
+    static func markDay(day: String, atMs: Int64, label: String?, bases: [URL], token: String) async throws -> MarkAnswer {
+        var o: [String: Any] = ["day": day, "at_ms": atMs]
+        if let label { o["label"] = label }
+        let body = try JSONSerialization.data(withJSONObject: o)
+        let r = try await send("POST", "/inherent/day/mark", body: body, also: [404, 422, 502], bases: bases, token: token, unauthorized: .revoked)
+        return MarkAnswer.read(status: r.status, data: r.data)
+    }
+
+    /// 撤销 of a 标一下: the item `id` of `day` is no longer marked (ADR 0296's route, `on: false`). True when the brain took it.
+    static func unmarkDay(day: String, id: String, bases: [URL], token: String) async throws -> Bool {
+        let body = try JSONSerialization.data(withJSONObject: ["day": day, "id": id, "on": false])
+        let r = try await send("POST", "/inherent/day/highlight", body: body, also: [404, 409, 422], bases: bases, token: token, unauthorized: .revoked)
+        return (200...299).contains(r.status)
     }
 
     /// Have the brain tidy today's doing lane (no body). It answers when the model is done, so this one waits up to 90 s.
