@@ -129,6 +129,7 @@ struct PadHome: View {
         .coordinateSpace(name: "padHome")
         .onChange(of: date) { _, _ in tl.rollOver() }
         .onChange(of: wide) { _, _ in tl.close() }          // a row open on the stage is not one opened where it stands, nor the other way
+        .onChange(of: wide, initial: true) { _, w in tl.pitch = w ? Self.row : nil }          // beside the stage every row of the list is one height; one column keeps the phone's
         .onChange(of: built != nil, initial: true) { _, has in reveal(has) }
         .onChange(of: tl.enter) { _, _ in reveal(built != nil) }
         .onChange(of: (built?.model.waiting.count ?? 0) + Waiting.shared.cards.count, initial: true) { _, n in tl.waitingCount = n }          // what waits on him: the amber number on her
@@ -140,6 +141,8 @@ struct PadHome: View {
     /// the bar at the foot with the room under it, as a tab bar controller puts it (62 pt, 21 pt over the foot); a page runs on under it, and a list's room ends where the phone's
     /// does, its 24 pt fade reaching 12 pt into the glass (TLLayout.listBottom)
     static let barH = 83.0, barRoom = barH - 12 + TLLayout.fade
+    /// the one height of the list's rows beside the stage (the mock's 50): a title and its line fit it at the phone's sizes
+    static let row = 50.0
 
     // MARK: the pages
 
@@ -395,7 +398,7 @@ private struct PadToday: View {
                 // it runs on to the foot under the bar; its room is what is over the bar, as on the phone
                 let room = g.size.height - PadHome.barRoom
                 TLList(model: m, engine: engine, tl: tl, room: room, lens: tl.activeLens(in: m), nowInView: $nowInView, inPlace: !wide)
-                    .id("\(tl.day) \(wide)")          // the list is laid out for one way of opening its rows
+                    .id("\(tl.day) \(wide) \(tl.pitch ?? 0)")          // the list is laid out for one way of opening its rows, at one height of row
                     .onChange(of: room, initial: true) { _, h in listRoom = h }
                     .mask(LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black, location: 12 / max(g.size.height, 1)),
                                                  .init(color: .black, location: 1 - 24 / max(g.size.height, 1)), .init(color: .clear, location: 1)], startPoint: .top, endPoint: .bottom))

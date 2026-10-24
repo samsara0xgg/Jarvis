@@ -17,6 +17,43 @@ final class DayTimelineTests: XCTestCase {
     }
     private func entry(_ m: DayTimelineModel, _ id: String) throws -> TLEntry { try XCTUnwrap(m.entries.first { $0.id == id }, id) }
 
+    // MARK: one height of row (the iPad's list beside the stage)
+
+    /// With no pitch every row is as tall as the phone has it (46 a title, 60 with its line, 44 a stay, 40 a place's header, 34 a stop, 0 now, and the blank above), so the phone's
+    /// offsets are what they were; with a pitch of 50 every real row is 50, row after row in a group 50 apart, and what is not a row keeps its own height.
+    func testAPitchMakesEveryRealRowOneHeightAndNoneLeavesThePhonesOffsets() {
+        var steps = 0
+        for r in [TimelineFixture.today(cal), TimelineFixture.today(cal, doing: true), TimelineFixture.yesterday(cal)] {
+            let phone = DayTimelineModel.build(r, now: now), pad = DayTimelineModel.build(r, now: now, pitch: 50)
+            var y = 0.0, expected: [Double] = []
+            for e in phone.entries {
+                expected.append(y)
+                switch e.kind {
+                case .stay: y += e.header ? 40 : 44
+                case .now: y += 0
+                case .pause where e.token != nil || e.rail == .gap: y += 34
+                default: y += e.detail != nil ? 60 : 46
+                }
+                y += e.gap
+            }
+            XCTAssertEqual(phone.offsets, expected, "the phone's list stands where it did")
+            XCTAssertEqual(pad.entries.map(\.id), phone.entries.map(\.id))
+            XCTAssertEqual(pad.entries.map(\.gap), phone.entries.map(\.gap), "the blank between groups stays")
+            var rows = 0
+            for (i, (p, q)) in zip(pad.entries, phone.entries).enumerated() {
+                let real = !(p.kind == .now || p.header || (p.kind == .pause && (p.token != nil || p.rail == .gap)))
+                XCTAssertEqual(p.base, real ? 50 : q.base, p.id)
+                if real { rows += 1 }
+                // a row's own line begins under the blank above it: two real rows with no blank between them begin 50 apart
+                if real, i > 0, pad.entries[i - 1].base == 50, p.gap == 0 {
+                    XCTAssertEqual(pad.offsets[i] - (pad.offsets[i - 1] + pad.entries[i - 1].gap), 50, p.id); steps += 1
+                }
+            }
+            XCTAssertGreaterThan(rows, 3)
+        }
+        XCTAssertGreaterThan(steps, 1, "rows follow one another 50 apart")
+    }
+
     // MARK: the day in order
 
     func testTheFixtureDayIsSleepGroupsAndTripsInTheOrderOfTheDayWithNowBetween() {

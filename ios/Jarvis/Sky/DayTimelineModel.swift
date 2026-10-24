@@ -282,14 +282,15 @@ struct TLEntry: Identifiable, Equatable {
     var token: Int?                 // a stop of an outing (the footprint page): its number in a ring, in the place of the circle
     var ribbon: [RGB?] = []         // an outing (the footprint page): its speed along it, left to right, the colour of each slice; none where he stood still or nothing was recorded
     var tapOnly = false             // a tap opens a page of the screen's own (an outing), so it opens and the long press offers no menu
+    var pitch: Double?              // the one height of every row of the list (the iPad's list beside the stage), in place of a row's own; none: each its own (`build`'s `pitch`)
 
     /// the height of the row without the gap above it
     var base: Double {
         switch kind {
-        case .stay: header ? TLMetrics.header : TLMetrics.stay
+        case .stay: header ? TLMetrics.header : pitch ?? TLMetrics.stay
         case .now: TLMetrics.now
         case .pause where token != nil || rail == .gap: TLMetrics.sub
-        default: hasLine ? TLMetrics.rowDetail : TLMetrics.row
+        default: pitch ?? (hasLine ? TLMetrics.rowDetail : TLMetrics.row)
         }
     }
     var height: Double { base + gap }
@@ -590,9 +591,10 @@ struct DayTimelineModel: Equatable {
     /// `now` is the minute of now when this is today (`TimelineState.nowMinute`). `topic` names a talk by what it was about. `acked`, `renamed` and `done` are what he has just done to a
     /// reminder, to a place he keeps, to what his mail made and to a place he named, which the brain's next answer will say too (an event he said is not his is left out). An item that
     /// cannot be placed (a time that is not one, an end before its start, an id taken already) is left out, and so is one of a kind this phone does not know. The minutes are those of
-    /// the brain's day (`TLClock`).
+    /// the brain's day (`TLClock`). `pitch`: one height for every row of the list (a place's header, the line for now and a stop on the way keep their own, and so does the blank
+    /// between groups); none, each row is as tall as what it says.
     static func build(_ r: DayReply, now: Double?, topic: @escaping (String) -> String? = { _ in nil },
-                      acked: Set<String> = [], renamed: [String: String] = [:], done: TLDone = TLDone()) -> DayTimelineModel {
+                      acked: Set<String> = [], renamed: [String: String] = [:], done: TLDone = TLDone(), pitch: Double? = nil) -> DayTimelineModel {
         let wall = TLClock(r)
         func m(_ ms: Int64) -> Double { wall.minute(ms: ms) }
         let frame = TLFrame(now: now, m: m, before: wall.before, topic: topic, acked: acked, renamed: renamed, confirmed: done.confirmed, named: done.named)
@@ -667,7 +669,7 @@ struct DayTimelineModel: Equatable {
         } else {
             space(&entries)
         }
-        for k in entries.indices { entries[k].actions = actions(of: entries[k], now: now); entries[k].cut = entries[k].cutShort }
+        for k in entries.indices { entries[k].actions = actions(of: entries[k], now: now); entries[k].cut = entries[k].cutShort; entries[k].pitch = pitch }
 
         // the night that ended on this day says when he woke; what began before the bar's start brings it back
         let wake = items.compactMap { $0.kind == "sleep" ? $0.end_ms.map(m) : nil }.filter { $0 >= 0 && $0 < DAY }.min()

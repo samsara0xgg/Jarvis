@@ -49,6 +49,7 @@ final class TimelineState {
     /// which way the last change of day went: +1 to an earlier day (the page moves right), -1 to a later one
     var slide = 1
     var openRow: String?                // the row opened where it stands (on the iPad: on the stage), one at a time
+    var pitch: Double?                  // one height for every row of the list (the iPad's list beside the stage); none: each row its own (`DayTimelineModel.build`)
     var openH = 0.0                     // how tall what it opened to is: the rows under it stand that much lower
     var lens: TLLens?                   // the day's number he pressed: the bar and the list bring that kind forward
     var scrub: Double?                  // the minute under his finger on the overview bar
@@ -141,7 +142,7 @@ final class TimelineState {
     }
     /// everything a day is made of on the screen: the reading of it, the minute, what was said of talks, and what he has just done to it that holds
     private struct BuiltKey: Equatable {
-        var reply: UUID, minute: Double?, version: Int, topics: Int
+        var reply: UUID, minute: Double?, version: Int, topics: Int, pitch: Double?
         var acked: Set<String>, renamed: [String: String], done: TLDone
     }
     @ObservationIgnored private var kept: (key: BuiltKey, built: TLBuilt)?
@@ -153,9 +154,9 @@ final class TimelineState {
         let acked = Set(acked.filter { $0.value > now }.keys), renamed = renamed.compactMapValues { $0.until > now ? $0.name : nil }
         let done = TLDone(confirmed: Set(confirmed.filter { $0.value > now }.keys), dropped: Set(dropped.filter { $0.value > now }.keys),
                           named: named.compactMapValues { $0.until > now ? $0.value : nil })
-        let key = BuiltKey(reply: r.serial, minute: minute.map { $0.rounded(.down) }, version: version, topics: TalkTopics.shared.version, acked: acked, renamed: renamed, done: done)
+        let key = BuiltKey(reply: r.serial, minute: minute.map { $0.rounded(.down) }, version: version, topics: TalkTopics.shared.version, pitch: pitch, acked: acked, renamed: renamed, done: done)
         if let k = kept, k.key == key { return k.built }
-        let b = TLBuilt(DayTimelineModel.build(r, now: minute, topic: { TalkTopics.shared.topic($0) }, acked: acked, renamed: renamed, done: done))
+        let b = TLBuilt(DayTimelineModel.build(r, now: minute, topic: { TalkTopics.shared.topic($0) }, acked: acked, renamed: renamed, done: done, pitch: pitch))
         kept = (key, b)
         return b
     }
