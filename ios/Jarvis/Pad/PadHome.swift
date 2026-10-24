@@ -237,7 +237,7 @@ struct PadHome: View {
     }
 
     #if DEBUG
-    /// `-padScene row` a row of the list with more to show tapped, `-padScene bar` a block of the bar tapped, `settings` or `map` that page (`trip`: Pad/PadMap.swift)
+    /// `-padScene row` a row of the list with more to show tapped (`row:<id>` that one), `-padScene bar` a block of the bar tapped, `settings` or `map` that page (`trip`: Pad/PadMap.swift)
     private func padScene(_ s: String) {
         switch s {
         case "topic":           // 看原话 on the first of `-scene 时间线:聊天:话题`'s topics: its last place lit, the ‹ › bar over the field
@@ -259,6 +259,13 @@ struct PadHome: View {
             if let e = m.entries.first(where: { $0.kind == .segment && $0.t0 >= 15 * 60 }) { tl.padTapBar((e.t0 + (e.t1 ?? e.t0)) / 2, in: m) }
         case "row":             // a tap on the last row of time on the Mac (else the last row before now that opens on the stage): its icon flies to the stage's title
             if let e = m.entries.last(where: { $0.work != nil }) ?? m.entries.prefix(m.nowIndex ?? m.entries.count).last(where: { $0.expands }) { tl.padTapRow(e) }
+        case _ where s.hasPrefix("row:"):          // `row:<id>` that row on the stage on 今天, whether a tap opens it or not (`row:trip` the day's first trip, as `-scene 足迹:今天开` opens it),
+            let id = String(s.dropFirst(4))        // the list brought to it as a tap on its block of the bar brings it
+            guard let e = m.entries.first(where: { $0.id == id || (id == "trip" && $0.kind == .trip) }) else { return }
+            engine.showPage(.day)
+            withAnimation(padMotion) { tl.openRow = e.id }
+            // a moment later: a list just made by the page's coming back would take the scroll before it is there
+            if let y = m.top(of: e.id) { DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [tl] in tl.scroll(to: max(0, y + e.gap - TLLayout.fadeTop - 6), animated: false) } }
         default: break
         }
     }
