@@ -15,6 +15,11 @@ final class PushRegistrationTests: XCTestCase {
         XCTAssertEqual(body, ["device_token": "ab12", "environment": "sandbox"], "no live_activity_token key keeps the stored one")
     }
 
+    func testTheIdiomSaysWhetherThisIsAPhoneOrAnIPad() {
+        let pad = PushWire.registration(deviceToken: "ab12", environment: "sandbox", activity: .keep, idiom: "pad") as NSDictionary
+        XCTAssertEqual(pad, ["device_token": "ab12", "environment": "sandbox", "idiom": "pad"], "ADR 0401: the brain names it his iPad")
+    }
+
     func testLiveActivityTokenIsSetOrClearedWithNull() {
         let set = PushWire.registration(deviceToken: "ab12", environment: "production", activity: .set("cd34")) as NSDictionary
         XCTAssertEqual(set, ["device_token": "ab12", "environment": "production", "live_activity_token": "cd34"])

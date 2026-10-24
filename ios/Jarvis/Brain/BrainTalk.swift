@@ -180,9 +180,12 @@ enum AskReply: Equatable {
     case failed             // 502: the turn failed or was cancelled
 
     /// The request body, or nil when the brain would refuse it: no words, more than 2000 characters, or a body over 4 KiB (413).
-    static func body(_ text: String) -> Data? {
+    /// `via` is "watch" when the words were said to the watch, so her turn says so (ADR 0401).
+    static func body(_ text: String, via: String? = nil) -> Data? {
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !t.isEmpty, t.count <= 2000, let d = try? JSONSerialization.data(withJSONObject: ["text": t]), d.count <= 4096 else { return nil }
+        var o = ["text": t]
+        if let via { o["via"] = via }
+        guard !t.isEmpty, t.count <= 2000, let d = try? JSONSerialization.data(withJSONObject: o), d.count <= 4096 else { return nil }
         return d
     }
 
