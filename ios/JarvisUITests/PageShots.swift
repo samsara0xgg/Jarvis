@@ -35,6 +35,12 @@ final class PageShots: XCTestCase {
         shot("3-chat-under-her")
     }
 
+    func testChatShort() {
+        _ = open("时间线:聊天:短")
+        sleep(3)
+        shot("3h-chat-short")
+    }
+
     func testChatScrolled() {
         _ = open("时间线:聊天:长:中间")
         sleep(4)

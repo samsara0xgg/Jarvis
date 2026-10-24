@@ -404,6 +404,7 @@ struct TalkPanel: View {
     @State private var pos = ScrollPosition()
     @State private var probe = StreamProbe()
     @State private var follow = true                    // the stream keeps to its bottom (he has not scrolled up on purpose)
+    @State private var room = 0.0                       // the stream's height inside its margins: rows fewer than it sit at its foot
     @State private var byHand = false                   // a finger is on the stream, or it is still gliding from one
     @State private var histOpen = false                 // the card of search and topics is down from the strip's left button (the phone's page)
     @State private var past = ChatSearchModel()
@@ -694,16 +695,18 @@ struct TalkPanel: View {
                 }
                 .padding(.horizontal, page ? TalkPage.side : 32)
                 .animation(.easeOut(duration: 0.25), value: ui.panelOpen)
+                .frame(minHeight: room, alignment: .bottom)
             }
             // the phone's newest page rests under her and the chip, the older ones scroll up past her; elsewhere the oldest row rests clear of the fade under her
             .contentMargins(.top, phonePage ? TalkPage.inset + (chip == nil ? 0 : 28) : page ? TalkPage.topFade : 0, for: .scrollContent)
             .contentMargins(.bottom, rest, for: .scrollContent)
             .id(page ? false : ui.chipOpen)         // a lazy stack resized under it loses its place now and then: opening or folding the chip starts the list again, at the bottom (on the page the chip's card is over the stream, which keeps its size)
-            // It starts at the bottom, and rows fewer than its height sit at the bottom. Not anchored to the bottom as sizes change: that kept the lazy stack
+            // It starts at the bottom, and rows fewer than its height sit at the bottom (`room`: the scroll view's own bottom alignment kept a stale top inset when the
+            // field and the bar took their room after the page came in, and a short talk landed under them). Not anchored to the bottom as sizes change: that kept the lazy stack
             // laying out forever when the keyboard went down and the panel shut with a talk on show (the app froze, reproduced every time in the
             // simulator; 2026-10-11). Keeping to the bottom as sizes change is `follow`'s.
             .defaultScrollAnchor(.bottom, for: .initialOffset)
-            .defaultScrollAnchor(.bottom, for: .alignment)
+            .onScrollGeometryChange(for: Double.self) { $0.containerSize.height } action: { _, h in room = h }          // inside the margins already
             .scrollPosition($pos)
             .coordinateSpace(name: "stream")
             // At the top of a panel that has been open a moment, at rest, with older rows at the brain: ask for the page before. Not while the finger or its glide is still moving the list: a scroll made then would be undone.

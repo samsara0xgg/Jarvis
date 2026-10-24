@@ -360,8 +360,8 @@ extension StarEngine {
             ui.tl.tidyDay()
         }
         case "她菜单": DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [self] in ui.tl.openArc(holding: false) }          // her cards out (`-scene 时间线:她菜单`)
-        case "聊天":                                                               // the conversation's page of the bar at the foot, with a day and a half of talk on it (`:聊天:空` none)
-            if parts.count < 3 || parts[2] != "空" { talkPageRounds(cal, long: parts.count > 2 && parts[2] == "长") }
+        case "聊天":                                                               // the conversation's page of the bar at the foot, with a day and a half of talk on it (`:聊天:空` none, `:聊天:短` three rows)
+            if parts.count < 3 || parts[2] != "空" { talkPageRounds(cal, long: parts.count > 2 && parts[2] == "长", short: parts.count > 2 && parts[2] == "短") }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [self] in showPage(.talk) }
             if parts.count > 3, parts[3] == "中间" { DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) { [self] in ui.scrollTo = "c-3" } }          // `:聊天:长:中间` scrolled up to the middle of it
             if parts.count > 2, parts[2] == "话题空" { ChatSearchModel.sceneTopics = [] }          // the brain with no topics yet: the card is the field alone
@@ -614,7 +614,7 @@ extension StarEngine {
         tlUntil = nowMs() + TLTalk.stay; lingerUntil = tlUntil          // her answer is all there: it stays until he does something else
     }
 
-    private func talkPageRounds(_ cal: Cal, long: Bool = false) {          // `long`: two days more before them, taller than the page
+    private func talkPageRounds(_ cal: Cal, long: Bool = false, short: Bool = false) {          // `long`: two days more before them, taller than the page; `short`: its last three rows alone
         let now = Date()
         func row(_ seq: Int, _ his: Bool, _ ago: Double, _ text: String) -> ConversationRow {
             let at = now.addingTimeInterval(-ago * 60)
@@ -644,7 +644,7 @@ extension StarEngine {
                 row(6, false, 2 * 60, "<voice>走路五分钟内有三家，我列给你。</voice><document>走路五分钟内有三家：\n\n- A&W，汉堡套餐 12 块左右\n- Subway，人少\n- 学校食堂，今天有咖喱饭</document>"),
                 row(7, true, 10, "明天下午有什么安排？"),
                 row(8, false, 10, said("下午三点有一个二面，在线上。两点半我提醒你准备。")),
-            ])
+            ].suffix(short ? 3 : .max))
         }
     }
 
