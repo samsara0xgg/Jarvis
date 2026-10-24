@@ -124,7 +124,7 @@ final class VoiceSession {
         foreground = UIApplication.shared.applicationState != .background
         hop(UIApplication.didEnterBackgroundNotification) { $0.foreground = false; $0.refreshArming() }
         hop(UIApplication.willEnterForegroundNotification) { $0.foreground = true; $0.refreshArming(); $0.prewarm() }
-        hop(UIApplication.didBecomeActiveNotification) { TouchSeen.install(); if TalkRequest.pending { $0.requestTalk() } }
+        hop(UIApplication.didBecomeActiveNotification) { TouchSeen.install(); PhoneLink.shared.touched(); if TalkRequest.pending { $0.requestTalk() } }   // opening the app is using this device (ADR 0407)
         hop(TalkRequest.notification) { $0.requestTalk() }
         hop(VoicePrefs.changed) { if $0.state == .thinking || $0.state == .speaking { $0.cancel() } }       // 她出不出声: the line is opened again under the new answer, so the turn in flight ends here
         audio.onMic = { [weak self, feed] buf, level in
