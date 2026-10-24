@@ -144,7 +144,7 @@ function WaitCard({ row, m, now, t, acts, onPick }: { row: Row; m: DayModel; now
 function AgentCard({ agent, t, onAgent }: { agent: Agent; t: Say; onAgent?: (id: string) => void }) {
   const ask = agent.request ? t(requestWords(agent.request)) : agent.last;
   return <div className="ds-card is-wait" data-stage="agent" data-key={agent.id} {...press(onAgent && (() => onAgent(agent.id)))}>
-    <Mini at={agent.age} icon="code" title={agent.title} gist={[agent.project, ask].filter(Boolean).join(' · ')} right=""/>
+    <Mini at={agent.age} icon={agent.agent === 'claude' ? 'claude' : 'code'} title={agent.title} gist={[agent.project, ask].filter(Boolean).join(' · ')} right=""/>
   </div>;
 }
 

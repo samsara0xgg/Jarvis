@@ -25,15 +25,15 @@ const sp = (id, start, end, extra) => ({ id, lane: 'doing', kind: 'doing', start
 const home = { id: 'p-home', name: '家', role: 'home' };
 const HEX = 'c1'.repeat(16);
 const TITLES = Array.from({ length: 40 }, (_, i) => `第 ${i + 1} 个聊天的标题，写得比较长一点点`).join('; ');
-// A 25-minute stretch at the desk's edge: three bridge worktree sessions and a Remote Control one (cloud threads, `remote_session` set; two never prompted), one session titled 部署 he prompted,
-// two ordinary ones that ran by themselves, each in a repo called Jarvis that no line may say, six
+// A 25-minute stretch at the desk's edge: sessions in a repo called Jarvis that no line may say. Cloud threads (`remote_session`, bridge worktrees): 部署 in two sessions of one thread (one line), one with no title,
+// a Remote Control one; local ones: 写周报 he prompted and two that ran by themselves. Then six
 // 小红书 bursts that only came in (each spans 2 minutes, first message to last, which is no time spent) and one 微信 burst he answered.
 const code = (id, from, to, extra) => it(id, 'code', T(14, from), T(14, to), { project: 'Jarvis', account: 'A', session_id: id, ...extra });
 const burst = (id, who, extra) => it(id, 'messages', T(14, 2), T(14, 4), { device: 'iPhone', app: '小红书', conversation: who, sent: 0, received: 2, ...extra });
 const BREAK = [
-  code('code-b1', 4, 25, { title: '', prompts: 3, remote_session: 'cse_01FKaaaa' }), code('code-b2', 4, 25, { title: '', prompts: 0, remote_session: 'cse_01J6bbbb' }), code('code-b3', 4, 25, { title: '', prompts: 0, remote_session: 'cse_01EZcccc' }),
+  code('code-b1', 4, 25, { title: '部署', prompts: 3, remote_session: 'cse_01FKaaaa' }), code('code-b2', 4, 25, { title: '部署', prompts: 0, remote_session: 'cse_01FKaaaa' }), code('code-b3', 4, 25, { title: '', prompts: 0, remote_session: 'cse_01J6bbbb' }),
   code('code-rc', 4, 6, { title: 'Remote Control session', prompts: 2, remote_session: 'cse_01GHdddd' }),
-  code('code-d', 4, 25, { title: '部署', prompts: 3 }), code('code-bg1', 4, 25, { title: '', prompts: 0 }), code('code-bg2', 4, 25, { title: '', prompts: 0 }),
+  code('code-d', 4, 25, { title: '写周报', prompts: 3 }), code('code-bg1', 4, 25, { title: '', prompts: 0 }), code('code-bg2', 4, 25, { title: '', prompts: 0 }),
   ...['贝小贝贝', 'yooi三要鱼', 'zoey是美少女吖', '不知道起什么网名的小女孩', 'meiyy~', '分享到小红书'].map((who, i) => burst(`msg-xhs-${i}`, who)),
   burst('msg-reply', 'Mia', { app: '微信', sent: 2, received: 3 }),
 ];
@@ -153,11 +153,13 @@ try {
 
   // ---- sessions and message bursts: icons and names, counts and no minutes ----
   await pick('doing-3');
-  const il = await page.evaluate(sel => [...document.querySelectorAll(`${sel} .dt-il`)].map(l => ({ at: l.querySelector('time').textContent, title: l.querySelector('.dt-il-t').childNodes[0].textContent, detail: l.querySelector('.dt-il-t em')?.textContent ?? '', side: l.querySelector('.dt-il-s')?.textContent ?? '', icon: !!l.querySelector('.dt-il-i svg') })), side);
+  const il = await page.evaluate(sel => [...document.querySelectorAll(`${sel} .dt-il`)].map(l => ({ at: l.querySelector('time').textContent, title: l.querySelector('.dt-il-t').childNodes[0].textContent, detail: l.querySelector('.dt-il-t em')?.textContent ?? '', side: l.querySelector('.dt-il-s')?.textContent ?? '', icon: !!l.querySelector('.dt-il-i svg, .dt-il-i .dt-logo'), claude: !!l.querySelector('.dt-il-i .dt-logo'), cloud: !!l.querySelector('.dt-il-i .dt-cloud-b') })), side);
   const lineOf = title => il.find(x => x.title === title);
-  const W = en ? { cloud: 'Cloud threads running on this Mac · 4', bg: '2 more background sessions', xhs: '小红书', xhsDetail: '6 people · 12 received', reply: 'Sent 2 · Received 3' } : { cloud: '云端线程在 Mac 上跑 · 4 个', bg: '另有 2 个后台会话', xhs: '小红书', xhsDetail: '6 人 · 收到 12 条', reply: '发 2 · 收 3' };
-  check('a stretch with four cloud threads, one session he prompted and two that ran by themselves has five lines for the lot: the cloud threads together, the session by its title, the background ones together, the received bursts and the reply, each with its time', il.length === 5 && il.every(x => x.at), JSON.stringify(il));
-  check('the four cloud threads are one plain line with an icon and their time together (no title, no folder); the session he prompted is its title with an icon; no "Claude Code ·", no repo (Jarvis), no worktree folder, no Remote Control title', lineOf(W.cloud)?.icon && lineOf(W.cloud).side === (en ? '21 min' : '21 分钟') && lineOf('部署')?.icon && lineOf('部署').side === (en ? '21 min' : '21 分钟') && il.every(x => !/Claude Code|bridge-cse|Jarvis|Remote Control/.test(x.title + x.detail)), JSON.stringify(il));
+  const W = en ? { cloudless: 'Cloud thread', bg: '2 more background sessions', xhs: '小红书', xhsDetail: '6 people · 12 received', reply: 'Sent 2 · Received 3' } : { cloudless: '云端线程', bg: '另有 2 个后台会话', xhs: '小红书', xhsDetail: '6 人 · 收到 12 条', reply: '发 2 · 收 3' };
+  check('a stretch with three cloud threads (one of two sessions), one local session he prompted and two that ran by themselves has seven lines with the bursts: each thread its own line, the local one, the background ones together, the received bursts and the reply, each with its time', il.length === 7 && il.every(x => x.at), JSON.stringify(il));
+  check('a session is the Claude mark and its title only; the two sessions of one thread are one line (21 min), a thread with no title is Cloud thread; no "Claude Code", no repo (Jarvis), no worktree folder, no Remote Control text but the thread\'s own title', lineOf('部署')?.claude && lineOf('部署').side === (en ? '21 min' : '21 分钟') && lineOf(W.cloudless)?.claude && lineOf('Remote Control session')?.claude && lineOf('写周报')?.claude && il.every(x => !/Claude Code|bridge-cse|Jarvis/.test(x.title + x.detail)), JSON.stringify(il));
+  check('the cloud threads have the small cloud on the icon, the local session has none', il.filter(x => x.cloud).map(x => x.title).sort().join() === ['部署', W.cloudless, 'Remote Control session'].sort().join() && !lineOf('写周报').cloud && !lineOf(W.bg).cloud, JSON.stringify(il));
+  check('the category icons: the stretch list has 在干嘛 glyphs by category (a sofa for rest, a briefcase for work), not a laptop or an armchair', await page.evaluate(() => { const g = k => document.querySelector(`.notch .dt-list [data-key="${k}"] .dt-ic svg`)?.innerHTML ?? ''; return !!g('doing-3') && !!g('doing-2') && g('doing-3') !== g('doing-2'); }));
   check('the two sessions that ran by themselves are one line of their own', lineOf(W.bg)?.side === (en ? '21 min' : '21 分钟') && lineOf(W.bg).icon, JSON.stringify(lineOf(W.bg)));
   check('the six bursts only received are one line: the app, how many people, how many messages; no minutes', lineOf(W.xhs)?.detail === W.xhsDetail && lineOf(W.xhs).side === '' && lineOf(W.xhs).icon, JSON.stringify(lineOf(W.xhs)));
   check('a burst he replied to stays its own line with sent and received, and no minutes', lineOf('Mia')?.detail === W.reply && lineOf('Mia').side === '', JSON.stringify(lineOf('Mia')));

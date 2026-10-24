@@ -1,6 +1,6 @@
 import type { L } from './companionSettings';
 import { endClock, hm } from './barView.ts';
-import { accountOf, askable, ATTACHMENT, clean, clock, codeName, dur, endText, moneyText, rideWords, stageMinutes, stageSlices, starrable, stayLook, workoutOf, type DayItem, type DayModel, type Icon, type Inside, type Rgb, type Say } from './dayView.ts';
+import { accountOf, askable, ATTACHMENT, clean, clock, codeName, isRemote, promptWords, dur, endText, moneyText, rideWords, stageMinutes, stageSlices, starrable, stayLook, workoutOf, type DayItem, type DayModel, type Icon, type Inside, type Rgb, type Say } from './dayView.ts';
 
 // What a row says when it is opened (ADR 0308, spec-r3 section 8), and what can be done from it. Pure (no DOM), so
 // scripts/verify-notch-timeline.mjs runs it in node. Nothing here is made up: a part exists only where the brain sent what it
@@ -13,7 +13,7 @@ import { accountOf, askable, ATTACHMENT, clean, clock, codeName, dur, endText, m
 export type Tone = 'ink' | 'muted';
 export type Words = { text: string; tone: Tone };
 export type Bar = { name: string; text: string; share: number };
-// One Claude Code session: when it began, its name (its title), the account `A`, how long, and its recap in full.
+// One Claude Code session: when it began, its name (its title), what it was (a cloud thread running on this Mac) and how many prompts he sent, the account `A`, how long, and its recap in full.
 export type Session = { id: string; at: string; title: string; meta: string; length: string; recap: string };
 // What the night looked like: where each stage was on the row's own time scale, and the totals in words.
 export type Night = { from: number; to: number; at: [string, string]; slices: { stage: string; s: number; e: number }[]; totals: string };
@@ -85,7 +85,7 @@ export function night(it: DayItem, m: DayModel, t: Say): Night | null {
     .filter((x): x is string => !!x).join(' · ');
   return { from, to, at: [clock(from, m.tz), clock(to, m.tz)], slices, totals };
 }
-const session = (it: DayItem, m: DayModel, t: Say): Session => ({ id: it.id, at: clock(it.start_ms, m.tz), title: codeName(it, t), meta: accountOf(it),
+const session = (it: DayItem, m: DayModel, t: Say): Session => ({ id: it.id, at: clock(it.start_ms, m.tz), title: codeName(it, t), meta: [isRemote(it) && t(['Cloud thread · running on this Mac', '云端线程 · 在 Mac 上跑']), promptWords(it, t), accountOf(it)].filter(Boolean).join(' · '),
   length: dur(Math.max(1, lengthOf(it, m)), t), recap: clean(it.detail) });
 
 // A stretch of what he was doing opens to its detail, what is inside it (the items it lists, one compact line each) and how she knows.

@@ -150,7 +150,7 @@ function InsideItem({ x, acts }: { x: Line1; acts: Acts }) {
     {pic
       ? <button type="button" className="dt-il-b" aria-label={acts.t(['Open the picture', '看大图'])} onClick={() => acts.picture(x.picture, x.note)}>
         <img className="dt-il-th" alt="" width={36} height={36} decoding="async" src={`http://127.0.0.1:${acts.port}/inherent/attachments/${x.picture}`} onError={() => setBroken(true)}/></button>
-      : <span className="dt-il-i"><Ic icon={x.icon} size={13}/></span>}
+      : <span className="dt-il-i"><Ic icon={x.icon} size={13} cloud={x.cloud}/></span>}
     <span className="dt-il-t">{x.title}{x.detail && <em>{x.detail}</em>}</span>{x.side && x.side !== x.at && <span className="dt-il-s">{x.side}</span>}
   </li>;
 }

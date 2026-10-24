@@ -191,6 +191,8 @@
 .notch .dt-il { display:grid; grid-template-columns:40px 22px minmax(0,1fr) auto; align-items:center; gap:0 8px; min-height:30px; padding:0 4px; font-size:12.5px; line-height:16px; }
 .notch .dt-il.has-pic { grid-template-columns:40px 36px minmax(0,1fr) auto; min-height:44px; }
 .notch .dt-il > time { font:10.5px/16px "JetBrains Mono",Menlo,monospace; font-variant-numeric:tabular-nums; text-align:right; white-space:nowrap; color:var(--p-faint); }
+.notch .dt-cloud { position:relative; display:inline-grid; place-items:center; }
+.notch .dt-cloud-b { position:absolute; right:-5px; bottom:-4px; color:rgb(var(--ink) / .92); filter:drop-shadow(0 0 1.5px #000) drop-shadow(0 0 1px #000); }
 .notch .dt-il-i { display:grid; place-items:center; width:22px; height:22px; color:rgb(214 220 246 / .82); }
 .notch .dt-il-b { display:block; padding:0; border-radius:6px; cursor:zoom-in; }
 .notch .dt-il-th { display:block; width:36px; height:36px; border-radius:6px; object-fit:cover; background:rgb(255 255 255 / .06); }

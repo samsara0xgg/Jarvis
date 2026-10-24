@@ -178,7 +178,7 @@ function lineOf(it: DayItem, m: DayModel, t: Say): Line {
       const top = [names(it.projects)[0], names(it.apps)[0]].filter(Boolean).join(' · '), active = it.active_s ? dur(it.active_s / 60, t) : '';
       return put('work', top || t(['Working on the Mac', '在 Mac 上工作']), active ? t([`${active} active`, `活跃 ${active}`]) : span.length);
     }
-    case 'code': return put('code', codeName(it, t), span.length);
+    case 'code': return put('claude', codeName(it, t), span.length);
     case 'workout': { const w = workoutOf(it, t); return put(w.icon, [w.word, w.facts[0]].filter(Boolean).join(' · '), span.length); }
     case 'call': return put('call', clean(it.app) ? t([`Call · ${it.app}`, `通话 · ${it.app}`]) : t(['Call', '通话']), span.length);
     case 'talk': return put('talk', it.turns ? t([`Talked with her · ${it.turns} ${it.turns === 1 ? 'line' : 'lines'}`, `和她说话 · ${it.turns} 句`]) : t(['Talked with her', '和她说话']), span.length || time);
@@ -244,7 +244,7 @@ export function peek(model: DayModel, bar: BarModel, ms: number, t: Say): Peek {
   // Sessions of Claude Code run side by side: more than one near is a line per name (how many, how long together), so they cannot fill the card.
   const codes = near.filter(x => x.it.kind === 'code' && !model.stars.has(x.it.id)), lead = codes[0] ?? null;
   const lines = near.filter(x => x === lead || !codes.includes(x)).flatMap(x => x !== lead ? [lineOf(x.it, model, t)]
-    : codeLines(codes.map(c => c.it), t).map(g => ({ key: `code:${g.key}`, kind: 'code', icon: 'code' as Icon, text: [g.title, g.detail].filter(Boolean).join(' · '), side: dur(Math.max(1, covered(g.items, limit)), t), star: false, picture: null }))).slice(0, 4);
+    : codeLines(codes.map(c => c.it), t).map(g => ({ key: `code:${g.key}`, kind: 'code', icon: 'claude' as Icon, text: [g.title, g.detail].filter(Boolean).join(' · '), side: dur(Math.max(1, covered(g.items, limit)), t), star: false, picture: null }))).slice(0, 4);
   const mark = item ? model.stars.get(item.id) ?? null : null;
   return { ms, at: clock(ms, model.tz), id, row: pieceAt(bar, ms), lines, star: mark, stretch };
 }

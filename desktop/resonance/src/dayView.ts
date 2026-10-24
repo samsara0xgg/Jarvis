@@ -20,7 +20,7 @@ export type DayItem = {
   // What his phone and iPad sync (ADR 0304, 0305): a media block's app and its top titles, a message burst's conversation and counts, a phone call's person and seconds, a phone-use block's device.
   titles?: { title: string; artist?: string }[]; conversation?: string; person?: string; device?: string; sent?: number; received?: number; duration_s?: number;
   // How many prompts he sent in a Claude Code session (0: it ran by itself); a brain that does not say has him in all of them. `remote_session`: the cloud thread a Remote Control session on this Mac runs.
-  prompts?: number; remote_session?: string;
+  prompts?: number; remote_session?: string; thread_title?: string;
   // Where a stay was, as the phone has it.
   lat?: number; lng?: number;
 };
@@ -47,8 +47,8 @@ export type DoingSpan = { id: string; lane: 'doing'; kind: string; start_ms: num
   clues: Clue[]; place_id: string | null; item_ids: string[] };
 export type Say = (l: L) => string;
 export type Rgb = readonly [number, number, number];
-export type Icon = 'moon' | 'walk' | 'run' | 'bike' | 'hike' | 'swim' | 'strength' | 'yoga' | 'sport' | 'car' | 'bus' | 'talk' | 'picture' | 'event' | 'reminder' | 'work' | 'code' | 'call' | 'home' | 'school' | 'book' | 'pin' | 'payment' | 'chat'
-  | 'meal' | 'rest' | 'bag' | 'people' | 'unknown' | 'music' | 'message' | 'device' | 'note';
+export type Icon = 'moon' | 'walk' | 'run' | 'bike' | 'hike' | 'swim' | 'strength' | 'yoga' | 'sport' | 'car' | 'bus' | 'talk' | 'picture' | 'event' | 'reminder' | 'work' | 'briefcase' | 'claude' | 'code' | 'call' | 'home' | 'school' | 'book' | 'pin' | 'payment' | 'chat'
+  | 'meal' | 'sofa' | 'bag' | 'people' | 'unknown' | 'music' | 'message' | 'device' | 'note';
 // What the day's numbers count (the chips under the bar) and what a lens lights: a row or a span of the bar is one of these or none.
 export type LensKind = 'sleep' | 'trip' | 'workout' | 'work' | 'call' | 'talk' | 'payment' | 'picture';
 // A Claude Code session is Mac work: it lights with the Mac lens, but the Mac's number is its own (barView.numbers leaves sessions out).
@@ -67,7 +67,7 @@ const MAX_MS = 8.64e15, time = (v: unknown): v is number => typeof v === 'number
 // A name the brain sent, looked up in a table: only the table's own keys count (`constructor` is no stage and no weather).
 const own = <T>(table: Record<string, T>, key: string): T | undefined => Object.hasOwn(table, key) ? table[key] : undefined;
 const bool = (v: unknown) => typeof v === 'boolean' ? v : undefined;
-const STRINGS = ['place', 'activity', 'text', 'app', 'route', 'board_stop', 'alight_stop', 'note', 'title', 'source', 'to', 'attachment', 'currency', 'direction', 'counterparty', 'project', 'account', 'credit', 'ended_reason', 'detail', 'conversation', 'person', 'device', 'remote_session'] as const;
+const STRINGS = ['place', 'activity', 'text', 'app', 'route', 'board_stop', 'alight_stop', 'note', 'title', 'source', 'to', 'attachment', 'currency', 'direction', 'counterparty', 'project', 'account', 'credit', 'ended_reason', 'detail', 'conversation', 'person', 'device', 'remote_session', 'thread_title'] as const;
 const NUMBERS = ['minutes', 'active_s', 'turns', 'messages', 'chats', 'energy_kcal', 'distance_m', 'avg_hr', 'lat', 'lng', 'sent', 'received', 'duration_s', 'prompts'] as const;
 const FLAGS = ['confirmed', 'private', 'fired', 'acknowledged'] as const;
 // A place he keeps, as the day carries it under a stay and as the brain answers a write of one (an id and a name are needed).
@@ -240,12 +240,14 @@ export const starrable = (id: string) => ITEM_ID.test(id);
 export type Row = {
   key: string; kind: string; lens: LensKind | null; icon: Icon | 'dot'; title: string; detail: string; at: string; ago: string; right: string; value: boolean;
   future: boolean; star: boolean; hers: boolean; wait: boolean; leaving: boolean; connector: boolean; onWay: boolean;
+  // A Claude Code session that is a cloud thread: the Claude mark has a small cloud on its corner.
+  cloud?: boolean;
   // A stretch of what he was doing (ADR 0302): its category's colour (none when nothing says what it was), and what is inside it as small icons with a number each.
   seg?: { rgb: Rgb | null; unknown: boolean; counts: { icon: Icon; n: number }[]; lenses: LensKind[] };
 };
 // One line inside an opened stretch: an item of the day, the words its own row has (the detail only where short), its time or length, and a picture's id; `ids` when
 // it is several of them (sessions of one name, bursts of one app), `key` then the earliest.
-export type Inside = { key: string; ids?: string[]; icon: Icon; title: string; detail: string; side: string; picture: string; note: string };
+export type Inside = { key: string; ids?: string[]; cloud?: boolean; icon: Icon; title: string; detail: string; side: string; picture: string; note: string };
 // A stretch of what he was doing as the pane keeps it for its row, the bar and its opening: `end` is cut to now, `place` the stay's name (empty when it has none), `knows` how she knows.
 export type Segment = { span: DoingSpan; start: number; end: number; words: string | null; place: string; placeRgb: Rgb | null; rgb: Rgb | null; icon: Icon; unknown: boolean; category: string; detail: string; inside: Inside[]; knows: string };
 // `star`: null when the stay is not one of the day's highlights, else its label (which may be empty); `hers`: it is her pick, not his mark.
@@ -395,24 +397,24 @@ export function doingAt(spans: readonly DoingSpan[] | undefined, ms: number, t: 
 }
 // A Claude Code session's account, as the letter it is known by.
 export const accountOf = (it: DayItem) => /^[ab]$/i.test(clean(it.account)) ? clean(it.account).toUpperCase() : '';
-// A Remote Control session is a cloud thread running on this Mac: the brain says so (`remote_session`); an older brain only has its worktree folder (`bridge-cse_…`) as the project or the title.
-const WORKTREE = /^bridge-cse_/i, isRemote = (it: DayItem) => !!clean(it.remote_session) || WORKTREE.test(clean(it.project)) || WORKTREE.test(clean(it.title));
-const cloudWords = (n: number, t: Say) => t([`Cloud threads running on this Mac · ${n}`, `云端线程在 Mac 上跑 · ${n} 个`]);
-// What a Claude Code session is called: its title, else just Claude Code; never its repo or folder (`project`). The glyph says the rest.
-// The session's own name (「部署」) goes first here once the brain serves it.
-export const codeName = (it: DayItem, t: Say) => isRemote(it) ? cloudWords(1, t) : clean(it.title) || t(['Claude Code', 'Claude Code']);
-// Sessions as the lines of a stretch or of the card: the cloud threads are one line (even one alone), his others (prompts above 0, or not said) one line per name, with how many
-// when more than one; the ones that ran by themselves are one line together. Each line's key is its earliest session's id; `items` are in time order.
-export type CodeLine = { key: string; title: string; detail: string; items: DayItem[] };
+// A Remote Control session is a cloud thread running on this Mac: the brain says which (`remote_session`); an older brain only has its worktree folder (`bridge-cse_…`) as the project or the title, which names it too.
+const WORKTREE = /bridge-(cse_[A-Za-z0-9]+)/i, remoteOf = (it: DayItem) => clean(it.remote_session) || WORKTREE.exec(clean(it.project))?.[1] || WORKTREE.exec(clean(it.title))?.[1] || '';
+export const isRemote = (it: DayItem) => !!remoteOf(it) || /^bridge-cse_/i.test(clean(it.project)) || /^bridge-cse_/i.test(clean(it.title));
+// What a Claude Code session is called: its own name, else its title (never a worktree's folder name, never its repo or folder `project`), else Cloud thread / Session. The Claude mark says the rest.
+export const codeName = (it: DayItem, t: Say) => clean(it.thread_title) || (/^bridge-cse_/i.test(clean(it.title)) ? '' : clean(it.title)) || (isRemote(it) ? t(['Cloud thread', '云端线程']) : t(['Session', '会话']));
+// How many prompts he sent in it, in words; none said, none written.
+export const promptWords = (it: DayItem, t: Say) => it.prompts === undefined ? '' : t([`${it.prompts} ${it.prompts === 1 ? 'prompt' : 'prompts'}`, `发了 ${it.prompts} 次`]);
+// Sessions as the lines of a stretch or of the card: the ones of one cloud thread are one line (another thread, another line), his local ones (prompts above 0, or not said) one line per name, with how many
+// when more than one; the local ones that ran by themselves are one line together. Each line's key is its earliest session's id; `items` are in time order; `cloud`: all are cloud threads.
+export type CodeLine = { key: string; title: string; detail: string; items: DayItem[]; cloud: boolean };
 export function codeLines(list: DayItem[], t: Say): CodeLine[] {
-  const mine = new Map<string, DayItem[]>(), bg: DayItem[] = [], cloud: DayItem[] = [];
+  const named = new Map<string, DayItem[]>(), bg: DayItem[] = [];
   for (const it of [...list].sort((a, b) => a.start_ms - b.start_ms)) {
-    if (isRemote(it)) cloud.push(it);
-    else if ((it.prompts ?? 1) > 0) { const name = codeName(it, t); mine.set(name, [...mine.get(name) ?? [], it]); } else bg.push(it);
+    if (isRemote(it)) { const k = `cloud:${remoteOf(it) || it.id}`; named.set(k, [...named.get(k) ?? [], it]); }
+    else if ((it.prompts ?? 1) > 0) { const k = `name:${codeName(it, t)}`; named.set(k, [...named.get(k) ?? [], it]); } else bg.push(it);
   }
-  const out: CodeLine[] = [...mine].map(([title, items]) => ({ key: items[0].id, title, detail: items.length > 1 ? t([`${items.length} sessions`, `${items.length} 个会话`]) : '', items }));
-  if (cloud.length) out.push({ key: cloud[0].id, title: cloudWords(cloud.length, t), detail: '', items: cloud });
-  if (bg.length) out.push({ key: bg[0].id, title: out.length ? t([`${bg.length} more background ${bg.length === 1 ? 'session' : 'sessions'}`, `另有 ${bg.length} 个后台会话`]) : t([`${bg.length} background ${bg.length === 1 ? 'session' : 'sessions'}`, `${bg.length} 个后台会话`]), detail: '', items: bg });
+  const out: CodeLine[] = [...named].map(([k, items]) => ({ key: items[0].id, title: codeName(items[0], t), detail: !k.startsWith('cloud:') && items.length > 1 ? t([`${items.length} sessions`, `${items.length} 个会话`]) : '', items, cloud: k.startsWith('cloud:') }));
+  if (bg.length) out.push({ key: bg[0].id, title: out.length ? t([`${bg.length} more background ${bg.length === 1 ? 'session' : 'sessions'}`, `另有 ${bg.length} 个后台会话`]) : t([`${bg.length} background ${bg.length === 1 ? 'session' : 'sessions'}`, `${bg.length} 个后台会话`]), detail: '', items: bg, cloud: false });
   return out.sort((a, b) => a.items[0].start_ms - b.items[0].start_ms);
 }
 type Ctx = { t: Say; tz: string; reply: DayReply; now: number; today: boolean; marks: Map<string, string>; stars: Map<string, Mark> };
@@ -430,14 +432,14 @@ const messageCounts = (sent: number | undefined, received: number | undefined, t
   ? t([`Sent ${sent} · Received ${received ?? 0}`, `发 ${sent} · 收 ${received ?? 0}`]) : t([`${received ?? 0} received`, `收到 ${received ?? 0} 条`]);
 function rowOf(it: DayItem, c: Ctx): Row | null {
   const { t, tz, reply } = c;
-  let icon: Icon, title: string, detail = '', right = '', value = false, wait = false;
+  let icon: Icon, title: string, detail = '', right = '', value = false, wait = false, cloud = false;
   switch (it.kind) {
     case 'sleep': icon = 'moon'; title = t(['Sleep', '睡觉']); break;
     case 'move': icon = moveIcon(it.activity); title = moveWords(it.activity, t); break;
     case 'ride': icon = 'bus'; title = rideWords(it, t); detail = [clean(it.board_stop), clean(it.alight_stop)].filter(Boolean).join(' → '); break;
     case 'workout': { const w = workoutOf(it, t); icon = w.icon; title = w.word; detail = w.facts.join(' · ') || w.note; break; }
     case 'code':
-      icon = 'code'; title = codeName(it, t); detail = accountOf(it); break;
+      icon = 'claude'; cloud = isRemote(it); title = codeName(it, t); detail = accountOf(it); break;
     case 'talk': icon = 'talk'; title = t(['Talked with her', '和她说话']); detail = it.turns ? t([`${it.turns} ${it.turns === 1 ? 'line' : 'lines'}`, `${it.turns} 句`]) : ''; break;
     case 'picture': icon = 'picture'; title = t(['Photo', '照片']); detail = clean(it.note).split('\n')[0]; break;
     case 'event': {
@@ -505,7 +507,7 @@ function rowOf(it: DayItem, c: Ctx): Row | null {
   const mark = c.marks.get(it.id);
   if (mark) { detail = [title, detail].filter(Boolean).join(' · '); title = mark; }
   return { key: it.id, kind: it.kind, lens: lensOf(it.kind), icon, title, detail, at: clock(it.start_ms, tz), ago: it.start_ms < reply.start_ms ? t(['yd', '昨']) : '', right, value, future, star: c.marks.has(it.id), hers: hersOf(it.id, c), wait, leaving: it.leaving === true,
-    connector: it.kind === 'move' || it.kind === 'ride', onWay: false };
+    connector: it.kind === 'move' || it.kind === 'ride', onWay: false, ...cloud && { cloud } };
 }
 // A short stop on the way is a row of the trip: how long, and the place the phone called it.
 function stopRow(it: DayItem, c: Ctx): Row {
@@ -518,7 +520,7 @@ function stopRow(it: DayItem, c: Ctx): Row {
 // covered together (sessions that ran side by side count once).
 function foldRow(list: DayItem[], stay: DayItem, c: Ctx): Row {
   const { t, tz, reply } = c, n = list.length, first = list[0], open = c.today ? c.now : reply.end_ms, lines = codeLines(list, t), one = lines.length === 1 ? lines[0] : null;
-  return { key: `code:${stay.id}`, kind: 'code', lens: 'work', icon: 'code', title: one ? one.title : t([`${n} sessions`, `${n} 个会话`]), detail: one ? one.detail : [...lines].sort((a, b) => b.items.at(-1)!.start_ms - a.items.at(-1)!.start_ms).slice(0, 2).map(x => x.title).join(' · '), at: clock(first.start_ms, tz),
+  return { key: `code:${stay.id}`, kind: 'code', lens: 'work', icon: 'claude', ...lines.every(x => x.cloud) && { cloud: true }, title: one ? one.title : t([`${n} sessions`, `${n} 个会话`]), detail: one ? one.detail : [...lines].sort((a, b) => b.items.at(-1)!.start_ms - a.items.at(-1)!.start_ms).slice(0, 2).map(x => x.title).join(' · '), at: clock(first.start_ms, tz),
     ago: first.start_ms < reply.start_ms ? t(['yd', '昨']) : '', right: dur(Math.max(1, covered(list, open)), t), value: false, future: false, star: false, hers: false, wait: false, leaving: false, connector: false, onWay: false };
 }
 
@@ -532,7 +534,7 @@ function stayHead(it: DayItem, c: Ctx): StayHead {
 // ---------- the stretches of what he was doing (ADR 0302, 0307) ----------
 // A category's colour and glyph (the same on the phone): a way he went keeps the haze of a move, sleep the night's blue; a stretch nothing says the words of is the hole's.
 const CATEGORIES: Record<string, { rgb: Rgb | null; icon: Icon }> = {
-  work: { rgb: [91, 140, 255], icon: 'work' }, study: { rgb: [155, 123, 255], icon: 'book' }, meal: { rgb: [240, 176, 79], icon: 'meal' }, rest: { rgb: [111, 168, 200], icon: 'rest' },
+  work: { rgb: [91, 140, 255], icon: 'briefcase' }, study: { rgb: [155, 123, 255], icon: 'book' }, meal: { rgb: [240, 176, 79], icon: 'meal' }, rest: { rgb: [111, 168, 200], icon: 'sofa' },
   sleep: { rgb: SLEEP, icon: 'moon' }, exercise: { rgb: [76, 195, 138], icon: 'run' }, commute: { rgb: TRANSIT, icon: 'walk' }, errand: { rgb: [232, 135, 90], icon: 'bag' },
   social: { rgb: [233, 121, 166], icon: 'people' }, home: { rgb: [168, 159, 145], icon: 'home' }, unknown: { rgb: null, icon: 'unknown' },
 };
@@ -561,13 +563,13 @@ function segmentOf(sp: DoingSpan, c: Ctx, byId: Map<string, DayItem>): { row: Ro
     if (!row) continue;
     const e0 = it.end_ms ?? limit, lap = Math.min(e0, end) - Math.max(it.start_ms, sp.start_ms), cut = !INSTANT.has(it.kind) && e0 > it.start_ms && (it.start_ms < sp.start_ms || e0 > end);
     const picture = it.kind === 'picture' && ATTACHMENT.test(clean(it.attachment)) ? clean(it.attachment) : '';
-    inside.push({ at: it.start_ms, line: { key: it.id, icon: row.icon === 'dot' ? 'pin' : row.icon, title: row.title, detail: row.detail.length <= SHORT ? row.detail : '', side: it.kind === 'messages' ? '' : cut && lap >= 60_000 ? dur(lap / 60_000, t) : row.right || row.at, picture, note: clean(it.note) } });
+    inside.push({ at: it.start_ms, line: { key: it.id, ...row.cloud && { cloud: true }, icon: row.icon === 'dot' ? 'pin' : row.icon, title: row.title, detail: row.detail.length <= SHORT ? row.detail : '', side: it.kind === 'messages' ? '' : cut && lap >= 60_000 ? dur(lap / 60_000, t) : row.right || row.at, picture, note: clean(it.note) } });
   }
   const sessions = codeLines(items.filter(it => it.kind === 'code' && folded(it)), t);
   for (const g of sessions) {
     // Sessions side by side count once; what runs past the stretch counts only inside it.
     const cutIn = g.items.map(it => ({ start_ms: Math.max(it.start_ms, sp.start_ms), end_ms: Math.min(it.end_ms ?? limit, end) })), minutes = covered(cutIn, end);
-    inside.push({ at: g.items[0].start_ms, line: { key: g.key, ids: g.items.map(x => x.id), icon: 'code', title: g.title, detail: g.detail, side: minutes >= 1 ? dur(minutes, t) : '', picture: '', note: '' } });
+    inside.push({ at: g.items[0].start_ms, line: { key: g.key, ids: g.items.map(x => x.id), icon: 'claude', ...g.cloud && { cloud: true }, title: g.title, detail: g.detail, side: minutes >= 1 ? dur(minutes, t) : '', picture: '', note: '' } });
   }
   const apps = new Map<string, DayItem[][]>();
   for (const it of items) {
