@@ -115,9 +115,9 @@ def open_core(config: RuntimeConfig, paths: RuntimePaths, stack: ExitStack) -> C
     """Check the boot can start, then open the Event Log and the memory store.
 
     The prompt file and the zone database are checked first, so a boot that cannot succeed opens
-    nothing. A tz database too old for the rule of BC's clocks (:func:`zone_data_problem`) is one
-    error in the log and the boot goes on: his own zone passed the check above. The Event Log
-    connection is closed by ``stack`` if a later stage fails.
+    nothing. A tz database (the pinned tzdata package, ADR 0386) too old for the rule of BC's
+    clocks (:func:`zone_data_problem`) is one error in the log and the boot goes on: his own zone
+    passed the check above. The Event Log connection is closed by ``stack`` if a later stage fails.
     """
     if not config.prompt_path.is_file():
         msg = f"runtime: prompt file {config.prompt_path} does not exist"

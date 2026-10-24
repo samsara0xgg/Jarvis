@@ -14,12 +14,14 @@ from __future__ import annotations
 import logging
 import threading
 import time
+import zoneinfo
 from datetime import UTC, datetime, timedelta, tzinfo
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import pytest
 import time_machine
+import tzdata
 
 from jarvis.runtime.bootstrap import core as core_module
 from jarvis.runtime.config import RuntimeBootstrapError
@@ -242,7 +244,7 @@ def test_an_old_database_says_what_it_gives_and_which_version_it_is() -> None:
     """The one line the log and init.sh print: the zone, the offset it gives, the version."""
     old = _vancouver_at(timedelta(hours=-8))
     assert zone_data_problem(old, lambda: "2025b") == (
-        "the host's tzdata is out of date: America/Vancouver gives UTC-08:00 at 2026-11-02 12:00,"
+        "the tzdata is out of date: America/Vancouver gives UTC-08:00 at 2026-11-02 12:00,"
         " not UTC-07:00 (tz database 2025b)"
     )
 
@@ -279,13 +281,30 @@ def test_the_version_is_the_one_of_the_directory_the_zone_is_read_from(tmp_path:
 
 
 def test_the_version_may_be_in_a_version_file_and_is_unknown_without_one(tmp_path: Path) -> None:
-    """Some systems keep it as ``+VERSION``; a tree with neither, or no zone, names none."""
+    """Some systems keep it as ``+VERSION``; a tree with neither names none.
+
+    A search path where no directory holds the zone leaves it to the ``tzdata`` package, as
+    ``zoneinfo`` does, so the package's version is the one in force.
+    """
     plus = _zoneinfo_tree(tmp_path / "plus", header=None)
     (tmp_path / "plus" / "+VERSION").write_text("2024a\n", encoding="utf-8")
     bare = _zoneinfo_tree(tmp_path / "bare", header=None)
     assert tz_database_version((plus,)) == "2024a"
     assert tz_database_version((bare,)) == "unknown"
-    assert tz_database_version((str(tmp_path / "nowhere"),)) == "unknown"
+    assert tz_database_version((str(tmp_path / "nowhere"),)) == tzdata.IANA_VERSION
+
+
+def test_every_zone_is_read_from_the_pinned_package_not_the_host() -> None:
+    """ADR 0386: importing jarvis empties the search path, so no host directory is read.
+
+    The zones and the version init.sh and the boot report are the ``tzdata`` package's, which
+    holds the rule for BC's clocks.
+    """
+    assert zoneinfo.TZPATH == ()
+    assert tz_database_version() == tzdata.IANA_VERSION
+    assert zone_data_problem() is None
+    winter = datetime(2026, 11, 12, 12, tzinfo=ZoneInfo("America/Winnipeg"))
+    assert winter.utcoffset() == timedelta(hours=-5)
 
 
 def test_boot_logs_one_error_for_an_old_database_and_goes_on(

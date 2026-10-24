@@ -8,14 +8,17 @@ elapsed time or a wait takes it from there. A test hands the same code
 and nothing lower, so a freeze that replaces those (the tool exam's ``time_machine``) holds for
 every reader that is already on the clock.
 
-:func:`zone_data_problem` checks the host's tz database for one rule an old one lacks.
+:func:`zone_data_problem` checks the tz database for one rule an old one lacks. The database is
+the pinned ``tzdata`` package, which ``jarvis/__init__.py`` makes the only one read (ADR 0386).
 """
 
 from __future__ import annotations
 
+import functools
 import os
 import time
 from datetime import UTC, datetime, timedelta, tzinfo
+from importlib.resources import files
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Protocol
 from zoneinfo import TZPATH, ZoneInfo, ZoneInfoNotFoundError
@@ -159,7 +162,8 @@ def tz_database_version(directories: Iterable[str] = TZPATH) -> str:
     """The version of the tz database the zone files are read from, else ``unknown``.
 
     The first directory that holds a zone file names it: ``tzdata.zi`` begins ``# version 2026e``,
-    and some systems keep it in ``+VERSION``.
+    and some systems keep it in ``+VERSION``. With no directory to read (ADR 0386 empties
+    ``TZPATH``) the zones come from the ``tzdata`` package, and its ``IANA_VERSION`` names it.
     """
     for directory in directories:
         root = Path(directory)
@@ -174,16 +178,20 @@ def tz_database_version(directories: Iterable[str] = TZPATH) -> str:
             if version:
                 return version
         return "unknown"
-    return "unknown"
+    try:
+        import tzdata  # noqa: PLC0415 - read only when no directory holds the zones
+    except ImportError:
+        return "unknown"
+    return str(tzdata.IANA_VERSION)
 
 
 def zone_data_problem(
     load: Callable[[str], tzinfo] = ZoneInfo,
     version: Callable[[], str] = tz_database_version,
 ) -> str | None:
-    """None when the host's tz database gives America/Vancouver UTC-7 at 2026-11-02 12:00.
+    """None when the tz database gives America/Vancouver UTC-7 at 2026-11-02 12:00.
 
-    Otherwise the sentence that says its tzdata is out of date, naming what it gives there (no
+    Otherwise the sentence that says the tzdata is out of date, naming what it gives there (no
     offset for a zone it lacks) and its version. ``load`` is the zone provider and ``version``
     the database's version.
     """
@@ -195,9 +203,25 @@ def zone_data_problem(
         return None
     gives = "no offset" if offset is None else f"UTC{_signed(offset)}"
     return (
-        f"the host's tzdata is out of date: {_RULE_ZONE} gives {gives} at "
+        f"the tzdata is out of date: {_RULE_ZONE} gives {gives} at "
         f"{_RULE_AT:%Y-%m-%d %H:%M}, not UTC{_signed(_RULE_OFFSET)} (tz database {version()})"
     )
+
+
+def zone_country(zone: str | None) -> str | None:
+    """The country a time zone is in (``America/Vancouver`` -> ``CA``), from ``zone.tab``.
+
+    The table is the pinned ``tzdata`` package's, the same release the zones are read from
+    (ADR 0386).
+    """
+    return _zone_countries().get(zone) if zone else None
+
+
+@functools.cache
+def _zone_countries() -> dict[str, str]:
+    table = files("tzdata.zoneinfo").joinpath("zone.tab").read_text(encoding="utf-8")
+    rows = (line.split("\t") for line in table.splitlines() if line and not line.startswith("#"))
+    return {zone: country for country, _, zone, *_ in rows}
 
 
 def zone_key(zone: tzinfo) -> str | None:

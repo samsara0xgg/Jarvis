@@ -9,20 +9,18 @@ point (``here`` or ``lat,lng``) takes the zone of a place the lookup listed, or 
 
 from __future__ import annotations
 
-import functools
 import json
 import math
 import re
 import urllib.request
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, NamedTuple
 from urllib.parse import urlencode
-from zoneinfo import TZPATH
 
 from tzfpy import get_tz
 
 from jarvis.execution.tools import ToolError
 from jarvis.shared import lang
+from jarvis.shared.clock import zone_country
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -227,20 +225,4 @@ def spot_at(point: tuple[float, float], called: str, home: Spot) -> Spot:
     if km(point, (home.latitude, home.longitude)) <= _NEAR_HOME_KM:
         return Spot(*point, called, home.zone, home.country)
     zone = get_tz(point[1], point[0])
-    return Spot(*point, called, zone, country_of(zone))
-
-
-@functools.cache
-def _zone_countries() -> dict[str, str]:
-    """Time zone -> ISO country code, from the system tz database's ``zone.tab``."""
-    for root in TZPATH:
-        if (table := Path(root) / "zone.tab").is_file():
-            lines = table.read_text().splitlines()
-            rows = (line.split("\t") for line in lines if line and not line.startswith("#"))
-            return {zone: country for country, _, zone, *_ in rows}
-    return {}
-
-
-def country_of(zone: str | None) -> str | None:
-    """The country a time zone is in (``America/Vancouver`` -> ``CA``), for WeatherKit alerts."""
-    return _zone_countries().get(zone) if zone else None
+    return Spot(*point, called, zone, zone_country(zone))

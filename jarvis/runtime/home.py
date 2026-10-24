@@ -33,7 +33,6 @@ from jarvis.runtime.weather_held import Held
 from jarvis.runtime.weather_place import (
     ALTERNATIVES,
     Spot,
-    country_of,
     get_json,
     locate,
     spot_at,
@@ -42,6 +41,7 @@ from jarvis.runtime.weatherkit import NOT_SET_UP, Unavailable, day_rows, home_li
 from jarvis.runtime.weatherkit import alerts as wk_alerts
 from jarvis.runtime.weatherkit import report as wk_report
 from jarvis.shared import lang
+from jarvis.shared.clock import zone_country
 from jarvis.state.daily_contract import DailyError
 from jarvis.state.daily_store import get_briefing
 from jarvis.state.event_log import open_runtime_event_log
@@ -268,7 +268,7 @@ def weather_lookup(
         return None
     home = Spot(
         float(place["latitude"]), float(place["longitude"]), str(place.get("name") or "home"),
-        zone, place.get("country_code") or country_of(zone),
+        zone, place.get("country_code") or zone_country(zone),
     )
     known: dict[tuple[float, float], Spot] = {}
     held = Held()
@@ -388,7 +388,7 @@ class Home:
         place, kit = self._weather_at, self._weatherkit
         body = kit.read(
             float(place["latitude"]), float(place["longitude"]), zone=self._zone_name,
-            country=place.get("country_code") or country_of(self._zone_name), first=day, last=day,
+            country=place.get("country_code") or zone_country(self._zone_name), first=day, last=day,
         )
         today = datetime.fromtimestamp(kit.clock(), self._zone).date()
         return day_rows(body, ZoneInfo(self._zone_name), first=day, last=day, today=today)[0]
@@ -400,7 +400,7 @@ class Home:
             return None
         return Spot(
             float(place["latitude"]), float(place["longitude"]), str(place.get("name") or "home"),
-            self._zone_name, place.get("country_code") or country_of(self._zone_name),
+            self._zone_name, place.get("country_code") or zone_country(self._zone_name),
         )
 
     def plan_weather(self, day: date) -> dict[str, Any] | None:
@@ -518,7 +518,7 @@ class Home:
             today = datetime.fromtimestamp(kit.clock(), self._zone).date()
             body = kit.read(  # the same request as the tool's default one, so one call serves both
                 float(place["latitude"]), float(place["longitude"]), zone=self._zone_name,
-                country=place.get("country_code") or country_of(self._zone_name),
+                country=place.get("country_code") or zone_country(self._zone_name),
                 first=today, last=today + timedelta(days=1),
             )
             return home_line(body, self._zone_name, kit.clock())

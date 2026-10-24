@@ -110,7 +110,7 @@ else
         "find the new switch and update the recipe at the bottom of scripts/init.sh"
 fi
 
-# 7. The host's tz database holds the rule for BC's clocks: America/Vancouver is UTC-7 at
+# 7. The tz database (the pinned tzdata package, ADR 0386) holds the rule for BC's clocks: America/Vancouver is UTC-7 at
 #    2026-11-02 12:00. An older one puts every time of day in BC an hour off from then on, and
 #    the daemon logs one error at boot for it (jarvis.shared.clock.zone_data_problem).
 if [ -x "$PY" ]; then
@@ -122,7 +122,7 @@ print(problem or tz_database_version())
 sys.exit(problem is not None)' 2>&1)"; then
         ok "tz database holds America/Vancouver's UTC-7 at 2026-11-02 (version $ZONE)"
     else
-        bad "$ZONE" "update the host's tzdata (Debian or Ubuntu: apt-get install --only-upgrade tzdata; a Mac: its system update), then run init.sh again"
+        bad "$ZONE" "raise tzdata in pyproject.toml, uv lock --upgrade-package tzdata, uv sync --inexact --extra dev, then run init.sh again"
     fi
 fi
 
