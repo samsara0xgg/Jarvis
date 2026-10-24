@@ -549,6 +549,7 @@ def test_a_first_connection_hears_only_what_is_said_after_it(tmp_path: Path) -> 
             "device": "macbook",
             "voice": True,
             "listen": False,
+            "hear": False,
             "baseline": [],
         }
         new = append_answer(log, "NEW", "Fresh answer.")

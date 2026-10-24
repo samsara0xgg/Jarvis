@@ -176,6 +176,15 @@ class VoicePipeline:
         register(listener)
         return True
 
+    def stream_final(self, utterance_id: str, audio_bytes: bytes) -> None:
+        """More of ``utterance_id``'s audio as he speaks, for a recognizer that streams (ADR 0400).
+
+        Only handed over, never waited for; a recognizer without ``stream`` ignores it.
+        """
+        stream = getattr(self._recognizer, "stream", None)
+        if callable(stream):
+            stream(utterance_id, audio_bytes)
+
     def discard_final(self, utterance_id: str) -> None:
         """He spoke again, or the utterance never committed: drop what was prepared for it."""
         discard = getattr(self._recognizer, "discard", None)

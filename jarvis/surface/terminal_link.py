@@ -13,6 +13,7 @@ tools it can run, and then answers calls. Every frame is one JSON text message::
     terminal -> brain   {"type": "event", ...}   an observer's event, see terminal_events
     brain -> terminal   {"type": "ack", ...}
     both ways           {"type": "row" | "tts", ...}   a voice terminal's speech, see terminal_voice
+    both ways           {"type": "hear", ...}   its words heard in the cloud, see terminal_hearing
     terminal -> brain   {"type": "ask", ...}    a voice terminal's listening, see terminal_listen
     brain -> terminal   {"type": "reply", ...}  its answer
 
@@ -50,6 +51,7 @@ if TYPE_CHECKING:
     from fastapi import WebSocket
 
     from jarvis.surface.terminal_events import BrainEvents, EventOutbox
+    from jarvis.surface.terminal_hearing import BrainHearing
     from jarvis.surface.terminal_listen import BrainListening, LinkState
     from jarvis.surface.terminal_speaker import VoiceLink
     from jarvis.surface.terminal_voice import BrainVoice, Peer
@@ -117,6 +119,8 @@ class TerminalHub:
         """What speaks to a voice terminal (ADR 0172); set once the brain can synthesize."""
         self.listening: BrainListening | None = None
         """What answers a voice terminal's capture session (ADR 0172); set by the runtime."""
+        self.hearing: BrainHearing | None = None
+        """What hears a voice terminal's utterances in the cloud (ADR 0400); set with a key."""
         self._lock = threading.Lock()
         self._links: list[_Link] = []  # oldest connection first
         self._last_name: dict[str, str] = {}
@@ -403,6 +407,8 @@ async def _leave(hub: TerminalHub, link: _Link, streaming: asyncio.Task[None] | 
     """A terminal that left: stop what was running for it and end its speech."""
     if hub.listening is not None:
         await hub.listening.detach(link)
+    if hub.hearing is not None:
+        await hub.hearing.detach(link)
     await _end_speech(hub, link, streaming)
 
 
@@ -416,6 +422,9 @@ async def _greet(hub: TerminalHub, link: _Link, hello: _Hello) -> asyncio.Task[N
     if hello.voice:
         ready["voice"] = hub.voice is not None
         ready["listen"] = hub.listening is not None
+        ready["hear"] = hub.hearing is not None
+        if hub.hearing is not None:
+            hub.hearing.warm()
     await link.send(json.dumps(ready, ensure_ascii=False))
     if link.speech is None or hub.voice is None:
         return None
@@ -433,11 +442,14 @@ async def _end_speech(hub: TerminalHub, link: _Link, streaming: asyncio.Task[Non
         await hub.voice.detach(link.speech)
 
 
-async def _on_frame(hub: TerminalHub, link: _Link, frame: Mapping[str, Any], size: int) -> None:
+async def _on_frame(  # noqa: C901 — one branch per frame type.
+    hub: TerminalHub, link: _Link, frame: Mapping[str, Any], size: int,
+) -> None:
     """A terminal's ``result`` goes to the call waiting for it; its ``event`` to the log.
 
     A voice terminal's ``tts`` request goes to its provider session, and its ``ask`` to
-    :class:`~jarvis.surface.terminal_listen.BrainListening` (ADR 0172).
+    :class:`~jarvis.surface.terminal_listen.BrainListening` (ADR 0172), its ``hear`` stream to
+    :class:`~jarvis.surface.terminal_hearing.BrainHearing` (ADR 0400).
     """
     if frame.get("type") == "result":
         hub.deliver(link, frame)
@@ -452,6 +464,9 @@ async def _on_frame(hub: TerminalHub, link: _Link, frame: Mapping[str, Any], siz
                 "error": {"name": "Refused", "message": "this brain has no speech provider"},
             }
             await link.send(json.dumps(refusal))
+    elif frame.get("type") == "hear" and link.voice:
+        if hub.hearing is not None:
+            hub.hearing.on_frame(link, link.send, frame)
     elif frame.get("type") == "ask" and link.voice:
         if hub.listening is not None:
             hub.listening.on_frame(link, frame)
@@ -525,7 +540,7 @@ async def _serve_calls(
             elif events is not None and isinstance(frame, dict) and frame.get("type") == "ack":
                 events.ack(frame)
             elif voice is not None and isinstance(frame, dict) and frame.get("type") in {
-                "row", "tts", "reply",
+                "row", "tts", "hear", "reply",
             }:
                 voice.on_frame(frame)
     finally:

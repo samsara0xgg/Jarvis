@@ -317,7 +317,7 @@ struct ChatSearchCard: View {
             if order.isEmpty { note(Words.PhoneChat.noHits) } else {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(order.enumerated().reversed()), id: \.element.id) { i, h in
-                        Button { go(ChatTrail(name: "「\(model.trimmed)」", places: order.map { .init(recordId: $0.id) }, at: i)) } label: {
+                        Button { go(ChatTrail(name: Words.PhoneChat.searched(model.trimmed), places: order.map { .init(recordId: $0.id) }, at: i)) } label: {
                             HStack(alignment: .firstTextBaseline, spacing: 6) {
                                 (Text((h.his ? Words.PhoneChat.his : Words.PhoneChat.hers) + "  ").foregroundColor(Look.ink3) + Text(h.text).foregroundColor(Look.ink))
                                     .font(.system(size: Look.note)).lineLimit(2).multilineTextAlignment(.leading)

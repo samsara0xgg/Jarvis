@@ -146,6 +146,8 @@ _MATCHERS: Final[dict[str, frozenset[str]]] = {
          "WhisperFinalRecognizer.recognize", "HybridFinalRecognizer._hear",
          "HybridFinalRecognizer._hear_once", "_short_unclear", "_FULL_WIDTH"}
     ),
+    # Qwen's words end with the full stop of their own language, as SenseVoice's do (ADR 0400).
+    "jarvis/surface/terminal_hearing.py": frozenset({"CloudFinalRecognizer._settle"}),
     # The silence trimmer (ADR 0165) reads the punctuation that ended a segment's text.
     "jarvis/surface/tts_silence.py": frozenset({"_CLAUSE_ENDS", "_CLOSERS"}),
     "jarvis/surface/voice_cues.py": frozenset({"_LAUGH_WORDS"}),

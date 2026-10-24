@@ -314,12 +314,12 @@ export function SettingsPage({ lang, port, open, cat, onCat, pairAsk = 0, ctl, a
       ...accounts.map(a => ({ id: a.name, name: [a.name, a.name] as L, ctl: { k: 'info', text: a.text, tone: a.ok ? 'ok' : 'warn' } as Ctl })),
       { id: 'plugins', name: ['Plugins', '插件'], ctl: { k: 'act', label: ['Open', '打开'], run: onPlugins } },
     ] },
-    { id: 'devices', icon: <DeviceMobile/>, name: ['Phone & devices', '手机与设备'], sum: devices ? devices.length ? t([`${devices.length} connected`, `已连 ${devices.length} 台`]) : t(['None yet', '还没连']) : t(['Not connected yet', '还没接上']), items: [
-      { id: 'phone', name: ['Connect a phone', '连一台手机'], off: blocked, note: blocked ? ['This Mac isn’t open to your devices yet, so a phone can’t connect', '这台 Mac 还没对外开放，手机连不上'] : undefined,
-        ctl: joined ? { k: 'info', text: t(['iPhone connected', 'iPhone 已连上']), tone: 'ok' } : pair ? { k: 'info', text: clock, tone: live && left > 60_000 ? undefined : 'warn' } : { k: 'act', label: ['Show QR code', '显示二维码'], run: () => void showCode() },
+    { id: 'devices', icon: <DeviceMobile/>, name: ['Devices', '设备'], sum: devices ? devices.length ? t([`${devices.length} connected`, `已连 ${devices.length} 台`]) : t(['None yet', '还没连']) : t(['Not connected yet', '还没接上']), items: [
+      { id: 'phone', name: ['Connect a device', '连接新设备'], off: blocked, note: blocked ? ['This Mac isn’t open to your devices yet, so a device can’t connect', '这台 Mac 还没对外开放，设备连不上'] : undefined,
+        ctl: joined ? { k: 'info', text: t(['Connected', '已连上']), tone: 'ok' } : pair ? { k: 'info', text: clock, tone: live && left > 60_000 ? undefined : 'warn' } : { k: 'act', label: ['Show QR code', '显示二维码'], run: () => void showCode() },
         extra: pair && <div className="st-qr">
-          <QrCode text={JSON.stringify({ code: pair.code, brain: pair.brain })} name={t(['QR code to pair a phone', '配对手机的二维码'])} gone={!live}/>
-          <p className="st-note">{t(['Scan this with Jarvis on your iPhone. Valid for 10 minutes', '用 iPhone 上的 Jarvis 扫这个码，10 分钟内有效'])}</p>
+          <QrCode text={JSON.stringify({ code: pair.code, brain: pair.brain })} name={t(['QR code to pair a device', '配对设备的二维码'])} gone={!live}/>
+          <p className="st-note">{t(['Scan this with Jarvis on your iPhone or iPad. Valid for 10 minutes', '用 iPhone 或 iPad 上的 Jarvis 扫这个码，10 分钟内有效'])}</p>
           <button className="btn btn-ghost" disabled={busy} onClick={() => void showCode()}>{t(['New code', '换一个'])}</button>
         </div> },
       ...(devices ?? []).flatMap(d => d.watch ? [deviceRow(d), watchRow(d)] : [deviceRow(d)]),

@@ -420,9 +420,9 @@ try {
   await tile('Hands-free').click(); await page.waitForTimeout(250); await tile('Hands-free').click(); await page.waitForTimeout(400);
   const loud = await page.evaluate(() => window.__cues.splice(0));
   check(`11 unmuted, hands-free on and off plays her cues (${loud.join()})`, loud.join() === 'voice-enter,voice-exit');
-  // Phone & devices, demo data: the QR appears in place with its countdown, and Disconnect asks before it acts.
+  // Devices, demo data: the QR appears in place with its countdown, and Disconnect asks before it acts.
   await page.locator('.ad [data-cat="devices"]').click(); await page.waitForTimeout(500);
-  check('11 Phone & devices lists a paired phone and offers a QR code', await title() === 'Phone & devices' && await page.locator('.ad [data-item="dev-iphone"]').count() === 1 && await page.locator('.ad [data-item="phone"] svg').count() === 0);
+  check('11 Devices lists a paired phone and offers a QR code', await title() === 'Devices' && await page.locator('.ad [data-item="dev-iphone"]').count() === 1 && await page.locator('.ad [data-item="phone"] svg').count() === 0);
   const row = id => page.locator(`.ad [data-item="${id}"]`).textContent();
   check('11 …each named for what it is: the iPad that paired as iphone-2 is iPad, and the watch shows under the iPhone it reaches her through',
     (await row('dev-iphone')).startsWith('iPhone · connected') && (await row('dev-iphone-2')).startsWith('iPad · connected')

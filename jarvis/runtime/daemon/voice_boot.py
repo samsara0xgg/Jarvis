@@ -15,7 +15,11 @@ from jarvis.runtime.daemon.controls import set_conversation, set_quiet
 from jarvis.runtime.daemon.devices import output_or_default
 from jarvis.runtime.daemon.input_session import spawn_voice_input_owners
 from jarvis.runtime.daemon.live_backend import LiveBackend, live_wake_subscriber
-from jarvis.runtime.daemon.phone_brain import build_brain_listening, build_brain_voice
+from jarvis.runtime.daemon.phone_brain import (
+    build_brain_hearing,
+    build_brain_listening,
+    build_brain_voice,
+)
 from jarvis.runtime.daemon.restart import fetch_models_then_restart
 from jarvis.runtime.daemon.voice_power import VoiceInputOwners
 from jarvis.runtime.daemon.voice_wiring import (
@@ -110,6 +114,7 @@ def boot_voice(
     """
     if runtime.terminal_hub is not None:
         runtime.terminal_hub.voice = build_brain_voice(runtime, knobs)
+        runtime.terminal_hub.hearing = build_brain_hearing()
         runtime.terminal_hub.listening = build_brain_listening(
             runtime, runtime.terminal_hub,
             controls=voice.controls,

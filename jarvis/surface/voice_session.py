@@ -492,6 +492,7 @@ class UtteranceAssembler:
         on_partial: Callable[[str, str, str], None] | None = None,
         prepare_final: Callable[[str, bytes, float], None] | None = None,
         discard_final: Callable[[str], None] | None = None,
+        stream_final: Callable[[str, bytes], None] | None = None,
     ) -> None:
         """Create bounded idle/pre-roll/utterance storage around one VAD.
 
@@ -503,6 +504,8 @@ class UtteranceAssembler:
         ``_PREPARE_SILENT_FRAMES`` and ``discard_final(utterance_id)`` when
         speech resumes or the utterance ends without a commit (ADR 0132); both
         only hand work over, so capture never waits for final ASR.
+        ``stream_final(utterance_id, audio)`` gets an utterance's audio from speech onset, each
+        piece once and in order, for a recognizer that hears while he speaks (ADR 0400).
         """
         self._vad = vad
         self._config = config
@@ -515,6 +518,8 @@ class UtteranceAssembler:
         self._on_partial = on_partial
         self._prepare_final = prepare_final
         self._discard_final = discard_final
+        self._stream_final = stream_final
+        self._streamed = 0  # frames of _audio_frames handed to stream_final
         self._shown_partial = ("", "")
         self._frame_bytes = frame_samples * 2
         # ADR 0145: the words of the audio up to a pause that a finished final-ASR pass heard.
@@ -717,6 +722,7 @@ class UtteranceAssembler:
             else 0
         )
         self._audio_frames.clear()
+        self._streamed = 0
         self._beam_frames.clear()
         self._speech_flags.clear()
         self._speech_pre_roll.clear()
@@ -829,6 +835,7 @@ class UtteranceAssembler:
         self._speech_flags.append(speech)
         if speech:
             self._voiced_frames += 1
+        self._stream_new_frames()
         self._hint_final_asr(speech=speech)
         if self._partial.captions and not self._partial.enabled:
             self._caption_tick()
@@ -836,6 +843,15 @@ class UtteranceAssembler:
         if endpoint_reason is None:
             return None
         return self._commit(frame, endpoint_reason)
+
+    def _stream_new_frames(self) -> None:
+        """Hand the frames appended since the last call to a recognizer that streams (ADR 0400)."""
+        if self._stream_final is None:
+            return
+        # ponytail: channel 0 throughout; ADR 0133's beam choice needs the whole utterance.
+        fresh = b"".join(self._audio_frames[self._streamed:])
+        self._streamed = len(self._audio_frames)
+        self._hint(self._stream_final, self._utterance_id, fresh)
 
     def _hint_final_asr(self, *, speech: bool) -> None:
         """Tell final ASR where the speech so far ends, so it can start before the endpoint commits.
@@ -1178,6 +1194,7 @@ class UtteranceAssembler:
         self._armed_deadline_cursor = 0
         self._armed_deadline_monotonic_ns = 0
         self._audio_frames.clear()
+        self._streamed = 0
         self._beam_frames.clear()
         self._speech_flags.clear()
         self._beam_fallback_logged = False
@@ -1381,6 +1398,7 @@ class DuplexVoiceSession:
             on_partial=self._show_partial,
             prepare_final=getattr(pipeline, "prepare_final", None),
             discard_final=getattr(pipeline, "discard_final", None),
+            stream_final=getattr(pipeline, "stream_final", None),
         )
         # ADR 0145: with a final recognizer that hears ahead, captions say which words it settled.
         self._captions_settle = False

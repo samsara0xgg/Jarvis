@@ -1208,6 +1208,9 @@ realtime:
   # under 1 s of speech; Whisper, with SenseVoice's language fixed (zh, yue
   # and en), writes the rest.  It starts when Allen has been quiet 192 ms, so
   # its words are ready by the 768 ms endpoint.  Needs mlx-whisper like whisper.
+  # cloud (ADR 0400): a terminal streams each utterance through its brain to Qwen's
+  # streaming recognizer, the dictation word list as hot words; the words come as said.
+  # Needs BAILIAN_API_KEY on the brain; without it, or without the brain, SenseVoice hears.
   final_asr: sensevoice
   # "" lets SenseVoice tell each utterance's language (zh, yue, en ...), and the hybrid's
   # Whisper follows it; "en" or "zh" pins both, so the other language is heard badly.

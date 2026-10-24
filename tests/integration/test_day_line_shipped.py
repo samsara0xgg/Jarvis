@@ -387,6 +387,13 @@ def test_a_session_is_one_code_item_titled_projected_and_clipped_to_the_day(
             ),
             _session("s-agent", "2026-10-10T21:00:00Z", "2026-10-10T21:10:00Z", agent=("a1", "a2")),
             _session("s-none", "2026-10-10T22:00:00Z", "2026-10-10T22:10:00Z"),
+            {**(tree := _session(
+                "s-tree", "2026-10-10T22:10:00Z", "2026-10-10T22:20:00Z",
+                top="/Users/me/Projects/jarvis-b/.claude/worktrees/bridge-cse_01FK",
+            )), "fields": {
+                **tree["fields"], "git_origin": "https://github.com/samsara0xgg/Jarvis.git",
+                "user_prompts": 0,
+            }},
             _session(
                 "s-side",
                 "2026-10-10T23:00:00Z",
@@ -408,6 +415,7 @@ def test_a_session_is_one_code_item_titled_projected_and_clipped_to_the_day(
         "code-s-custom",
         "code-s-desk",
         "code-s-none",
+        "code-s-tree",
     ]
     custom = items["code-s-custom"]
     assert custom == {
@@ -419,12 +427,18 @@ def test_a_session_is_one_code_item_titled_projected_and_clipped_to_the_day(
         "end_ms": _utc_ms("2026-10-10T18:00:00Z"),
         "title": "mine",
         "project": "jarvis",
+        "prompts": 3,
+        "remote_session": None,
         "account": "a",
         "session_id": "s-custom",
         "detail": "latest",
     }
     assert items["code-s-desk"]["title"] == "desk"
     assert (items["code-s-ai"]["title"], items["code-s-ai"]["project"]) == ("ai2", "other")
+    # a Remote Control bridge's session is told by the claude.ai session it ran for
+    assert (items["code-s-tree"]["prompts"], items["code-s-tree"]["remote_session"]) == (
+        0, "cse_01FK",
+    )
     assert items["code-s-ai"]["account"] == "b"
     assert items["code-s-agent"]["title"] == "a2"
     assert "detail" not in items["code-s-none"]

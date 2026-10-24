@@ -4,6 +4,8 @@ extension Words {
     /// The strings of the chat page's own parts: the strip at its top, the card of search and topics, the cards that jump from her answer (Sky/StarPanel.swift, Sky/ChatSearch.swift, Sky/ChatLinks.swift).
     @MainActor enum PhoneChat {
         private static func pick(zh: String, en: String) -> String { Words.pick(zh: zh, en: en) }
+        /// what he searched for, as the bar over the field names the hits he steps through
+        static func searched(_ s: String) -> String { pick(zh: "「\(s)」", en: "“\(s)”") }
 
         // the strip
         static var history: String { pick(zh: "搜我们说过的和她整理的话题", en: "Search and topics") }
