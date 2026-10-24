@@ -116,7 +116,9 @@ final class CloudStream {
     /// More of the utterance: 16 kHz mono Int16, little-endian.
     nonisolated func push(_ pcm: Data) { input.yield(pcm) }
 
-    func open() {
+    /// `last`: only that many seconds of what was kept go first (his words over her, not her voice before them, ADR 0408).
+    func open(last seconds: Double? = nil) {
+        if let seconds { kept = Data(kept.suffix(max(0, Int(seconds * 16_000)) * 2)) }
         wanted = true
         tryOpen()
     }

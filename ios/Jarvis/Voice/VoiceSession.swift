@@ -55,6 +55,7 @@ final class VoiceSession {
     private let revealRate = 6.0       // her words appear at about the pace she speaks them (a CJK character is 1, see `speechUnits`)
     private let continueWindow = 4.0  // words over her that start this soon after his last utterance ended are the rest of it
     private let holdCap = 8.0          // her voice is held at most this long for words over her
+    private let heldEnd = 1.5          // words over her end after this much quiet, not `silenceEnd`: she is waiting, so a pause inside his sentence does not cut it (ADR 0408)
 
     // MARK: internals
 
@@ -109,6 +110,7 @@ final class VoiceSession {
     @ObservationIgnored private var hostJudges = false             // the host judges words over her and follow-ups (`ready.judges`)
     @ObservationIgnored private var held = false                   // his words over her are with the host; her output is held here meanwhile
     @ObservationIgnored private var heldAt = 0.0
+    @ObservationIgnored private var hisWordsAt = 0.0               // when this segment's first words over her that are not her echo came
     @ObservationIgnored private var answer = ""                    // her words so far; `reply` shows them as she speaks
     @ObservationIgnored private var shown = 0.0                    // how much of `answer` is in `reply`, in speech units
     @ObservationIgnored private var lastTickAt = 0.0
@@ -293,6 +295,7 @@ final class VoiceSession {
         if let old { Task { await old.cancel() } }
         segmentText = ""
         judgedOverHer = ""; overHer = nil
+        hisWordsAt = 0
         segmentAt = now
         lastWordAt = now
         partial = ""
@@ -339,6 +342,7 @@ final class VoiceSession {
     private func overHerWords(_ text: String) {
         let v = judgeOverHer(text, hers: herRecent(since: now), judged: judgedOverHer)
         if v != overHer { overHer = v; VoiceTrace.note("over her: \(v) (\(afterJudged(text, judgedOverHer).count) chars)") }
+        if v != .echo, hisWordsAt == 0 { hisWordsAt = lastWordAt }
         switch v {
         case .echo: judgedOverHer = text; duck(false)
         case .backchannel: duck(false)                      // kept: a nod that his words go on from is the start of what he says
@@ -354,6 +358,7 @@ final class VoiceSession {
         if let core = audio.core, core.activeGeneration >= 0 { core.ingest(.hold(core.activeGeneration)) }
         held = true
         heldAt = now
+        cloud?.open(last: now - (hisWordsAt > 0 ? hisWordsAt : now) + 1.0)   // his words over her, with a second before the first of them came (ADR 0408)
         partial = segmentText
         if let c = shortCommand(afterJudged(segmentText, judgedOverHer)), c == .stop || c == .goodnight { audio.core?.stopNow() }
     }
@@ -364,12 +369,17 @@ final class VoiceSession {
         guard held, let r = rec as? DualRecognizer else { return }
         rec = nil
         feed.set(nil)
-        cloud?.cancel(); cloud = nil                        // words over her are the phone's own
+        let cloud = self.cloud
+        self.cloud = nil
         let seq = turnSeq
         Task {
-            let (picked, _) = await r.finish()
+            async let local = r.finish()
+            let heard: (words: String?, engine: String) = await cloud?.finish() ?? (nil, "qwen_unavailable")
+            let (picked, _) = await local
             guard seq == turnSeq, held else { return }
-            var text = afterJudged(picked.text, judgedOverHer).trimmingCharacters(in: .whitespacesAndNewlines)
+            VoiceTrace.note("held words heard by \(heard.engine)")
+            // Qwen's from where his words began (ADR 0408), else the phone's own after her echo
+            var text = (heard.words ?? afterJudged(picked.text, judgedOverHer)).trimmingCharacters(in: .whitespacesAndNewlines)
             if !text.isEmpty, isOwnEcho(text, herRecent(since: heldAt)) { VoiceTrace.note("held words were her own echo: dropped"); text = "" }
             if text.isEmpty { VoiceTrace.note("held: nothing recognized"); resumeHer(); return }
             let id = UUID().uuidString, lang = picked.lang
@@ -377,7 +387,7 @@ final class VoiceSession {
             if let c = shortCommand(text), c == .stop || c == .goodnight {
                 VoiceTrace.note("judged over her: local \(c.rawValue)")
                 audio.core?.stopNow()
-                Task { _ = try? await PhoneLink.shared.say(utteranceId: id, text: text, language: lang, confidence: picked.confidence, spoken: true, overHer: true, conversation: false, about: AboutNow.current?.json, timeout: 10) }
+                Task { _ = try? await PhoneLink.shared.say(utteranceId: id, text: text, language: lang, confidence: picked.confidence, spoken: true, overHer: true, conversation: false, about: AboutNow.current?.json, asrEngine: heard.engine, timeout: 10) }
                 goIdle(releasing: false)
                 return
             }
@@ -387,13 +397,13 @@ final class VoiceSession {
             if continues != nil { VoiceTrace.note("held words go on from his last say") }
             VoiceTrace.note("judging over her: \(text.count) chars")
             let r: SayResult
-            do { r = try await PhoneLink.shared.say(utteranceId: id, text: text, language: lang, confidence: picked.confidence, spoken: true, overHer: true, conversation: false, about: AboutNow.current?.json, continues: continues, timeout: judgeTimeout) }
+            do { r = try await PhoneLink.shared.say(utteranceId: id, text: text, language: lang, confidence: picked.confidence, spoken: true, overHer: true, conversation: false, about: AboutNow.current?.json, continues: continues, asrEngine: heard.engine, timeout: judgeTimeout) }
             catch {
                 guard seq == turnSeq, held else { return }
                 VoiceTrace.note("judge timed out: turn (\(error.localizedDescription))")
                 link.barge()
                 takeOver(text, lang)
-                say(text, lang: lang, confidence: picked.confidence, spoken: true, utteranceId: id, continues: continues)
+                say(text, lang: lang, confidence: picked.confidence, spoken: true, utteranceId: id, continues: continues, asrEngine: heard.engine)
                 startSegment()
                 return
             }
@@ -412,7 +422,7 @@ final class VoiceSession {
                 } else {                                    // a turn with no id: the host did not write it down, so say it again
                     link.barge()
                     takeOver(text, lang)
-                    say(text, lang: lang, confidence: picked.confidence, spoken: true, utteranceId: id, continues: continues)
+                    say(text, lang: lang, confidence: picked.confidence, spoken: true, utteranceId: id, continues: continues, asrEngine: heard.engine)
                     startSegment()
                 }
             }
@@ -762,7 +772,7 @@ final class VoiceSession {
             revealAnswer(core, dt)
             if core.trouble != lastTrouble { lastTrouble = core.trouble; VoiceTrace.note("player: \(lastTrouble.overloads) overloads, \(lastTrouble.gaps) gaps") }
             if state == .thinking, core.playedSamples > playedAtSay + 480 { set(.speaking) }
-            if held, #available(iOS 26, *), (t - lastWordAt > silenceEnd && inputLevel < quiet) || t - heldAt > holdCap { finishHeld() }
+            if held, #available(iOS 26, *), (t - lastWordAt > heldEnd && inputLevel < quiet) || t - heldAt > holdCap { finishHeld() }
             if ducked, !held, t - lastWordAt > 1.5 { duck(false) }      // the words over her stopped short of an interruption
             if !core.ringEmpty { lastActivityAt = t }
             let quietAfter = commandSaid == .stop || commandSaid == .wait || commandSaid == .goodnight
