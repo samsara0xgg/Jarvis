@@ -135,7 +135,7 @@ final class StarEngine {
     var mapAt = -1e9, wakeUntil = 0.0, pulsing = true
     var herDt = 0.0, herN = 0, herFresh = true, detFast = false
     /// a sheet is over the dial and her: they nearly stop (the conversation's page on the timeline is no sheet: she heads it)
-    var covered: Bool { (ui.panelOpen && !ui.talkPage && nowMs() - panelSince > 450) || ui.settingsOpen }
+    var covered: Bool { (ui.panelOpen && !ui.talkPage && nowMs() - panelSince > 450) || (ui.settingsOpen && !HomeModule.shared.isTimeline) }
     /// turning fast, the dial is only its marks: names and the light on what the meridian points at wait until it slows enough to read
     var calmK: Double { 1 - smooth(cam != nil ? 1.5 : 0.6, cam != nil ? 3.5 : 1.8, abs(omegaS)) }
 

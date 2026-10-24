@@ -140,8 +140,8 @@ extension StarEngine {
                 let w = DispatchWorkItem { [weak self] in
                     guard let s = self, s.g?.kind == .press else { return }
                     s.g?.kind = .hold; s.pressed = false
-                    if s.tm > 0.5 {          // on the timeline held down she puts out her cards (Sky/DayTimelineArc.swift); the mic is her tap
-                        if s.talk == nil && !s.ui.panelOpen && !s.ui.footprintOpen { s.ui.tl.openArc(holding: true); s.herDrive?.herEffect("ripple", now: nowMs()) }
+                    if s.tm > 0.5 {          // on the home held down she takes him to 聊天 with the keyboard up; the mic is her tap
+                        if s.talk == nil && !s.pushedPage { s.typeToHer() }
                     } else if s.talk == nil { if BrainLink.shared.hasToken { s.micTap() } else { s.holdTalk() } }      // paired, she listens for real; the scripted talks are the unpaired demo
                 }
                 ng.timer = w; DispatchQueue.main.asyncAfter(deadline: .now() + 0.28, execute: w)
@@ -166,12 +166,12 @@ extension StarEngine {
     func pointerMove(_ id: Int, _ pts: [(CGPoint, Double)]) {
         guard ptr[id] != nil, var cur = g, let (p, _) = pts.last else { return }
         ptr[id] = p
-        if cur.kind == .hold && tm > 0.5 { ui.tl.arcFollow(p); return }          // her cards are out and the finger is still down: it slides from card to card
+        if cur.kind == .hold && tm > 0.5 { return }          // she has taken him to the field: the finger still down is nothing more
         if cur.kind == .press && hypot(Double(p.x - cur.p0.x), Double(p.y - cur.p0.y)) > 7 {
             cur.timer?.cancel(); pressed = false
-            if cur.her && tm > 0.5 && talk == nil && !ui.panelOpen && !ui.footprintOpen {          // touched and slid off her on the timeline: her cards come out at once, without the hold
+            if cur.her && tm > 0.5 && talk == nil && !pushedPage {          // touched and slid off her on the home: the field comes at once, without the hold
                 cur.kind = .hold; g = cur
-                ui.tl.openArc(holding: true); herDrive?.herEffect("ripple", now: nowMs()); ui.tl.arcFollow(p)
+                typeToHer()
                 return
             }
             if (talk != nil && voiceState == .idle) || mon > 0.5 || tm > 0.5 { cur.kind = .none; g = cur; return }       // a scripted talk drives the dial itself; his voice talk leaves it to his finger
@@ -208,7 +208,7 @@ extension StarEngine {
         if !ptr.isEmpty { return }
         g = nil; cur.timer?.cancel(); pressed = false
         if cur.kind == .lens { lensGoal = 0; sound(.close, 0.45); if cur.caught { letGo(0) }; return }
-        if cur.kind == .hold && tm > 0.5 { ui.tl.arcLetGo(engine: self, cancelled: cancelled); return }          // lifted on a card it is chosen; anywhere else the cards stay out for a tap
+        if cur.kind == .hold && tm > 0.5 { return }
         if cancelled { release?.fire(); if cur.kind == .drag { letGo(0) }; return }
         if cur.kind == .hold { release?.fire(); return }
         if cur.kind == .drag {

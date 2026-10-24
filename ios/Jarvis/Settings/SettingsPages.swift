@@ -25,6 +25,8 @@ struct SettingsMainPage: View {
     @Bindable var model: SettingsModel
     /// False while another page covers this one: the avatar then stops breathing.
     let isCurrent: Bool
+    /// the phone home's page: the line under her says how the brain stands, so the card that said it here is not drawn
+    var asPage = false
     var tuneNear: () -> Void = {}
     let push: (SettingsPage) -> Void
     /// The home-screen icon: the glass one (primary, AppIcon) or the flat one (the alternate AppIconFlat, project.yml).
@@ -41,11 +43,8 @@ struct SettingsMainPage: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            SetGroup { hero }
+            if !asPage { SetGroup { hero } }
             SetSection(header: "首页") {
-                SegmentedRow(title: "中间显示", options: ["星盘", "时间线"],
-                             selection: Binding(get: { HomeModule.shared.isTimeline ? 1 : 0 },
-                                                set: { HomeModule.shared.kind = $0 == 1 ? .timeline : .stars }))
                 SegmentedRow(title: "App 图标", options: ["玻璃", "平面"],
                              selection: Binding(get: { flatIcon ? 1 : 0 }, set: { pickIcon(flat: $0 == 1) }))
             }
@@ -109,7 +108,7 @@ struct SettingsMainPage: View {
             if !HomeModule.shared.isTimeline { SetSection { NavRow(label: "调整近景视角", action: tuneNear) } }       // the near view is the dial's
             Text(model.version).font(.footnote).foregroundStyle(SetColor.muted).padding(.top, 32)
         }
-        .padding(.top, 14)
+        .padding(.top, asPage ? 0 : 14)
         .padding(.bottom, 56)
         .onChange(of: isCurrent, initial: true) { _, now in if now { BrainLink.shared.ping(); LifelogUploader.shared.refresh(); Task { await model.refreshConversation() } } }
     }

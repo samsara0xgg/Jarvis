@@ -27,6 +27,27 @@ enum SetMotion {
     static func easeOut(_ duration: Double) -> Animation { .timingCurve(0.16, 1, 0.3, 1, duration: duration) }
 }
 
+/// 设置's line under her (跨端UI标准 §2): a dot and where the link to the brain stands. The dot is green while the brain answers, amber while the phone is not paired or pairing, red when a
+/// paired brain does not answer.
+struct BrainStatusLine: View {
+    private var link: BrainLink { BrainLink.shared }
+
+    var body: some View {
+        let w = Words.PhoneFrame.self
+        let (words, dot): (String, Color) = switch link.state {
+        case .paired: (w.brainConnected(latency: link.latencyMs.map { "\($0) ms" }), SetColor.mint)
+        case .pairing: (w.brainPairing, SetColor.color(240, 176, 79))
+        case .unpaired: (w.brainUnpaired, SetColor.color(240, 176, 79))
+        case .error: link.hasToken ? (w.brainOffline, SetColor.red) : (w.brainUnpaired, SetColor.color(240, 176, 79))
+        }
+        HStack(spacing: 6) {
+            Circle().fill(dot).frame(width: 6, height: 6)
+            Text(words).font(.system(size: Look.note)).foregroundStyle(Look.ink2).lineLimit(1)
+        }
+        .accessibilityElement(children: .combine)
+    }
+}
+
 /// A stroked polyline in a `box`-sized coordinate space (the prototype's small SVG icons).
 struct Polyline: Shape {
     let points: [(Double, Double)]
