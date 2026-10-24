@@ -3,18 +3,21 @@ import Foundation
 import os
 
 // One talk from the wrist, on the phone: the watch sends its microphone as 16 kHz mono Int16 data messages (`WatchWire.audio`), and this feeds them to the phone's own
-// recognizer (Voice/VoiceRecognizer.swift `DualRecognizer`, the two locales on the same audio). It ends the talk as the voice session does: 0.8 s with no new words and the
-// level under `quiet` (Voice/VoiceSession.swift). It starts nothing of the phone's voice (no microphone, no player). Called from WatchConnectivity's threads.
+// recognizer (Voice/VoiceRecognizer.swift `DualRecognizer`, the two locales on the same audio) and to Qwen through the brain (Voice/CloudHearing.swift, ADR 0404), whose
+// words, when they come, are the talk's. It ends the talk as the voice session does: 0.8 s with no new words of the phone's own and the level under `quiet`
+// (Voice/VoiceSession.swift). It starts nothing of the phone's voice (no microphone, no player). Called from WatchConnectivity's threads.
 
 final class WatchTalk: @unchecked Sendable {
     let id: UUID
     private let send: @Sendable (WatchTell) -> Void
     private let paused: @Sendable () -> Void
     private var rec: AnyObject?                     // a DualRecognizer (iOS 26), made in init and not changed
+    private let cloud: CloudStream
     private var ticker: Task<Void, Never>?
 
     private struct State {
         var text = ""
+        var cloudWords = ""                         // Qwen's so far: what the wrist is shown from the first of them
         var startedAt = WatchTalk.now, lastWordAt = WatchTalk.now, sentAt = 0.0
         var raw = 0.0, level = 0.0
         var chunks = 0, samples = 0
@@ -32,9 +35,12 @@ final class WatchTalk: @unchecked Sendable {
     static var canListen: Bool { if #available(iOS 26, *) { return true } else { return false } }
 
     /// `send` tells the wrist; `paused` says the talk reached its end by itself (a pause, or too long a silence)
-    init(id: UUID, send: @escaping @Sendable (WatchTell) -> Void, paused: @escaping @Sendable () -> Void) {
+    @MainActor init(id: UUID, send: @escaping @Sendable (WatchTell) -> Void, paused: @escaping @Sendable () -> Void) {
         self.id = id; self.send = send; self.paused = paused
+        cloud = CloudStream(keepSeconds: cap)       // the whole talk, until a line that hears is there
         if #available(iOS 26, *) { rec = DualRecognizer(onPartial: { [weak self] p in self?.heard(p.text) }) }
+        cloud.onWords = { [weak self] w in self?.cloudHeard(w) }
+        cloud.open()
         ticker = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 100_000_000)
@@ -60,6 +66,7 @@ final class WatchTalk: @unchecked Sendable {
         let level = min(1, max(0, (Double(db) + 55) / 45))
         state.withLock { $0.raw = max($0.raw, level); $0.chunks += 1; $0.samples += n }
         if #available(iOS 26, *) { (rec as? DualRecognizer)?.feed(buf) }
+        cloud.push(samples)
     }
 
     /// how many data messages and samples came, for the log
@@ -70,9 +77,21 @@ final class WatchTalk: @unchecked Sendable {
         let emit: String? = state.withLock { s in
             guard text != s.text else { return nil }
             s.text = text; s.lastWordAt = now
-            guard now - s.sentAt >= 0.2 else { return nil }          // about five a second
+            guard s.cloudWords.isEmpty, now - s.sentAt >= 0.2 else { return nil }          // about five a second
             s.sentAt = now
             return text
+        }
+        if let emit { send(.heard(talk: id, text: emit, final: false)) }
+    }
+
+    private func cloudHeard(_ words: String) {
+        let now = Self.now
+        let emit: String? = state.withLock { s in
+            guard !words.isEmpty, !s.ended, words != s.cloudWords else { return nil }
+            s.cloudWords = words
+            guard now - s.sentAt >= 0.2 else { return nil }
+            s.sentAt = now
+            return words
         }
         if let emit { send(.heard(talk: id, text: emit, final: false)) }
     }
@@ -94,15 +113,20 @@ final class WatchTalk: @unchecked Sendable {
         ticker?.cancel()
         state.withLock { $0.ended = true }
         var said = state.withLock { $0.text }
+        let cloud = self.cloud
+        async let heard = cloud.finish()
         if #available(iOS 26, *), let r = rec as? DualRecognizer {
             let t = await r.finish().picked.text.trimmingCharacters(in: .whitespacesAndNewlines)
             if !t.isEmpty { said = t }
         }
-        return said
+        let (words, engine) = await heard
+        VoiceTrace.note("watch talk heard by \(engine)")
+        return words ?? said
     }
 
     func cancel() {
         ticker?.cancel()
         if #available(iOS 26, *), let r = rec as? DualRecognizer { Task { await r.cancel() } }
+        Task { @MainActor [cloud] in cloud.cancel() }
     }
 }

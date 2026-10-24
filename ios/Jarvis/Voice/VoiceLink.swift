@@ -64,6 +64,9 @@ protocol VoiceLink: AnyObject {
     /// The host's answer to this utterance: the turn id (nil unless the verdict is "turn") and the verdict. `timeout` seconds without it throws `.timeout`.
     func say(utteranceId: String, text: String, language: VoiceLang?, confidence: Double?, spoken: Bool, overHer: Bool, conversation: Bool,
              about: [String: Any]?, attachments: [String], continues: String?, timeout: Double) async throws -> SayResult
+    /// the same, naming what heard spoken words (ADR 0404: `qwen`, or why not); a link that cannot say so sends the words alone
+    func say(utteranceId: String, text: String, language: VoiceLang?, confidence: Double?, spoken: Bool, overHer: Bool, conversation: Bool,
+             about: [String: Any]?, attachments: [String], continues: String?, asrEngine: String?, timeout: Double) async throws -> SayResult
     func barge()
     func cancel()
     /// what the player reports back (READY, REPORT, STATUS, DISCARD_ACK)
@@ -74,14 +77,20 @@ protocol VoiceLink: AnyObject {
 
 extension VoiceLink {
     func sendFrame(_ frame: PhoneFrame) {}
+
+    func say(utteranceId: String, text: String, language: VoiceLang?, confidence: Double?, spoken: Bool, overHer: Bool, conversation: Bool,
+             about: [String: Any]?, attachments: [String], continues: String?, asrEngine: String?, timeout: Double) async throws -> SayResult {
+        try await say(utteranceId: utteranceId, text: text, language: language, confidence: confidence, spoken: spoken, overHer: overHer,
+                      conversation: conversation, about: about, attachments: attachments, continues: continues, timeout: timeout)
+    }
 }
 
 extension VoiceLink {
     /// a say with no files, as the voice sends it; `continues` is the utterance id of his last spoken say when these words go on from it
     func say(utteranceId: String, text: String, language: VoiceLang?, confidence: Double?, spoken: Bool, overHer: Bool, conversation: Bool,
-             about: [String: Any]?, continues: String? = nil, timeout: Double) async throws -> SayResult {
+             about: [String: Any]?, continues: String? = nil, asrEngine: String? = nil, timeout: Double) async throws -> SayResult {
         try await say(utteranceId: utteranceId, text: text, language: language, confidence: confidence, spoken: spoken, overHer: overHer,
-                      conversation: conversation, about: about, attachments: [], continues: continues, timeout: timeout)
+                      conversation: conversation, about: about, attachments: [], continues: continues, asrEngine: asrEngine, timeout: timeout)
     }
 }
 
@@ -166,6 +175,7 @@ final class WebSocketVoiceLink: VoiceLink {
         task = nil
         ready = false
         generation += 1
+        CloudHearing.shared.down(self)
         for (_, p) in pending { p.c.resume(throwing: why) }
         pending = [:]
     }
@@ -201,8 +211,9 @@ final class WebSocketVoiceLink: VoiceLink {
 
     private func handle(_ f: HostFrame) {
         switch f {
-        case .ready(let d, let v, let r, let j):
+        case .ready(let d, let v, let r, let j, let h):
             ready = true
+            CloudHearing.shared.up(self, hears: h)
             VoiceTrace.note("ws ready \(Int((Date().timeIntervalSince1970 - openedAt) * 1000)) ms after opening")
             out.yield(.ready(device: d, voice: v, sampleRate: r, judges: j))
         case .said(let u, let turn, let verdict, let rec): VoiceTrace.note("ws said frame: \(verdict)"); pending.removeValue(forKey: u)?.c.resume(returning: (turn, verdict, rec))
@@ -210,6 +221,7 @@ final class WebSocketVoiceLink: VoiceLink {
         case .step(let f): out.yield(.step(f))
         case .reaction(let f): out.yield(.reaction(f))
         case .locate(let id): out.yield(.locate(requestId: id))
+        case .hear(let sid, let op, let text): CloudHearing.shared.receive(sid: sid, op: op, text: text)
         case .pong: break
         case .error("retry", _):                      // the host could not write it down: send the same say again
             Task { [weak self, mine = generation] in
@@ -229,7 +241,7 @@ final class WebSocketVoiceLink: VoiceLink {
     /// The host answers a refused file with an `error` frame that names no utterance: it is the say that carried files.
     private func failPending(withFiles why: LinkError) {
         for (id, p) in pending {
-            guard case .say(_, _, _, _, _, _, _, _, let files, _, _) = p.frame, !files.isEmpty else { continue }
+            guard case .say(_, _, _, _, _, _, _, _, let files, _, _, _) = p.frame, !files.isEmpty else { continue }
             pending.removeValue(forKey: id)
             p.c.resume(throwing: why)
         }
@@ -242,6 +254,12 @@ final class WebSocketVoiceLink: VoiceLink {
 
     func say(utteranceId: String, text: String, language: VoiceLang?, confidence: Double?, spoken: Bool, overHer: Bool, conversation: Bool,
              about: [String: Any]?, attachments: [String], continues: String?, timeout: Double) async throws -> SayResult {
+        try await say(utteranceId: utteranceId, text: text, language: language, confidence: confidence, spoken: spoken, overHer: overHer,
+                      conversation: conversation, about: about, attachments: attachments, continues: continues, asrEngine: nil, timeout: timeout)
+    }
+
+    func say(utteranceId: String, text: String, language: VoiceLang?, confidence: Double?, spoken: Bool, overHer: Bool, conversation: Bool,
+             about: [String: Any]?, attachments: [String], continues: String?, asrEngine: String?, timeout: Double) async throws -> SayResult {
         if task == nil { connect() }
         // Not sent before the host is there: a say queued on a socket still connecting reached the host after the phone had given
         // up on it, and opened a turn nobody was waiting for. The answer's clock starts once it is sent.
@@ -253,7 +271,7 @@ final class WebSocketVoiceLink: VoiceLink {
         let frame = PhoneFrame.say(utteranceId: utteranceId, text: text, language: language?.code, confidence: confidence, spoken: spoken,
                                    overHer: overHer, conversation: conversation,
                                    about: about.flatMap { try? JSONSerialization.data(withJSONObject: $0, options: [.sortedKeys]) }, attachments: attachments,
-                                   continues: continues, topic: TopicFollow.id)
+                                   continues: continues, topic: TopicFollow.id, asrEngine: asrEngine)
         return try await withCheckedThrowingContinuation { c in
             pending[utteranceId] = (c, frame)
             sendText(frame)

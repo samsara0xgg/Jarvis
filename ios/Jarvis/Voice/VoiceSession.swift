@@ -61,6 +61,8 @@ final class VoiceSession {
     @ObservationIgnored private let audio = VoiceAudio()
     @ObservationIgnored private let feed = Feed()
     @ObservationIgnored private var rec: AnyObject?                 // a DualRecognizer (iOS 26)
+    @ObservationIgnored private var cloud: CloudStream?             // the segment's audio for Qwen through the brain (ADR 0404), opened once it is his turn
+    @ObservationIgnored private var cloudWords = ""                 // Qwen's words so far for this segment: the caption from the first of them
     @ObservationIgnored private var segment = 0
     @ObservationIgnored private var herWords = ""          // what she said lately (rows' text), for telling her echo from him
     @ObservationIgnored private var judgedOverHer = ""     // the start of this segment's text already judged her echo
@@ -282,7 +284,13 @@ final class VoiceSession {
         let r = DualRecognizer(onDead: { [weak self] lang, both in Task { @MainActor in self?.laneDead(lang, both: both, id) } },
                                onPartial: { [weak self] p in Task { @MainActor in self?.heard(p, id) } })
         rec = r
-        feed.set(r)
+        cloud?.cancel()
+        let c = CloudStream(keepSeconds: 10)          // a wake word's phrase, from before it was recognized
+        c.onWords = { [weak self] w in self?.cloudHeard(w, id) }
+        cloud = c
+        cloudWords = ""
+        if state == .listening { c.open() }
+        feed.set(r, c)
         if let old { Task { await old.cancel() } }
         segmentText = ""
         judgedOverHer = ""; overHer = nil
@@ -294,6 +302,8 @@ final class VoiceSession {
     private func dropSegment() {
         segment += 1
         feed.set(nil)
+        cloud?.cancel(); cloud = nil
+        cloudWords = ""
         if #available(iOS 26, *), let old = rec as? DualRecognizer { Task { await old.cancel() } }
         rec = nil
         segmentText = ""
@@ -313,10 +323,17 @@ final class VoiceSession {
         if p.text != segmentText { lastWordAt = now }
         segmentText = p.text
         switch state {
-        case .listening: partial = p.text; language = p.lang; reply = ""   // he has started again: her last answer must not come back when he pauses
-        case .idle: if armed, heardWake(p.heard) { wakeTurn = true; language = p.lang; enterListening(); partial = p.text }
+        case .listening: partial = cloudWords.isEmpty ? p.text : cloudWords; language = p.lang; reply = ""   // he has started again: her last answer must not come back when he pauses
+        case .idle: if armed, heardWake(p.heard) { wakeTurn = true; language = p.lang; enterListening(); cloud?.open(); partial = p.text }
         case .thinking, .speaking: if held { partial = p.text } else { overHerWords(p.text) }
         }
+    }
+
+    /// Qwen's words so far for the segment (ADR 0404): while he talks they are the caption, from the first of them.
+    private func cloudHeard(_ words: String, _ id: Int) {
+        guard id == segment, state == .listening, !words.isEmpty else { return }
+        cloudWords = words
+        partial = words
     }
 
     /// Words while she talks: her own echo and nods are let through, a few words lower her voice, an interruption stops her.
@@ -348,6 +365,7 @@ final class VoiceSession {
         guard held, let r = rec as? DualRecognizer else { return }
         rec = nil
         feed.set(nil)
+        cloud?.cancel(); cloud = nil                        // words over her are the phone's own
         let seq = turnSeq
         Task {
             let (picked, _) = await r.finish()
@@ -477,6 +495,7 @@ final class VoiceSession {
         wakeTurn = false
         enterListening()
         if #available(iOS 26, *), rec == nil { startSegment() }
+        cloud?.open()                                       // the words he spoke over her are now his turn's
         partial = segmentText
     }
 
@@ -491,17 +510,23 @@ final class VoiceSession {
         playedAtSay = audio.core?.playedSamples ?? 0        // her earlier replies are not this turn's audio: thinking stays thinking until new audio plays
         rec = nil
         feed.set(nil)
+        let cloud = self.cloud
+        self.cloud = nil
         segment += 1                                        // the finishing recognizer's last partials are his own words, not words over her
         Task {
-            let (picked, _) = await r.finish()
-            gotFinal(picked, wakeTurn: wakeTurn)
+            async let local = r.finish()
+            let heard = await cloud?.finish() ?? (nil, "qwen_unavailable")
+            let (picked, _) = await local
+            gotFinal(picked, cloud: heard, wakeTurn: wakeTurn)
         }
     }
 
     @available(iOS 26, *)
-    private func gotFinal(_ picked: LaneResult, wakeTurn: Bool) {
+    private func gotFinal(_ picked: LaneResult, cloud: (words: String?, engine: String), wakeTurn: Bool) {
         guard state == .thinking else { VoiceTrace.note("final dropped: state \(state)"); return }   // cancelled meanwhile
-        var text = (wakeTurn ? stripWake(picked.text) : picked.text).trimmingCharacters(in: .whitespacesAndNewlines)
+        let words = cloud.words ?? picked.text                // Qwen's, else the phone's own (ADR 0404)
+        VoiceTrace.note("heard by \(cloud.engine): \(words.count) chars")
+        var text = (wakeTurn ? stripWake(words) : words).trimmingCharacters(in: .whitespacesAndNewlines)
         text = afterJudged(text, judgedOverHer).trimmingCharacters(in: .whitespacesAndNewlines)   // her echo or a nod before his words
         if !text.isEmpty, isOwnEcho(text, herRecent(since: startedAt)) { VoiceTrace.note("final was her own echo: dropped"); text = "" }
         if text.isEmpty {
@@ -517,13 +542,13 @@ final class VoiceSession {
         let conversation = hostJudges && inConversation
         if commandSaid == .stop || commandSaid == .wait { audio.core?.stopNow(); if !conversation { link?.cancel() } }   // a judged say lets the host stop her
         playedAtSay = audio.core?.playedSamples ?? 0
-        say(text, lang: picked.lang, confidence: picked.confidence, spoken: true, conversation: conversation)
+        say(text, lang: picked.lang, confidence: picked.confidence, spoken: true, conversation: conversation, asrEngine: cloud.engine)
         startSegment()                                      // listening for him to interrupt
     }
 
     /// Send the words and start following the turn the host opens for them.
     private func say(_ text: String, lang: VoiceLang?, confidence: Double?, spoken: Bool, utteranceId: String = UUID().uuidString, conversation: Bool = false,
-                     continues: String? = nil) {
+                     continues: String? = nil, asrEngine: String? = nil) {
         endTurn()
         awaitingSaid = true
         typedTurn = !spoken
@@ -537,11 +562,11 @@ final class VoiceSession {
         Task {
             do {
                 var r: SayResult
-                do { r = try await PhoneLink.shared.say(utteranceId: utteranceId, text: text, language: lang, confidence: confidence, spoken: spoken, overHer: false, conversation: conversation, about: AboutNow.current?.json, continues: continues, timeout: conversation ? judgeTimeout : 10) }
+                do { r = try await PhoneLink.shared.say(utteranceId: utteranceId, text: text, language: lang, confidence: confidence, spoken: spoken, overHer: false, conversation: conversation, about: AboutNow.current?.json, continues: continues, asrEngine: asrEngine, timeout: conversation ? judgeTimeout : 10) }
                 catch LinkError.timeout where conversation {
                     VoiceTrace.note("judge timed out: turn")
                     guard seq == turnSeq else { return }
-                    r = try await PhoneLink.shared.say(utteranceId: utteranceId, text: text, language: lang, confidence: confidence, spoken: spoken, overHer: false, conversation: false, about: AboutNow.current?.json, continues: continues, timeout: 10)
+                    r = try await PhoneLink.shared.say(utteranceId: utteranceId, text: text, language: lang, confidence: confidence, spoken: spoken, overHer: false, conversation: false, about: AboutNow.current?.json, continues: continues, asrEngine: asrEngine, timeout: 10)
                 }
                 guard seq == turnSeq else { return }
                 if conversation {
@@ -764,11 +789,14 @@ final class VoiceSession {
     }
 }
 
-/// Hands the microphone's buffers to the current recognizer from the audio thread.
+/// Hands the microphone's buffers to the current recognizer, and to Qwen's stream as 16 kHz Int16, from the audio thread.
 private final class Feed: @unchecked Sendable {
-    private let lock = OSAllocatedUnfairLock<AnyObject?>(initialState: nil)
-    func set(_ r: AnyObject?) { lock.withLock { $0 = r } }
+    private let lock = OSAllocatedUnfairLock<(rec: AnyObject?, cloud: CloudStream?)>(initialState: (nil, nil))
+    private let down = HearDownsampler()           // the audio thread's only
+    func set(_ r: AnyObject?, _ c: CloudStream? = nil) { lock.withLock { $0 = (r, c) } }
     func feed(_ b: AVAudioPCMBuffer) {
-        if #available(iOS 26, *) { (lock.withLock { $0 } as? DualRecognizer)?.feed(b) }
+        let (rec, cloud) = lock.withLock { $0 }
+        if #available(iOS 26, *) { (rec as? DualRecognizer)?.feed(b) }
+        if let cloud, let pcm = down.pcm(b) { cloud.push(pcm) }
     }
 }

@@ -219,6 +219,7 @@ def build_phone_hub(
             None if runtime.memory is None
             else functools.partial(resolve_topic, runtime.memory.db_path)
         ),
+        hearing=None if runtime.terminal_hub is None else runtime.terminal_hub.hearing,
     )
     if runtime.locator is not None:
         # ADR 0281: a phone with a live conversation socket is asked for a fix over it.

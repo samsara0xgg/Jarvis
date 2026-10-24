@@ -278,7 +278,7 @@ class BrainEvents:
             "folded": [*(folded if isinstance(folded, list) else []), earlier_uid],
         }
 
-    def record_phone_say(  # noqa: C901, PLR0913 - the fields of one `say` frame
+    def record_phone_say(  # noqa: C901, PLR0912, PLR0913 - the fields of one `say` frame
         self,
         device: str,
         utterance_id: str,
@@ -292,6 +292,7 @@ class BrainEvents:
         continues: str | None = None,
         voiceprint: Mapping[str, Any] | None = None,
         topic: str | None = None,
+        asr_engine: str | None = None,
     ) -> str:
         """Append the words a paired phone sent (ADR 0209), once; the turn id they open.
 
@@ -310,6 +311,7 @@ class BrainEvents:
         :meth:`continued_words`). ``voiceprint`` (ADR 0286) is the brain's score of the spoken
         words, kept on the row as :meth:`record_utterance` keeps it. ``topic`` (ADR 0390) is the
         listed topic the words were sent from, already resolved, kept on the opening row.
+        ``asr_engine`` (ADR 0404) is what heard spoken words, kept on their row.
 
         Raises:
             ValueError: a field is missing or has the wrong shape, ``about`` included.
@@ -346,6 +348,8 @@ class BrainEvents:
                 payload.update(continued)
             if voiceprint is not None:
                 payload["voiceprint"] = dict(voiceprint)
+            if asr_engine is not None:
+                payload["asr_engine"] = asr_engine
         else:
             payload["channel"] = _PHONE_TYPED_CHANNEL
             payload["language"] = language or _PHONE_TYPED_LANGUAGE

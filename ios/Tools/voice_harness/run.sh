@@ -8,7 +8,7 @@ mkdir -p "$here/.build/tmp"
 export TMPDIR="$here/.build/tmp"
 swiftc -D VOICE_HARNESS -module-cache-path "$here/.build/modules" \
   "$voice/VoiceCore.swift" "$voice/VoiceWire.swift" "$voice/PlayerCore.swift" "$voice/VoiceRecognizer.swift" \
-  "$voice/VoiceLink.swift" "$voice/VoiceStub.swift" "$voice/VoiceTrace.swift" "$here/main.swift" \
+  "$voice/VoiceLink.swift" "$voice/CloudHearing.swift" "$voice/VoiceStub.swift" "$voice/VoiceTrace.swift" "$here/main.swift" \
   -o "$here/.build/voice_harness"
 
 host=/Users/alllllenshi/Projects/jarvis

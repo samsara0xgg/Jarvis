@@ -10,16 +10,24 @@ from __future__ import annotations
 
 # ruff: noqa: SLF001 - the VAD's thresholds are set where the hybrid's caption test sets them
 import base64
+import functools
 import json
 from dataclasses import replace
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
 import pytest
+from fastapi.testclient import TestClient
 
-from jarvis.state.device_tokens import pair_device
+from jarvis.runtime.daemon import output_watchers
+from jarvis.state.device_tokens import device_name_for_token, pair_device
 from jarvis.state.event_log import open_event_log
 from jarvis.surface import voice_audio, voice_pipeline, voice_session
+from jarvis.surface.inherent_output import InherentBroadcaster
+from jarvis.surface.inherent_server.app import create_app
+from jarvis.surface.inherent_server.deps import InherentDeps
+from jarvis.surface.phone_link import PHONE_PATH, PhoneHub
+from jarvis.surface.terminal_events import BrainEvents
 from jarvis.surface.terminal_hearing import (
     FRAME_BYTES,
     BrainHearing,
@@ -28,6 +36,7 @@ from jarvis.surface.terminal_hearing import (
     RemoteHearing,
 )
 from tests.support.hearing import FakeQwen, HearingBench, SenseVoiceStandIn
+from tests.support.phone import voice_log
 from tests.support.terminal import TERMINAL_WS, bearer, brain_client, hello_frame
 from tests.support.voice_input import (
     FakeBackend,
@@ -80,6 +89,52 @@ def test_a_stream_over_the_real_socket_comes_back_as_qwens_words(tmp_path: Path)
     [task] = qwen.tasks
     assert task.parameters["vocabulary"] == {"Jarvis": 4}  # a two-letter term is left out
     assert task.audio == b"135E"
+
+
+@pytest.mark.parametrize("hears", [True, False])
+def test_a_phone_hears_through_its_own_socket_and_its_say_keeps_the_engine(
+    tmp_path: Path, *, hears: bool,
+) -> None:
+    """ADR 0404: ``/phone/ws`` carries the same frames to the same hearing; rows keep the engine.
+
+    ``ready`` says ``hear`` only when the brain has Qwen; a spoken ``say`` names what heard it.
+    """
+    qwen = FakeQwen()
+    conn = voice_log(tmp_path / "events.db")
+    app = create_app(InherentDeps(
+        submit_callable=lambda _text: "T1",
+        broadcaster=InherentBroadcaster(),
+        phone=PhoneHub(
+            events=BrainEvents(conn), rows=output_watchers.PhoneRows(conn),
+            hearing=BrainHearing(QwenEars("key", connect=qwen.connect)) if hears else None,
+        ),
+        device_name=functools.partial(device_name_for_token, tmp_path),
+    ))
+    client = TestClient(app)
+    headers = bearer(pair_device(tmp_path, "iphone"))
+    with client.websocket_connect(PHONE_PATH, headers=headers) as ws:
+        ws.send_json({"type": "hello", "voice": False})
+        assert ws.receive_json()["hear"] is hears
+        if hears:
+            for frame in (
+                {"op": "open", "terms": ["Jarvis"]},
+                {"op": "audio", "pcm": base64.b64encode(b"135E").decode()},
+                {"op": "finish"},
+            ):
+                ws.send_json({"type": "hear", "sid": SID, **frame})
+            assert ws.receive_json() == {"type": "hear", "sid": SID, "op": "text", "text": "135E"}
+            assert ws.receive_json() == {"type": "hear", "sid": SID, "op": "done", "text": "135E"}
+        ws.send_json({
+            "type": "say", "utterance_id": "u1", "text": "135E", "spoken": True,
+            "asr_engine": "qwen" if hears else "qwen_unavailable",
+        })
+        assert ws.receive_json()["type"] == "said"
+    [(engine,)] = conn.execute(
+        "SELECT json_extract(payload_json, '$.asr_engine') FROM events "
+        "WHERE type = 'utterance.received'",
+    ).fetchall()
+    assert engine == ("qwen" if hears else "qwen_unavailable")
+    assert [task.audio for task in qwen.tasks] == ([b"135E"] if hears else [])
 
 
 def _heard(

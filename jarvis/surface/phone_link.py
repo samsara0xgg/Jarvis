@@ -1,6 +1,7 @@
 """ADR 0209: a paired phone's conversation socket, ``/phone/ws``.
 
-The phone recognizes Allen's words itself and sends text; it plays her voice as the host's
+The phone sends Allen's words as text, heard by Qwen through this socket when the host hears
+(ADR 0404) and by its own recognizer otherwise; it plays her voice as the host's
 native player, the ADR 0129 frames over this socket instead of a pipe
 (:mod:`jarvis.surface.phone_player`). Only a paired device's token opens it, as on
 ``POST /inherent/device/events``: the local key is refused. One connection per device is live;
@@ -10,9 +11,10 @@ a newer one replaces the older (the older is closed with code 4000).
 
     phone -> host   {"type": "hello", "voice": true}
     host -> phone   {"type": "ready", "device": "<paired name>", "voice": true,
-                     "sample_rate": 32000, "judges": true}
+                     "sample_rate": 32000, "judges": true, "hear": true}
+    phone <-> host  {"type": "hear", "sid": "<32 hex>", "op": "open" | "audio" | ...}
     phone -> host   {"type": "say", "utterance_id": "<1-64 of A-Za-z0-9_->", "text": "...",
-                     "spoken": true, "language": "en", "confidence": 0.93,
+                     "spoken": true, "language": "en", "confidence": 0.93, "asr_engine": "qwen",
                      "about": {"kind": "reminder", "id": "...", "title": "...", "start_ms": 0},
                      "over_her": true, "conversation": false, "continues": "<utterance_id>",
                      "attachments": ["<id from POST /inherent/attachments>"], "topic": "t3"}
@@ -139,6 +141,13 @@ and gives up waiting after a few seconds (``locate.socket_wait_s``), so a late a
 location report. A ``located`` that is malformed is answered ``error bad_located``. A phone
 with no live socket is asked by a background push instead (the push section of the spec).
 
+**Qwen hears the phone (ADR 0404).** ``hear`` in ``ready`` is true when the host has Qwen's key;
+the phone then streams each utterance it hears in ``hear`` frames, the very frames and the same
+:class:`~jarvis.surface.terminal_hearing.BrainHearing` a voice terminal uses on ``/terminal/ws``
+(ADR 0400), and its watch's talks too. A spoken ``say`` may carry ``asr_engine``, as a
+terminal's utterance does (``qwen``, or why not: ``qwen_unavailable``, ``qwen_timeout``,
+``qwen_error``, ``qwen_empty``), kept on the row; one that is not a short word is ignored.
+
 **Binary frames** carry the player protocol, one WebSocket message per frame:
 :mod:`jarvis.surface.phone_player` has the layouts. After ``ready`` with ``voice: true`` the
 phone sends READY (its audio session is up); the host speaks nothing before it.
@@ -182,6 +191,7 @@ if TYPE_CHECKING:
     from jarvis.state.voiceprint import Scored, VoiceprintBook
     from jarvis.surface.phone_player import PhoneAudioStreamPlayer
     from jarvis.surface.terminal_events import BrainEvents
+    from jarvis.surface.terminal_hearing import BrainHearing
     from jarvis.surface.terminal_voice import RowCursor
 
 LOGGER = logging.getLogger("jarvis.surface.phone_link")
@@ -196,6 +206,7 @@ REPLACED_CLOSE_CODE: Final = 4000
 _REPLACE_WAIT_S: Final = 5.0
 _RECENT_TURNS: Final = 8
 _ID: Final = re.compile(r"[A-Za-z0-9_-]{1,64}")
+_ENGINE: Final = re.compile(r"[a-z_]{1,32}")
 
 
 class PhoneVoice(Protocol):
@@ -289,6 +300,9 @@ class PhoneHub:
 
     ``resolve_topic(topic_id)`` (ADR 0390) is the id of the listed topic a ``say``'s ``topic``
     names now, or ``None``; ``None`` is a host that keeps no topics.
+
+    ``hearing`` (ADR 0404) is the brain's Qwen, shared with the voice terminals; ``None`` is a
+    host that does not hear, and the phone's own recognizer writes its words.
     """
 
     events: BrainEvents
@@ -307,6 +321,7 @@ class PhoneHub:
     pick_earlier: Callable[[str, str, str], str | None] | None = None
     check_attachments: Callable[[Sequence[str]], object] | None = None
     resolve_topic: Callable[[str], str | None] | None = None
+    hearing: BrainHearing | None = None
     live: dict[str, _Connection] = field(default_factory=dict)
 
     def connected(self, device: str) -> bool:
@@ -356,6 +371,11 @@ class _Connection:
         """Queue a control frame; call from the loop thread."""
         if not self._closed:
             self.outbox.put_nowait(json.dumps(frame, ensure_ascii=False))
+
+    async def send_text(self, text: str) -> None:
+        """Queue a frame already written as JSON; the loop thread's, as the hearing sends."""
+        if not self._closed:
+            self.outbox.put_nowait(text)
 
     def send_binary(self, data: bytes) -> bool:
         """Queue a binary frame from any thread; False once the connection is gone."""
@@ -445,10 +465,13 @@ async def serve_phone(hub: PhoneHub, ws: WebSocket, device: str) -> None:
                 LOGGER.exception("phone %s: the voice pipeline could not be built", device)
         streaming = asyncio.create_task(_stream_rows(hub, conn))
         LOGGER.info("phone %s: connected (voice=%s)", device, conn.voice is not None)
+        if hub.hearing is not None:
+            hub.hearing.warm()
         conn.send_json(
             {
                 "type": "ready", "device": device, "voice": conn.voice is not None,
                 "sample_rate": PHONE_SAMPLE_RATE_HZ, "judges": True,
+                "hear": hub.hearing is not None,
             },
         )
         await _receive(hub, conn)
@@ -464,6 +487,8 @@ async def _end(
 ) -> None:
     """Stop everything one connection started, then let a replacing connection go on."""
     conn.mark_closed()
+    if hub.hearing is not None:
+        await hub.hearing.detach(conn)
     if conn.voice is not None:
         conn.voice.player.connection_lost()
     for task in [pump, *([streaming] if streaming else []), *conn.tasks]:
@@ -566,6 +591,8 @@ def _control(hub: PhoneHub, conn: _Connection, text: str) -> None:
     kind = frame.get("type") if isinstance(frame, dict) else None
     if kind == "say":
         _say(hub, conn, frame)
+    elif kind == "hear" and hub.hearing is not None:
+        hub.hearing.on_frame(conn, conn.send_text, frame)
     elif kind == "ping":
         t_ns = frame.get("t_ns")
         if type(t_ns) is not int:
@@ -640,6 +667,7 @@ class _Say:
     continues: str | None = None
     voiceprint: Voiceprint | None = None
     topic: str | None = None
+    asr_engine: str | None = None
 
     @property
     def judged(self) -> bool:
@@ -691,8 +719,14 @@ def _say(hub: PhoneHub, conn: _Connection, frame: dict[str, Any]) -> None:
         continues if spoken and continues != utterance_id else None,  # typed words never continue
         Voiceprint.parse(frame.get("voiceprint")) if spoken else None,
         topic,
+        _asr_engine(frame.get("asr_engine")) if spoken else None,
     )
     _route_say(hub, conn, say)
+
+
+def _asr_engine(engine: object) -> str | None:
+    """What heard a spoken ``say`` (ADR 0404), when the phone says so in a short word."""
+    return engine if isinstance(engine, str) and _ENGINE.fullmatch(engine) else None
 
 
 def _listed_topic(hub: PhoneHub, topic: object) -> str | None:
@@ -841,7 +875,7 @@ def _record_say(
             conn.device, say.utterance_id, say.text, spoken=say.spoken, language=say.language,
             confidence=say.confidence, about=say.about, attachments=say.attachments,
             continues=continues, voiceprint=None if scored is None else scored.payload(),
-            topic=say.topic,
+            topic=say.topic, asr_engine=say.asr_engine,
         )
     except ValueError as exc:
         LOGGER.warning("phone %s: say refused: %s", conn.device, exc)
