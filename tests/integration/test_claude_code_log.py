@@ -303,6 +303,7 @@ def test_a_snapshot_is_left_to_its_live_twin_and_otherwise_ships_itself_once(rig
     _put(keep / "a-projects" / "p" / "torn.jsonl", _line(3) + b'{"never-ended')
     _put(keep / "a-jobs" / "j1" / "transcript.jsonl", _line(7))
     _put(keep / "a-jobs" / "j1" / "has space.py", b"x = 1\n")
+    _put(keep / "a-jobs" / "j1" / "tmp" / "repo" / "vendored.py", b"x = 2\n")
     trees = (Tree("a", keep / "a-projects", "projects"), Tree("a", keep / "a-jobs", "jobs-archive"))
     config = CodeLogConfig((Tree("a", rig.a),), trees, max_pieces=1)
     shipper = rig.shipper(config)
@@ -323,6 +324,7 @@ def test_a_snapshot_is_left_to_its_live_twin_and_otherwise_ships_itself_once(rig
     assert rig.names("a/mac/jobs-archive/j1/transcript.jsonl") == [code_log.piece_name(0, _line(7))]
     assert state.meta(KEPT + str(keep / "a-projects")) is not None
     assert state.meta(KEPT + str(keep / "a-jobs")) is not None
+    assert not rig.held("a/mac/jobs-archive/j1/tmp").exists()
 
     _put(keep / "a-projects" / "p" / "late.jsonl", _line(8))
     shipper.poll(T0 * 1000 + 10 * MIN)

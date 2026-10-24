@@ -1,9 +1,10 @@
 """Every Claude Code transcript file of both accounts, shipped raw as pieces (ADR 0387).
 
 A pass walks ``projects/`` and ``history.jsonl`` of each account's config directory (links are
-not followed) and, until each is done, the snapshot folders kept on 2026-10-23. A ``.jsonl`` file
-ships its new whole lines, cut by :func:`jarvis.state.code_log.line_cut`; any other file ships
-whole once it has been quiet ``QUIET_MS``. A piece goes to
+not followed, nor any ``tmp/`` folder) and, until each is done, the snapshot folders kept on
+2026-10-23. A ``.jsonl`` file ships its new whole lines, cut by
+:func:`jarvis.state.code_log.line_cut`; any other file ships whole once it has been quiet
+``QUIET_MS``. A piece goes to
 ``claude-code-log/files/<account>/mac/<path in the config directory>/<piece>`` and the file's
 cursor moves only after the brain's digest matches; a file written anew (shorter than its cursor,
 or its first or last shipped bytes changed) starts again at 0. The files whose stat differs from
@@ -36,6 +37,9 @@ EDGE_BYTES: Final = 4096
 """How much of a file's start, and of what comes before its cursor, proves it was not rewritten."""
 PROJECTS: Final = "projects"
 HISTORY: Final = "history.jsonl"
+SCRATCH: Final = "tmp"
+"""A folder by this name is not entered: a background job's scratch copies of repositories and
+caches, not records."""
 KEPT: Final = "code-log-kept:"
 """``meta`` key prefix of a snapshot folder that is done."""
 
@@ -148,7 +152,7 @@ def _walk(tree: Tree, report: Report) -> Iterator[tuple[str, Path, os.stat_resul
         if not stat_mode.S_ISDIR(top.st_mode):
             continue
         for folder, dirs, files in os.walk(start):  # a link to a folder is listed, not entered
-            dirs.sort()
+            dirs[:] = sorted(d for d in dirs if d != SCRATCH)
             for file in sorted(files):
                 path = Path(folder) / file
                 try:
