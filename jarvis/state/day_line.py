@@ -810,7 +810,8 @@ def _code_items(
                 f.get("custom_title"), f.get("desktop_title"), f.get("ai_title"),
                 f.get("agent_name"),
             ),
-            "project": PurePosixPath(f.get("git_toplevel") or f.get("cwd") or "").name,
+            "project": _project(f),
+            "prompts": int(f.get("user_prompts") or 0),
             "account": f["account"],
             "session_id": f["session_id"],
         }
@@ -818,6 +819,17 @@ def _code_items(
             item["detail"] = recap
         items.append(item)
     return items
+
+
+def _project(fields: dict[str, Any]) -> str:
+    """A session's project: its repo's name on its remote, else its repo's or folder's name.
+
+    A worktree's folder is named for the task (``bridge-cse_…``); its remote names the project.
+    """
+    origin = str(fields.get("git_origin") or "").rstrip("/")
+    if name := origin.rsplit("/", 1)[-1].rsplit(":", 1)[-1].removesuffix(".git"):
+        return name
+    return PurePosixPath(fields.get("git_toplevel") or fields.get("cwd") or "").name
 
 
 def _away_items(
