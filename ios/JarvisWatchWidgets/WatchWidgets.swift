@@ -3,7 +3,10 @@ import WidgetKit
 
 @main
 struct JarvisWatchWidgets: WidgetBundle {
-    var body: some Widget { HerComplication() }
+    var body: some Widget {
+        HerComplication()
+        if #available(watchOS 26.0, *) { TalkToHerControl() }
+    }
 }
 
 struct DayEntry: TimelineEntry {

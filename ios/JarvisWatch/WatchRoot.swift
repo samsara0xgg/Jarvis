@@ -83,11 +83,9 @@ struct WatchRoot: View {
             try? await Task.sleep(for: .seconds(t.timeIntervalSinceNow))
             if !Task.isCancelled { WatchHaptics.play(.leave) }
         }
-        .onOpenURL { url in
-            guard url.scheme == "jarvis-watch" else { return }
-            if url.host == "talk" { page = .home; model.startTalk() }
-            if url.host == "mark", WatchSettings.markReady { mark() }
-        }
+        .onOpenURL { url in if url.scheme == "jarvis-watch", let host = url.host { request(host) } }
+        .onReceive(NotificationCenter.default.publisher(for: HerRequest.notification)) { _ in takeRequest() }
+        .onAppear { takeRequest() }
     }
 
     private func stage(_ card: WatchCard?, now: Date) -> some View {
@@ -226,6 +224,17 @@ struct WatchRoot: View {
     private func openCard(_ id: String) {
         queue.removeAll { $0 == id }
         queue.insert(id, at: 0)
+    }
+
+    /// what the complication's link or a Control Center key asks for: `talk`, her listening; `mark`, 标一下
+    private func request(_ what: String) {
+        if what == "talk" { page = .home; model.startTalk() }
+        if what == "mark", WatchSettings.markReady { mark() }
+    }
+    private func takeRequest() {
+        guard let r = HerRequest.pending else { return }
+        HerRequest.pending = nil
+        request(r)
     }
 
     /// 标一下: the phone marks what covers this moment, and its answer comes up as a card

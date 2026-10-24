@@ -42,6 +42,8 @@ extension Words {
         static var yes: String { pick(zh: "对", en: "Yes") }
         static var no: String { pick(zh: "不是", en: "No") }
 
+        /// the Control Center key that opens her listening
+        static var talkToHer: String { pick(zh: "跟她说", en: "Talk to her") }
         /// 标一下: its entry, and its card (`标好了 · 21:30–`, `这一刻记下了`, what was marked, 撤销 and 好了)
         static var mark: String { pick(zh: "标一下", en: "Mark this") }
         static func markedAt(_ when: String) -> String { pick(zh: "标好了 · \(when)", en: "Marked · \(when)") }

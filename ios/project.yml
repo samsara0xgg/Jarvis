@@ -147,6 +147,7 @@ targets:
       - Jarvis/App/Words.swift
       - Jarvis/App/Words+Watch.swift
       - JarvisWatchWidgets/ComplicationViews.swift   # the gallery of complications (debug) draws the complications' own views
+      - JarvisWatchWidgets/WatchControls.swift       # the Control Center keys' intent opens the app, so it is in the app too
       - Jarvis/App/Words+WatchLink.swift
     dependencies:
       - target: JarvisWatchWidgets
