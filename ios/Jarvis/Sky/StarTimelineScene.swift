@@ -288,6 +288,7 @@ extension StarEngine {
             FootprintScript(seconds: 20) { f in FootprintHooks.scrub?(f.map { $0 * TLLayout.barW }) }.run(after: 2)
         case "放":
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { FootprintHooks.play?() }
+        case "来回": DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [self] in sceneRounds() }          // her card over his day on the map
         case "开":
             let want = parts.count > 2 ? parts[2] : "0"
             let pick = reply.outings.first { $0.id == want } ?? Int(want).flatMap { reply.outings.indices.contains($0) ? reply.outings[$0] : nil }
@@ -361,18 +362,9 @@ extension StarEngine {
             if parts.count > 2, parts[2] == "跟" {          // a topic followed to its last place: those turns lit, the bar over the field
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) { [self] in goTrail(ChatTrail(name: "这周的安排", places: [.init(recordId: "rec-3"), .init(recordId: "rec-7")], at: 1), to: 1) }
             }
-        case "来回":                                                               // three rounds on one page: her card grows into a small dialog (`:来回:地图`, `:来回:设置` on those pages)
-            if parts.count > 2 { DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [self] in showPage(parts[2] == "地图" ? .map : .settings) } }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [self] in
-                beginTalk()
-                addTurn(his: true, "今天走了多少步", heard: true)
-                addTurn(his: false, "9,630 步，比平时多一点。晚上那段跑步占了一半。")
-                addTurn(his: true, "陶艺课是几点来着", heard: true)
-                addTurn(his: false, "今晚 22:00，Studio 4。邮件里让你回复确认，你还没回。")
-                addTurn(his: true, "那帮我回一下", heard: true)
-                addTurn(his: false, "好，回好了：确认今晚 22:00 到。")
-                tlUntil = nowMs() + TLTalk.stay; lingerUntil = tlUntil          // her answer is all there: it stays until he does something else
-            }
+        case "来回":                                                               // three rounds on one page: her card grows into a small dialog (`:来回:设置` on that page; the map's is `-scene 足迹:来回`)
+            if parts.count > 2 { DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [self] in showPage(.settings) } }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [self] in sceneRounds() }
         case "飘":          // her drift, without the wait for it
             if let k = Int(parts.count > 2 ? parts[2] : ""), TLSeat.perches.indices.contains(k) {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [self] in wander = (TLSeat.perches[k], nowMs() + 60_000) }
@@ -584,6 +576,18 @@ extension StarEngine {
     }
 
     /// A day and a half of talk as the conversation's page shows it: yesterday evening, this morning, lunch with a written answer, and a moment ago.
+    /// three rounds of a spoken talk, her answers all there: her card as a small dialog
+    private func sceneRounds() {
+        beginTalk()
+        addTurn(his: true, "今天走了多少步", heard: true)
+        addTurn(his: false, "9,630 步，比平时多一点。晚上那段跑步占了一半。")
+        addTurn(his: true, "陶艺课是几点来着", heard: true)
+        addTurn(his: false, "今晚 22:00，Studio 4。邮件里让你回复确认，你还没回。")
+        addTurn(his: true, "那帮我回一下", heard: true)
+        addTurn(his: false, "好，回好了：确认今晚 22:00 到。")
+        tlUntil = nowMs() + TLTalk.stay; lingerUntil = tlUntil          // her answer is all there: it stays until he does something else
+    }
+
     private func talkPageRounds(_ cal: Cal) {
         let now = Date()
         func row(_ seq: Int, _ his: Bool, _ ago: Double, _ text: String) -> ConversationRow {

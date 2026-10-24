@@ -63,7 +63,8 @@ final class PageShots: XCTestCase {
     }
 
     func testCardMap() {
-        _ = open("时间线:来回:地图")
+        _ = open("足迹:来回")
+        sleep(2)
         shot("9-card-map")
     }
 
