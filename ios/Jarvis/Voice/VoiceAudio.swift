@@ -9,6 +9,7 @@ import AVFoundation
 final class VoiceAudio {
     private(set) var core: PlayerCore?
     private var source: AVAudioSourceNode?
+    private var cuePlayer: AVAudioPlayerNode?
     private var tapFormat: AVAudioFormat?
     private var engine = AVAudioEngine()
     private var timer: DispatchSourceTimer?
@@ -95,6 +96,11 @@ final class VoiceAudio {
         engine.attach(src)
         source = src
         engine.connect(src, to: engine.mainMixerNode, format: fmt)
+        // the UI cues (Sound/Sound.swift) play through this engine while it runs: out of the voice-processed output, so the echo
+        // canceller hears them and the microphone does not take them for him
+        let cue = AVAudioPlayerNode()
+        engine.attach(cue)
+        engine.connect(cue, to: engine.mainMixerNode, format: Sound.cueFormat)
         tapFormat = inFmt
         input.installTap(onBus: 0, bufferSize: 2048, format: inFmt) { [weak self] buf, _ in
             guard let mono = monoFloat(buf) else { return }
@@ -103,6 +109,9 @@ final class VoiceAudio {
         }
         engine.prepare()
         try engine.start()
+        cue.play()
+        cuePlayer = cue
+        Sound.shared.route(through: cue)
         self.core = core
         tookFrom = other
         running = true
@@ -124,8 +133,10 @@ final class VoiceAudio {
         running = false
         timer?.cancel(); timer = nil
         observers.forEach(NotificationCenter.default.removeObserver); observers = []
-        let engine = engine, source = source, other = tookFrom
+        Sound.shared.route(through: nil)
+        let engine = engine, source = source, cue = cuePlayer, other = tookFrom
         self.source = nil
+        cuePlayer = nil
         core = nil
         tookFrom = nil
         // the recorder takes the microphone over: the app stays awake until it has (in the background iOS would freeze it in between)
@@ -135,6 +146,7 @@ final class VoiceAudio {
             engine.inputNode.removeTap(onBus: 0)
             engine.stop()
             if let source { engine.detach(source) }
+            if let cue { engine.detach(cue) }
             // the recorder, if the switch is on, takes the session and the microphone over; otherwise the session is let go, and an app
             // it was taken from is told it may go on (the recorder then waits for that app too)
             if !LifelogMic.shared.voiceStopped(otherWaiting: other != nil) {
