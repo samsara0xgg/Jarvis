@@ -938,7 +938,14 @@ def _interaction_line(packet: SituationPacket, ctx: DecideContext) -> str | None
     # system prompt says once what spoken and typed words are. A typed turn takes the spoken route
     # and the same reply shape, but is never played (ADR 0181).
     device = ctx.turn_device
-    if channel == TYPED_CHANNEL:
+    if channel == TYPED_CHANNEL and packet.trigger_event.payload.get("via") == "watch":
+        # ADR 0401: the phone heard his watch and asked for it; the answer goes back as text.
+        relay = f", relayed by {device}" if device else ""
+        line = (
+            f"This turn: spoken to his watch{relay}; your answer is shown on the watch, not read"
+            f" aloud.\n{_MISHEARD}"
+        )
+    elif channel == TYPED_CHANNEL:
         line = (
             f"This turn: typed on {device}; your answer is shown there, not read aloud."
             if device else "This turn: typed; your answer is shown as text, not read aloud."

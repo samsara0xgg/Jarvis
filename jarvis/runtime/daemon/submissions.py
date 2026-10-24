@@ -108,15 +108,16 @@ def submit_text_v2(
             inner_conn.close()
 
 
-def submit_with_attachments(
+def submit_with_attachments(  # noqa: PLR0913 - the phone message's fields, as `say` has them.
     event_log_path: Path, text: str, attachment_ids: Sequence[str], *, device: str = MAC_NODE,
-    about: dict[str, Any] | None = None,
+    about: dict[str, Any] | None = None, via: str | None = None,
 ) -> str:
     """ADR 0211: the turn of ``POST /inherent/submit`` whose words came with stored files.
 
     ``device``: the paired device that sent them (ADR 0212); the turn's opening row is written
     under its name, as the ones ``/phone/ws`` writes are. ``about``: the item its phone has open
-    (ADR 0214), already checked, kept on that row.
+    (ADR 0214), already checked, kept on that row. ``via``: the watch the phone asked for
+    (ADR 0401), kept on that row too.
 
     Bound at daemon start and run on an ``asyncio.to_thread`` worker, so it opens its own
     connection exactly as ``submit_callable`` does. Returns the minted ``turn_id``.
@@ -126,7 +127,7 @@ def submit_with_attachments(
     try:
         emit_surface_user_intent(
             inner_conn, transcript=text, turn_id=turn_id, attachments=attachment_ids,
-            ingestion_node=device, about=about,
+            ingestion_node=device, about=about, via=via,
         )
     finally:
         with contextlib.suppress(sqlite3.Error):
@@ -136,7 +137,7 @@ def submit_with_attachments(
 
 def submit_as_device(  # noqa: PLR0913 - the phone message's fields, as `say` has them.
     event_log_path: Path, device: str, text: str, attachment_ids: Sequence[str],
-    about: dict[str, Any] | None, utterance_id: str | None = None,
+    about: dict[str, Any] | None, utterance_id: str | None = None, via: str | None = None,
 ) -> str:
     """ADR 0212: the turn of words a paired ``device`` sent over HTTP, with or without files.
 
@@ -149,7 +150,7 @@ def submit_as_device(  # noqa: PLR0913 - the phone message's fields, as `say` ha
     """
     if utterance_id is None:
         return submit_with_attachments(
-            event_log_path, text, attachment_ids, device=device, about=about,
+            event_log_path, text, attachment_ids, device=device, about=about, via=via,
         )
     inner_conn = open_runtime_event_log(event_log_path)
     try:

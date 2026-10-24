@@ -2,8 +2,9 @@
 
 ``push-tokens.json`` (0600) beside ``devices.json`` under the runtime root holds, per paired
 device name, the APNs device token, the Live Activity push token when one is running, and which
-APNs endpoint (``sandbox`` or ``production``) both belong to. A token is a bearer secret for
-pushing to that phone, so no function here logs one and no row is ever listed with it.
+APNs endpoint (``sandbox`` or ``production``) both belong to, and whether the device is a phone
+or an iPad (ADR 0401). A token is a bearer secret for pushing to that phone, so no function here
+logs one and no row is ever listed with it.
 
 :func:`parse_registration` is the strict check of ``POST /inherent/device/push``'s body; the
 route (L5) and the writer (the daemon) share it. ``unpair_device`` removes a device's row.
@@ -27,9 +28,11 @@ _FILE: Final = "push-tokens.json"
 ENVIRONMENTS: Final = ("sandbox", "production")
 Environment = Literal["sandbox", "production"]
 Kind = Literal["device", "live_activity", "ride_start", "ride_activity"]
+IDIOMS: Final = ("phone", "pad")
+Idiom = Literal["phone", "pad"]
 _TOKEN: Final = re.compile(r"[0-9a-fA-F]{32,512}")
 _OPTIONAL: Final = ("live_activity_token", "ride_start_token", "ride_activity_token")
-_KEYS: Final = frozenset({"device_token", "environment", *_OPTIONAL})
+_KEYS: Final = frozenset({"device_token", "environment", "idiom", *_OPTIONAL})
 # One lock for the file: the route writes on the loop thread, a 410 drops on a worker thread.
 _LOCK: Final = threading.Lock()
 
@@ -44,7 +47,8 @@ class Registration:
 
     ``live_activity_token`` is her state's activity (ADR 0210). ``ride_start_token`` is the
     push-to-start token of the ride activity type, and ``ride_activity_token`` the running ride
-    activity's own update token (ADR 0224).
+    activity's own update token (ADR 0224). ``idiom`` is what the device said it is (ADR 0401),
+    ``None`` when it never said: a phone.
     """
 
     device_token: str
@@ -52,6 +56,7 @@ class Registration:
     live_activity_token: str | None = None
     ride_start_token: str | None = None
     ride_activity_token: str | None = None
+    idiom: Idiom | None = None
 
 
 def parse_registration(body: object) -> tuple[Registration, frozenset[str]]:
@@ -59,7 +64,8 @@ def parse_registration(body: object) -> tuple[Registration, frozenset[str]]:
 
     ``device_token`` and ``environment`` are required. Each of ``live_activity_token``,
     ``ride_start_token`` and ``ride_activity_token`` absent leaves the stored one as it is,
-    ``null`` clears it, a string sets it. Tokens are hex; they are lowered.
+    ``null`` clears it, a string sets it. Tokens are hex; they are lowered. ``idiom``, ``phone``
+    or ``pad``, absent leaves the stored one.
 
     Raises:
         RegistrationError: not an object, a missing, unknown or mistyped key, or a token that is
@@ -75,12 +81,16 @@ def parse_registration(body: object) -> tuple[Registration, frozenset[str]]:
     if environment not in ENVIRONMENTS:
         msg = 'environment is "sandbox" or "production"'
         raise RegistrationError(msg)
+    idiom = body.get("idiom")
+    if idiom is not None and idiom not in IDIOMS:
+        msg = 'idiom is "phone" or "pad"'
+        raise RegistrationError(msg)
     device = _token(body.get("device_token"), "device_token")
     carried = frozenset(name for name in _OPTIONAL if name in body)
     optional = {
         name: None if body.get(name) is None else _token(body[name], name) for name in carried
     }
-    return Registration(device, environment, **optional), carried
+    return Registration(device, environment, **optional, idiom=idiom), carried
 
 
 def _token(value: object, name: str) -> str:
@@ -106,13 +116,18 @@ def _row(raw: object) -> Registration | None:
     if not (isinstance(device, str) and environment in ENVIRONMENTS):
         return None
     optional = {name: raw[name] for name in _OPTIONAL if isinstance(raw.get(name), str)}
-    return Registration(device, environment, **optional)
+    idiom = raw.get("idiom")
+    return Registration(
+        device, environment, **optional, idiom=idiom if idiom in IDIOMS else None,
+    )
 
 
 def register(
     root: Path, name: str, new: Registration, *, carried: frozenset[str] = frozenset(_OPTIONAL),
 ) -> None:
     """Keep ``new`` as ``name``'s registration; an optional token not in ``carried`` stays.
+
+    So does the stored idiom when ``new`` has none.
 
     A device token is one phone: another name holding it (the same phone paired again) is dropped,
     or every push would reach that phone once per name.
@@ -130,10 +145,12 @@ def register(
             field: getattr(kept if field not in carried and same else new, field)
             for field in _OPTIONAL
         }
+        idiom = new.idiom or (kept.idiom if kept is not None else None)
         rows[name] = {
             "device_token": new.device_token,
             "environment": new.environment,
             **tokens,
+            **({"idiom": idiom} if idiom else {}),
             "updated_at": datetime.now(UTC).isoformat(timespec="seconds"),
         }
         write_private_json(root / _FILE, {"devices": rows})

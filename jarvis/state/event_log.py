@@ -794,8 +794,10 @@ _REGISTRY_ENTRIES: Final[tuple[EventTypeSchema, ...]] = (
         # words (``jarvis.state.attachments``); the bytes stay in their files.
         # ADR 0214: ``about`` is the item a paired phone has open, checked by
         # ``jarvis.shared.about.clean_about``.
+        # ADR 0401: ``via`` is ``"watch"`` when the paired phone asked for its watch.
         optional_payload=(
             "channel", "language", "record_id", "confirmation_decision", "attachments", "about",
+            "via",
         ),
         schema_version=1,
     ),
