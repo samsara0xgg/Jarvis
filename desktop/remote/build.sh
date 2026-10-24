@@ -32,6 +32,8 @@ label=com.yilunshi.jarvis.remote
 agent="$HOME/Library/LaunchAgents/$label.plist"
 mkdir -p "$HOME/Applications"
 launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
+# bootout returns before the service is gone, and bootstrapping over it fails
+while launchctl print "gui/$(id -u)/$label" >/dev/null 2>&1; do sleep 0.2; done
 rm -rf "$HOME/Applications/$app"
 cp -R "$app" "$HOME/Applications/"
 cat > "$agent" <<EOF
