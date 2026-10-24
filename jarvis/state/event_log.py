@@ -2578,6 +2578,22 @@ def turn_intent_channel(conn: sqlite3.Connection, turn_id: str) -> str | None:
     return turn_origin(conn, turn_id)[0]
 
 
+_SELECT_WATCH_RELAYS_SQL: Final = (
+    "SELECT DISTINCT ingestion_node FROM events WHERE (type = 'phone.state_observed' "
+    "AND json_extract(payload_json, '$.signal') = 'watch_battery') "
+    "OR (type = 'surface.user_intent' AND json_extract(payload_json, '$.via') = 'watch')"
+)
+
+
+def watch_relays(conn: sqlite3.Connection) -> frozenset[str]:
+    """The paired phones a watch has reached the brain through (ADR 0401).
+
+    A watch has no name of its own here: the phone sends its charge (ADR 0377) and asks for it
+    (``via``), under the phone's name.
+    """
+    return frozenset(node for (node,) in conn.execute(_SELECT_WATCH_RELAYS_SQL) if node)
+
+
 __all__ = [
     "EVENT_COLUMNS",
     "MAC_NODE",
@@ -2606,4 +2622,5 @@ __all__ = [
     "row_to_event",
     "turn_intent_channel",
     "turn_origin",
+    "watch_relays",
 ]

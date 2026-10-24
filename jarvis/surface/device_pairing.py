@@ -6,6 +6,9 @@ name, and the owner's screen shows it as a QR; the new device trades it for its 
 :mod:`jarvis.surface.inherent_server.guards` opens exactly that path). ``GET /inherent/devices``
 and ``DELETE /inherent/devices/{name}`` list and unpair. The code logic is
 :class:`jarvis.state.device_tokens.PairingCodes`; this module is only HTTP.
+
+A device is named when its code is made, before anyone knows what will scan it, so the list
+also says what each turned out to be and the watch it carries (ADR 0401).
 """
 
 from __future__ import annotations
@@ -14,17 +17,20 @@ import asyncio
 import ipaddress
 import json
 import re
+from contextlib import closing
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final
 
 from fastapi import FastAPI, HTTPException, Request
 
+from jarvis.state import push_tokens, terminal_tools
 from jarvis.state.device_tokens import (
     DeviceNameTakenError,
     DeviceTokenError,
     paired_devices,
     unpair_device,
 )
+from jarvis.state.event_log import open_runtime_event_log, watch_relays
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -45,12 +51,14 @@ class DevicePairing:
 
     ``listens`` is whether the brain listens on any private address beyond this machine.
     ``brain_urls`` are the base URLs a device on the tailnet can dial (see :func:`brain_urls`).
+    ``event_log`` is where a watch's relays are read from; ``None``: no watch is listed.
     """
 
     root: Path
     codes: PairingCodes
     listens: bool
     brain_urls: tuple[str, ...]
+    event_log: Path | None = None
 
 
 def brain_urls(addresses: Iterable[str], hosts: Iterable[str], port: int) -> tuple[str, ...]:
@@ -155,12 +163,32 @@ def _register_code_routes(app: FastAPI, paired: DevicePairing) -> None:
         return {"device": claimed[0], "token": claimed[1]}
 
 
+def _devices(paired: DevicePairing) -> list[dict[str, Any]]:
+    """Each paired device: its name, pairing time, what it is and whether a watch rides it.
+
+    ``kind`` is ``computer`` for a terminal that declared its tools, else what its push
+    registration said (``phone`` when it said nothing), else ``None``.
+    """
+    kinds: dict[str, str] = {
+        name: one.idiom or "phone"
+        for name, one in push_tokens.registrations(paired.root).items()
+    }
+    kinds.update(dict.fromkeys(terminal_tools.declaring(paired.root), "computer"))
+    watched: frozenset[str] = frozenset()
+    if paired.event_log is not None and paired.event_log.exists():
+        with closing(open_runtime_event_log(paired.event_log)) as conn:
+            watched = watch_relays(conn)
+    return [
+        {"name": name, "created_at": at, "kind": kinds.get(name), "watch": name in watched}
+        for name, at in paired_devices(paired.root)
+    ]
+
+
 def _register_device_routes(app: FastAPI, paired: DevicePairing) -> None:
     @app.get("/inherent/devices")
-    async def list_devices() -> dict[str, list[dict[str, str]]]:
-        """Each paired device's name and pairing time; never a token or its hash."""
-        rows = await asyncio.to_thread(paired_devices, paired.root)
-        return {"devices": [{"name": name, "created_at": at} for name, at in rows]}
+    async def list_devices() -> dict[str, list[dict[str, Any]]]:
+        """Each paired device, what it is and its watch; never a token or its hash."""
+        return {"devices": await asyncio.to_thread(_devices, paired)}
 
     @app.delete("/inherent/devices/{name}")
     async def unpair(name: str) -> dict[str, str]:

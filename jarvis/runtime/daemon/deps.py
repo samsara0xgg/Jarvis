@@ -408,6 +408,7 @@ def build_deps(  # noqa: PLR0913 - one declarative table: each route's reads, bo
             brain_urls=brain_urls(
                 runtime.config.listen_addresses, runtime.config.listen_hosts, port,
             ),
+            event_log=runtime.runtime_paths.event_log,
         ),
         v2=InherentV2Deps(
             token_matches=functools.partial(inherent_v2_token_matches, v2_token),
