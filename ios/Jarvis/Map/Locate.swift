@@ -30,7 +30,7 @@ final class OneShotLocation: NSObject, CLLocationManagerDelegate, LocationSource
     private var pending: CheckedContinuation<LocateResult, Never>?
 
     func fix(wait: Double) async -> LocateResult {
-        guard CLLocationManager.locationServicesEnabled() else { return .unavailable }
+        // The manager's own status is denied when location services are off, too: the class's check asks locationd on the main thread, which a slow locationd holds.
         switch manager.authorizationStatus {
         case .authorizedAlways, .authorizedWhenInUse: break
         default: return .denied
