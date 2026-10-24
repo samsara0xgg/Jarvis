@@ -35,6 +35,49 @@ final class PageShots: XCTestCase {
         shot("3-chat-under-her")
     }
 
+    func testChatTrail() {
+        _ = open("时间线:聊天:跟")
+        sleep(2)
+        shot("3b-chat-topic-followed")
+    }
+
+    func testChatTopics() {
+        let app = open("时间线:聊天:话题")
+        app.buttons["搜我们说过的和她整理的话题"].tap()
+        sleep(2)
+        shot("3c-chat-search-topics")
+        app.buttons.containing(NSPredicate(format: "label CONTAINS '这周的安排'")).firstMatch.tap()
+        sleep(1)
+        shot("3d-chat-topic-recap")
+        app.buttons["接着聊"].tap()
+        sleep(1)
+        shot("3e-chat-going-on")
+    }
+
+    func testCard() {
+        let app = open("时间线:来回")
+        shot("7-card-dialog-today")
+        app.windows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.75)).tap()
+        sleep(2)
+        shot("8-card-folded")
+    }
+
+    func testCardMap() {
+        _ = open("时间线:来回:地图")
+        shot("9-card-map")
+    }
+
+    func testCardLong() {
+        _ = open("时间线:长答")
+        sleep(2)
+        shot("10-card-long-answer")
+    }
+
+    func testCardTidy() {
+        _ = open("时间线:理一下")
+        shot("11-card-tidying")
+    }
+
     func testMap() {
         _ = open("足迹")
         shot("4-map-day")

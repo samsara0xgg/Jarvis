@@ -350,6 +350,29 @@ extension StarEngine {
         case "聊天":                                                               // the conversation's page of the bar at the foot, with a day and a half of talk on it (`:聊天:空` none)
             if parts.count < 3 || parts[2] != "空" { talkPageRounds(cal) }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [self] in showPage(.talk) }
+            if parts.count > 2, parts[2] == "话题" {          // made-up topics in the search card (the brain does not serve them yet), for the card's look
+                ChatSearchModel.sceneTopics = [
+                    ChatTopic(id: "t1", name: "这周的安排", line: "二面明天下午三点", recap: "明天下午三点线上二面，两点半提醒你准备。小测周三十点在 ECS 123。还没定：周末爬山要看天气。",
+                              count: 2, lastMs: Int64(Date().timeIntervalSince1970 * 1000) - 600_000, places: [.init(recordId: "rec-3", seq: 3), .init(recordId: "rec-7", seq: 7)]),
+                    ChatTopic(id: "t2", name: "吃的", line: "学校附近三家", count: 1, lastMs: Int64(Date().timeIntervalSince1970 * 1000) - 7_200_000, places: [.init(recordId: "rec-5", seq: 5)]),
+                    ChatTopic(id: "t3", name: "出门提醒", done: true, line: "每天八点五十", count: 1, lastMs: Int64(Date().timeIntervalSince1970 * 1000) - 93_600_000, places: [.init(recordId: "rec-1", seq: 1)]),
+                ]
+            }
+            if parts.count > 2, parts[2] == "跟" {          // a topic followed to its last place: those turns lit, the bar over the field
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) { [self] in goTrail(ChatTrail(name: "这周的安排", places: [.init(recordId: "rec-3"), .init(recordId: "rec-7")], at: 1), to: 1) }
+            }
+        case "来回":                                                               // three rounds on one page: her card grows into a small dialog (`:来回:地图`, `:来回:设置` on those pages)
+            if parts.count > 2 { DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [self] in showPage(parts[2] == "地图" ? .map : .settings) } }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [self] in
+                beginTalk()
+                addTurn(his: true, "今天走了多少步", heard: true)
+                addTurn(his: false, "9,630 步，比平时多一点。晚上那段跑步占了一半。")
+                addTurn(his: true, "陶艺课是几点来着", heard: true)
+                addTurn(his: false, "今晚 22:00，Studio 4。邮件里让你回复确认，你还没回。")
+                addTurn(his: true, "那帮我回一下", heard: true)
+                addTurn(his: false, "好，回好了：确认今晚 22:00 到。")
+                tlUntil = nowMs() + TLTalk.stay; lingerUntil = tlUntil          // her answer is all there: it stays until he does something else
+            }
         case "飘":          // her drift, without the wait for it
             if let k = Int(parts.count > 2 ? parts[2] : ""), TLSeat.perches.indices.contains(k) {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [self] in wander = (TLSeat.perches[k], nowMs() + 60_000) }
@@ -565,7 +588,9 @@ extension StarEngine {
         let now = Date()
         func row(_ seq: Int, _ his: Bool, _ ago: Double, _ text: String) -> ConversationRow {
             let at = now.addingTimeInterval(-ago * 60)
-            return ConversationRow(seq: seq, source: his ? "allen" : "jarvis", ts: TalkStream.dayId(at, cal.cal) + "T" + TalkStream.clock(at, cal.cal) + ":00", text: text)
+            var r = ConversationRow(seq: seq, source: his ? "allen" : "jarvis", ts: TalkStream.dayId(at, cal.cal) + "T" + TalkStream.clock(at, cal.cal) + ":00", text: text)
+            r.id = "rec-\(seq)"
+            return r
         }
         // an answer as the brain writes one: said, and written out (a voice part alone is a line before the answer, with more to come)
         func said(_ s: String) -> String { "<voice>\(s)</voice><document>\(s)</document>" }
