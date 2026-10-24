@@ -328,6 +328,7 @@ extension StarEngine {
         MainActor.assumeIsolated {
             ui.tl.fixture = .init(replies: [0: today, -1: yesterday, -2: fragmented, -3: talkOnly], now: TimelineFixture.now)
             ui.tl.brain = .demo(fail: parts.last == "败")          // what he does to the made-up day goes to no brain
+            BodyStore.shared.fetch = { _ in try? JSONDecoder().decode(BodyReply.self, from: Data(Self.bodyFixture.utf8)) }          // 跟平时比 of any window, made up
             TalkTopics.shared.debugSet("talk-1", "明天下午有什么安排？", "下午三点有一个二面，在线上，大概四十五分钟。")      // the other talk has no topic yet
         }
         // the picture he sent, kept on this phone under its id, so nothing is asked of the brain
@@ -497,6 +498,16 @@ extension StarEngine {
             let id = parts.count > 2 ? parts[2] : ""
             if id == "早上" { DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [self] in if let e = model.entry(at: 9 * 60 + 5), let y = model.top(of: e.id) { ui.tl.scroll(to: max(0, y - 12), animated: false) } } }
             else if !id.isEmpty { show(id, open: true) }
+            if parts.count > 3, parts[3] == "问她" {          // `:按在干嘛:doing-575:问她`: 问她 on it and a turn going out over the day
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) { [self] in
+                    guard let e = model.entries.first(where: { $0.id == id }), e.actions.contains(.ask), let a = e.about else { return }
+                    setAbout(a)                 // what 问她 does, without the keyboard the simulator would show
+                    beginTalk(); lingerHold = true
+                    addTurn(his: true, "这段我在干嘛")
+                    addTurn(his: false, "一直在 Xcode 里改时间线的行高，中间看了会儿微信。")
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { [self] in openPanel(quiet: true) }     // the talk, the stretch its first row
+            }
         case "拖", "在干嘛":
             let n = Int(parts.count > 2 ? parts[2] : "") ?? (mode == "拖" ? 0 : 1030), t = model.onBar(Double(n / 100 * 60 + n % 100))
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [self] in
@@ -613,6 +624,9 @@ extension StarEngine {
         addTurn(his: false, "好，回好了：确认今晚 22:00 到。")
         tlUntil = nowMs() + TLTalk.stay; lingerUntil = tlUntil          // her answer is all there: it stays until he does something else
     }
+
+    /// GET /inherent/body for any window (ADR 0411), made up: a quiet night and a busy afternoon
+    static let bodyFixture = #"{"measures":{"steps":{"kind":"total","unit":"steps","value":900,"usual":{"median":1800,"low":1500,"high":2100,"days":14},"vs_usual":"below"},"heart_rate":{"kind":"reading","unit":"bpm","value":90,"usual":{"median":74,"low":71,"high":77,"days":14},"vs_usual":"above"},"resting_heart_rate":{"kind":"reading","unit":"bpm","value":52,"usual":{"median":55,"low":54,"high":57,"days":14},"vs_usual":"below"},"hrv":{"kind":"reading","unit":"ms","value":48,"usual":{"median":46,"low":40,"high":52,"days":14},"vs_usual":"within"},"breathing_rate":{"kind":"reading","unit":"/min","value":14.5,"usual":{"median":14,"low":13.5,"high":15,"days":14},"vs_usual":"within"},"blood_oxygen":{"kind":"reading","unit":"%","value":97,"usual":{"median":97,"low":96,"high":98,"days":14},"vs_usual":"within"},"sleep":{"kind":"sleep","unit":"min","value":432,"usual":{"median":465,"low":450,"high":480,"days":14},"vs_usual":"below"}}}"#
 
     private func talkPageRounds(_ cal: Cal, long: Bool = false) {          // `long`: two days more before them, taller than the page
         let now = Date()

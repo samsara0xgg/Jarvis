@@ -33,6 +33,30 @@ struct StageChip: View {
     }
 }
 
+/// 跟平时比 (ADR 0411): a line a measure, its name, its value and where it stands against his usual level, as wide as it is given. A part that has no line is not drawn: the opened row
+/// asks `BodyStore.ensure` and draws this only when `BodyStore.lines` has some.
+struct BodyVsUsual: View {
+    let lines: [BodyLine]
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            StageHeading(text: Words.PhoneRow.vsUsual)
+            ForEach(lines) { l in
+                HStack(spacing: 10) {
+                    Text(l.label).font(.system(size: 13.5)).foregroundStyle(Look.ink2).lineLimit(1)
+                    Spacer(minLength: 6)
+                    Text(l.value).font(Look.figures(13.5, weight: .medium)).foregroundStyle(Look.ink).lineLimit(1)
+                    Label(Self.word(l.mark), systemImage: Self.symbol(l.mark)).labelStyle(.titleAndIcon).font(.system(size: 11.5)).foregroundStyle(Look.ink3).lineLimit(1)
+                        .frame(minWidth: 92, alignment: .trailing)
+                }
+                .frame(minHeight: 22)
+                .accessibilityElement(children: .combine)
+            }
+        }
+    }
+    static func word(_ m: BodyLine.Mark) -> String { switch m { case .below: Words.PhoneRow.below; case .within: Words.PhoneRow.within; case .above: Words.PhoneRow.above } }
+    static func symbol(_ m: BodyLine.Mark) -> String { switch m { case .below: "arrow.down"; case .within: "equal"; case .above: "arrow.up" } }
+}
+
 // MARK: - a trip
 
 /// A trip opened: that outing of the footprint day as its page draws it (`FootprintOutingParts`): the map framed to it, the four numbers, the speed and heart-rate curves, where it stopped and
@@ -89,10 +113,14 @@ struct NightStage: View {
     var health: [TLBody] = []           // what Health reported, the day's numbers row's
     let tl: TimelineState
     let engine: StarEngine
+    /// what 跟平时比 says of a night: his body asleep, and how long
+    static let measures = ["resting_heart_rate", "hrv", "breathing_rate", "blood_oxygen", "sleep"]
 
     var body: some View {
         let t1 = e.t1 ?? e.t0
         let woke = e.sleep.map { TLStage.blocks($0.stages, in: e.t0, t1).filter { $0.kind == .awake } } ?? []
+        let window = tl.reply.map { r in BodyWindow(startMs: TLClock(r).ms(minute: e.t0), endMs: TLClock(r).ms(minute: t1)) }
+        let usual = window.map { BodyStore.shared.lines($0, Self.measures) } ?? []
         return VStack(alignment: .leading, spacing: 10) {
             if let s = e.sleep {
                 TLHypnogram(stages: s.stages, t0: e.t0, t1: t1)
@@ -102,7 +130,9 @@ struct NightStage: View {
             line(e.t0, "moon.zzz", Words.PhoneRow.fellAsleep, nil)
             ForEach(Array(woke.enumerated()), id: \.offset) { _, w in line(w.t0, "eye", Words.PhoneRow.wokeOnce, tlDur(Int((w.t1 - w.t0).rounded()))) }
             if e.t1 != nil { line(t1, "sun.max", Words.PhoneRow.gotUp, nil) }
-            if !health.isEmpty {
+            if !usual.isEmpty {
+                BodyVsUsual(lines: usual)          // his night against his usual level stands in for the day's numbers
+            } else if !health.isEmpty {
                 StageHeading(text: Words.PhoneRow.body)
                 HStack(alignment: .top, spacing: 8) {
                     ForEach(health) { b in
@@ -116,6 +146,7 @@ struct NightStage: View {
             }
             if e.actions.contains(.ask) { StageChip(text: TLAction.ask.title, symbol: "mic") { tl.perform(.ask, on: e, engine: engine) }.padding(.top, 2) }
         }
+        .task(id: window) { if let window { BodyStore.shared.ensure(window) } }
     }
 
     private func line(_ t: Double, _ symbol: String, _ title: String, _ right: String?) -> some View {

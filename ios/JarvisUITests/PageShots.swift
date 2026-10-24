@@ -125,6 +125,13 @@ final class PageShots: XCTestCase {
         shot("18-row-messages")
     }
 
+    func testRowDoingAsk() {
+        _ = open("时间线:按在干嘛:doing-575:问她")
+        shot("17b-row-doing-ask")
+        sleep(3)
+        shot("17c-row-doing-ask-chip")
+    }
+
     func testTodayCategories() {
         _ = open("时间线:按在干嘛")
         sleep(3)

@@ -12,6 +12,26 @@ extension Words {
         static var wokeOnce: String { pick(zh: "醒了一次", en: "Woke up") }
         static var gotUp: String { pick(zh: "起床", en: "Got up") }
         static var body: String { pick(zh: "身体", en: "Body") }
+        // his body against his usual level (Brain/BodyWindow.swift)
+        static var vsUsual: String { pick(zh: "跟平时比", en: "Against usual") }
+        static var below: String { pick(zh: "比平时低", en: "Below usual") }
+        static var within: String { pick(zh: "跟平时差不多", en: "Usual") }
+        static var above: String { pick(zh: "比平时高", en: "Above usual") }
+        static var stepsUnit: String { pick(zh: " 步", en: " steps") }
+        static var perMinute: String { pick(zh: " 次/分", en: " /min") }
+        /// a measure's name, or nil for one this phone does not know
+        static func measure(_ name: String) -> String? {
+            switch name {
+            case "steps": pick(zh: "步数", en: "Steps")
+            case "heart_rate": pick(zh: "心率", en: "Heart rate")
+            case "resting_heart_rate": pick(zh: "静息心率", en: "Resting heart rate")
+            case "hrv": "HRV"
+            case "breathing_rate": pick(zh: "呼吸", en: "Breathing")
+            case "blood_oxygen": pick(zh: "血氧", en: "Blood oxygen")
+            case "sleep": pick(zh: "睡着", en: "Asleep")
+            default: nil
+            }
+        }
         // a stretch she is not sure of
         static var unsure: String { pick(zh: "她拿不准", en: "She isn't sure") }
         static func guess(_ title: String) -> String { pick(zh: "我猜是\(title)。", en: "My guess: \(title).") }

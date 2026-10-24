@@ -126,7 +126,7 @@ extension DayTimelineModel {
         e.color = cat.color
         // where he was: the place he keeps that the brain points to (its stay names it and gives its hue), else the stay that holds most of the stretch
         let kept = s.place_id.flatMap { id in inside.first { $0.row.place?.keptId == id }?.row ?? places.first { $0.kind == .stay && $0.place?.keptId == id } }
-        if let kept, let id = s.place_id { e.group = id; e.rail = .place(kept.color ?? PlaceTint.lineNeutral) }
+        if let kept, let id = s.place_id { e.group = id; e.rail = .place(kept.color ?? PlaceTint.lineNeutral); e.placeAbout = kept.about }
         e.at = kept?.title ?? mainStay(inside, st)?.barName
         e.note = tlText(s.detail)
         e.detail = line(e, solo: true)
@@ -144,11 +144,9 @@ extension DayTimelineModel {
         e.head = e.title + " · " + when
         e.barName = words
         e.barIcon = hole ? "questionmark" : e.symbol
-        // 问她: the stretch is put to her as the thing the brain can be told about that it is mostly made of, the place first
-        let at = inside.first { $0.row.kind == .stay && $0.row.place?.keptId != nil && $0.row.place?.keptId == s.place_id }
-        let first = inside.first { $0.row.kind != .talk && $0.row.kind != .sleep && About.kinds.contains($0.item.kind) }
-        if let a = at ?? first, About.kinds.contains(a.item.kind), About.fits(id: a.item.id) {
-            e.about = About(kind: a.item.kind, id: a.item.id, title: e.title, startMs: s.start_ms, mark: mark(a.item, later: false))
+        // 问她: the stretch itself, by its window (ADR 0410); one still going ends now
+        if About.fits(id: s.id) {
+            e.about = About(kind: "doing", id: s.id, title: e.title, startMs: s.start_ms, endMs: s.end_ms ?? s.start_ms + Int64((st.t1 - st.t0) * 60_000))
         }
         return e
     }
@@ -323,7 +321,7 @@ extension DayTimelineModel {
                     let on = last.going || last.t1 == nil
                     h.right = [rangeText(first.t0, last.t1, running: on, f), on ? nil : tlDur(tlInt((last.t1 ?? first.t0) - first.t0))].compactMap { $0 }.joined(separator: " · ")
                     h.rail = .place(hue); h.railOut = true
-                    h.about = first.about.flatMap { $0.kind == "stay" ? About(kind: $0.kind, id: $0.id, title: name, startMs: $0.startMs, mark: $0.mark) : nil }          // 问她 of the place
+                    h.about = first.placeAbout.flatMap { $0.kind == "stay" ? About(kind: $0.kind, id: $0.id, title: name, startMs: first.about?.startMs ?? $0.startMs, mark: $0.mark) : nil }          // 问她 of the place
                     h.gap = out.isEmpty ? 0 : TLMetrics.gap
                     out.append(h)
                     for (n, i) in run.enumerated() {

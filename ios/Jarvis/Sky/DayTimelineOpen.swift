@@ -60,9 +60,10 @@ struct TLOpenView: View {
     // MARK: a stretch of what he was doing
 
     private enum Part: Identifiable {
-        case ask, said(String), line(TLLine), links, why(String), note(String), guess, heading(String)
+        case ask, said(String), line(TLLine), links, why(String), note(String), guess, heading(String), body([BodyLine])
         var id: String {
             switch self {
+            case .body: "body"
             case .ask: "ask"
             case .said: "said"
             case .line(let l): "line-" + l.id
@@ -89,6 +90,7 @@ struct TLOpenView: View {
         }
         if let said = tl.chosen[e.id] { out.append(.said(said)) } else if e.ask != nil, interactive { out.append(.ask) }
         out += e.lines.map { Part.line($0) }
+        if let w = bodyWindow, case let usual = BodyStore.shared.lines(w, Self.stretchMeasures), !usual.isEmpty { out.append(.body(usual)) }
         if let k = e.knows, interactive { out.append(.links); if why { out.append(.why(k)) } }
         if interactive, let n = tl.notes[e.id] { out.append(.note(n)) }
         return out
@@ -100,7 +102,12 @@ struct TLOpenView: View {
                 part(p).modifier(TLRiseIn(rank: k, on: inPlace && interactive, reduce: reduce))
             }
         }
+        .task(id: bodyWindow) { if let bodyWindow { BodyStore.shared.ensure(bodyWindow) } }
     }
+
+    /// what 跟平时比 says of a stretch of what he was doing, over its window (the one 问她 names)
+    static let stretchMeasures = ["steps", "heart_rate"]
+    private var bodyWindow: BodyWindow? { e.about.flatMap { a in a.kind == "doing" ? a.endMs.map { BodyWindow(startMs: a.startMs, endMs: $0) } : nil } }
 
     @ViewBuilder private func part(_ p: Part) -> some View {
         switch p {
@@ -122,6 +129,7 @@ struct TLOpenView: View {
             column(Text(k).font(.system(size: 12)).lineSpacing(3).foregroundStyle(Look.ink2).fixedSize(horizontal: false, vertical: true).padding(.bottom, 6)).transition(.opacity)
         case .guess: column(guessCard)
         case .heading(let h): column(StageHeading(text: h))
+        case .body(let lines): column(BodyVsUsual(lines: lines).padding(.vertical, 6)).transition(.opacity)
         case .note(let n):
             column(Text(n).font(.system(size: 12.5)).foregroundStyle(SetColor.red.opacity(0.92)).fixedSize(horizontal: false, vertical: true).padding(.vertical, 4)).transition(.opacity)
         }

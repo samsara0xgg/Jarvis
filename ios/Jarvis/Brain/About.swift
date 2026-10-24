@@ -9,6 +9,7 @@ struct About: Equatable {
     let id: String
     let title: String
     let startMs: Int64
+    var endMs: Int64?                   // a stretch of what he was doing is named by its window (ADR 0410): only `doing` carries an end
     var mark = Kd.next                  // the star's own mark, for the chip
 
     /// the item's time as the chip writes it: the clock today, with 明天 or the day in front of it on another day
@@ -18,11 +19,16 @@ struct About: Equatable {
         return day + TalkStream.clock(d, cal)
     }
 
-    /// the wire object: `{kind, id, title, start_ms}`. The id goes whole; a cut id names another item.
-    var json: [String: Any] { ["kind": kind, "id": id, "title": title, "start_ms": startMs] }
+    /// the wire object: `{kind, id, title, start_ms}`, and `end_ms` for a stretch (any other kind with an end is refused). The id goes whole; a cut id names another item.
+    var json: [String: Any] {
+        var o: [String: Any] = ["kind": kind, "id": id, "title": title, "start_ms": startMs]
+        if kind == "doing", let endMs { o["end_ms"] = endMs }
+        return o
+    }
 
-    /// what the phone may have open: the kinds of the day line (jarvis/shared/about.py `ABOUT_KINDS`). A run of Claude Code sessions folded into one row is no one item, and has none.
-    static let kinds: Set<String> = ["reminder", "event", "todo", "stay", "move", "sleep", "work", "call", "talk", "picture", "ride", "departure", "payment", "claude_chat", "claude_day", "workout", "code"]
+    /// what the phone may have open: the kinds of the day line (jarvis/shared/about.py `ABOUT_KINDS`), and a stretch of what he was doing. A run of Claude Code sessions folded into one row
+    /// is no one item, and has none.
+    static let kinds: Set<String> = ["reminder", "event", "todo", "stay", "move", "sleep", "work", "call", "talk", "picture", "ride", "departure", "payment", "claude_chat", "claude_day", "workout", "code", "doing"]
 
     /// the id shape the host accepts: 1-256 of `[A-Za-z0-9_-=+/.|:@]` (the `@` is a commitment's: `commitment-<hex>@<day>`)
     static func fits(id: String) -> Bool {

@@ -251,6 +251,7 @@ struct TLEntry: Identifiable, Equatable {
     var commitment: String?         // an event his mail made that he has not said is his: its hex, which is what the brain's route takes
     var attachment: String?         // a picture: the brain's name for it
     var about: About?               // the chip it gives a talk while it is the row opened (ADR 0214): only an item of a kind the brain's host knows
+    var placeAbout: About?          // a stretch's: the stay of the place he keeps it was at, which the group of stretches under that place asks her about
     var actions: [TLAction] = []    // what opening it offers
     var lens: TLLens?               // the kind of the day's numbers it is counted in (a stay, an event and the rest are in none)
     var barName: String?            // the word it wears inside the overview bar when there is room: the place, the route, the way he moved, how long he slept, the event
@@ -393,7 +394,8 @@ struct TLSun: Equatable {
     var rise: Double?, set: Double?
 }
 
-/// An item he marked or she picked as what mattered (`highlights` of `GET /inherent/day`), at the minute its item or stretch begins; one whose id joins nothing is not here.
+/// An item he marked or she picked as what mattered (`highlights` of `GET /inherent/day`), at the minute its item or stretch begins: its `start_ms`, else found by its id (an older brain).
+/// One with neither is not here.
 struct TLStar: Equatable, Identifiable {
     let id: String
     var t: Double
@@ -701,22 +703,22 @@ struct DayTimelineModel: Equatable {
         model.waiting = entries.filter(\.waiting).map(\.id)
         model.told = told
         model.lensMarks = lensMarks(rows)
-        model.stars = starsOf(r.highlights, rows: rows, stretches: doings, span: model.span)
+        model.stars = starsOf(r.highlights, rows: rows, stretches: doings, span: model.span, m)
         model.places = placesOf(rows, now: now)
         return model
     }
 
     // MARK: the stars and the place line
 
-    /// Where each highlight is on the bar: the start of the item it names, or of the stretch of that id (an id that joins neither is left out, and so is one off the bar). An item both
-    /// marked and picked is one star, his.
-    static func starsOf(_ highlights: [Highlight], rows: [TLEntry], stretches: [TLStretch], span: ClosedRange<Double>) -> [TLStar] {
+    /// Where each highlight is on the bar: its `start_ms`; from an older brain, the start of the item it names or of the stretch of that id (an id that joins neither is left out, and so
+    /// is one off the bar). An item both marked and picked is one star, his.
+    static func starsOf(_ highlights: [Highlight], rows: [TLEntry], stretches: [TLStretch], span: ClosedRange<Double>, _ m: (Int64) -> Double) -> [TLStar] {
         var at: [String: Double] = [:]
         for e in rows { at[e.id] = e.t0 }
         for s in stretches { at[s.span.id] = at[s.span.id] ?? s.t0 }
         var out: [TLStar] = []
         for h in highlights {
-            guard let t = at[h.id], span.contains(t) else { continue }
+            guard let t = h.start_ms.map(m) ?? at[h.id], span.contains(t) else { continue }
             let hers = h.by == "her"
             if let k = out.firstIndex(where: { $0.id == h.id }) { if !hers { out[k].hers = false }; continue }
             out.append(TLStar(id: h.id, t: t, label: h.label, hers: hers))

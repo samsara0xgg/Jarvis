@@ -198,6 +198,7 @@ struct DayLabel: Decodable, Equatable {
 struct Highlight: Decodable, Equatable {
     let id: String, label: String
     let by: String?
+    var start_ms: Int64? = nil          // when its item or stretch begins (ADR 0410); an older brain sends none
 }
 
 /// One item of a day (docs/spec.html, `GET /inherent/day`): the common fields plus whichever the kind carries. A field that is not the shape this phone knows is nil, so an item
