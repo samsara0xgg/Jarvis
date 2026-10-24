@@ -60,6 +60,10 @@ if CommandLine.arguments.dropFirst().first == "pair" {
     exit(0)
 }
 
+// A session that crashed before its end() left displays switched off or curtained; a fresh launch heals that before anything else.
+CGDisplayRestoreColorSyncSettings()
+CGRestorePermanentDisplayConfiguration()
+
 // Ask for both grants at launch, while he is at the Mac, not at the first connection from the iPad.
 if !CGPreflightScreenCaptureAccess() { CGRequestScreenCaptureAccess() }
 if !CGPreflightPostEventAccess() { CGRequestPostEventAccess() }
