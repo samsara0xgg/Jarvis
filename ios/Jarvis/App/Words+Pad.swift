@@ -7,6 +7,7 @@ extension Words {
 
         // the stage
         static var now: String { pick(zh: "现在", en: "Now") }
+        static var lately: String { pick(zh: "刚才", en: "Just before") }
         static func waiting(_ n: Int) -> String { pick(zh: "等你 \(n)", en: "Waiting on you · \(n)") }
 
         // the day

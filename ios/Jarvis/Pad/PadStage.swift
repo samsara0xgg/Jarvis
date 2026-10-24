@@ -122,14 +122,23 @@ struct PadStage: View {
 
     // MARK: now
 
-    /// the stretch now is in, as its opened row says it; nothing when now is in none (a day before today, a gap)
+    /// the stretch now is in, as its opened row says it; nothing on a day before today
     @ViewBuilder private func now(_ m: DayTimelineModel) -> some View {
-        if let e = m.nowRow(), e.kind != .now {
-            label(Words.Pad.now, color: muted)
-            head(e).padding(.top, 8)
-            TLOpenView(e: e, tl: tl, engine: engine, mapWidth: width - 2 * side).padding(.top, 16)
+        if let s = Self.shown(m) {
+            label(s.now ? Words.Pad.now : Words.Pad.lately, color: muted)
+            head(s.e).padding(.top, 8)
+            TLOpenView(e: s.e, tl: tl, engine: engine, mapWidth: width - 2 * side).padding(.top, 16)
                 .padding(.bottom, 28)
         }
+    }
+
+    /// what the stage shows of today with nothing picked, and whether now is in it: the stretch now is in; where now is in none (a hole after the last one), the last stretch
+    /// begun before now, so the stage is never blank on today
+    static func shown(_ m: DayTimelineModel) -> (e: TLEntry, now: Bool)? {
+        guard let n = m.now else { return nil }
+        if let e = m.nowRow(), e.kind != .now, !e.header { return (e, true) }
+        let stretch: [TLEntry.Kind] = [.segment, .stay, .trip, .sleep, .work]
+        return m.entries.last { stretch.contains($0.kind) && !$0.header && !$0.unknown && $0.t0 <= n }.map { (e: $0, now: false) }
     }
 
     // MARK: what waits
