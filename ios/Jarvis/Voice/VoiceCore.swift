@@ -56,10 +56,11 @@ func squash(_ s: String) -> String {
     })
 }
 
-/// A command only when the whole utterance is that command.
+/// A command only when the whole utterance is that command, said once or more (「退下，退下。」).
 func shortCommand(_ text: String) -> VoiceCommand? {
     let t = squash(text)
-    return commandTable.first { $0.value.contains(t) }?.key
+    guard !t.isEmpty else { return nil }
+    return commandTable.first { $0.value.contains { t.count % $0.count == 0 && String(repeating: $0, count: t.count / $0.count) == t } }?.key
 }
 
 // MARK: wake word
@@ -220,10 +221,10 @@ func demoVoiceCore() {
     assert(pickLane(LaneResult(lang: .zh), LaneResult(lang: .en)).lang == .zh && pickLane(LaneResult(lang: .zh, text: "你好"), LaneResult(lang: .en)).lang == .zh)
     for (t, c) in [("退下", VoiceCommand.stop), ("退下吧。", .stop), (" Shut up! ", .stop), ("shut  up", .stop), ("Stop.", .stop), ("停", .stop),
                    ("等一下", .wait), ("Hold on", .wait), ("hold on,", .wait), ("继续", .resume), ("Go on.", .resume), ("接着说", .resume),
-                   ("晚安", .goodnight), ("Good night!", .goodnight)] {
+                   ("晚安", .goodnight), ("Good night!", .goodnight), ("退下，退下。", .stop), ("停停停", .stop), ("Stop, stop!", .stop)] {
         assert(shortCommand(t) == c, t)
     }
-    for t in ["退下 吧 好", "stop the music", "不要停", "wait for me", "", "。"] { assert(shortCommand(t) == nil, t) }
+    for t in ["退下 吧 好", "stop the music", "不要停", "wait for me", "", "。", "退下退", "退下吧退下"] { assert(shortCommand(t) == nil, t) }
     assert(heardWake("Hey Jarvis, what time is it") && heardWake("贾维斯你好") && !heardWake("hello"))
     assert(stripWake("Jarvis, what time is it") == "what time is it")
     assert(stripWake("嘿，贾维斯，几点了") == "几点了")
