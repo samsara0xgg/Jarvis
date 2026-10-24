@@ -31,7 +31,17 @@ final class WatchWireTests: XCTestCase {
         d.waiting = [card]
         d.leaveAt = Date(timeIntervalSince1970: 1_790_000_600)
         d.ride = .init(route: "27 路", title: "还有 3 站", sub: "到 UVic", stops: ["A", "B"], at: 0, note: nil, alightNext: false)
+        d.unsure = .init(id: "span-1055", symbol: "book.fill", rgb: 0x9CE078, title: "写作业", span: "17:35–18:15", line: "还在学校", yes: "写作业")
+        d.slept = 400
         XCTAssertEqual(WatchWire.decode(WatchDay.self, WatchWire.encode(d)), d)
+    }
+
+    func testADayFromAnOlderPhoneDecodesWithoutTheNewFields() throws {
+        let old = #"{"date": "2026-10-08", "language": "zh", "now": 1310, "made": 0, "blocks": [], "ahead": [], "waiting": [], "next": []}"#
+        let d = try XCTUnwrap(WatchWire.decode(WatchDay.self, ["m": Data(old.utf8)]))
+        XCTAssertEqual(d.date, "2026-10-08")
+        XCTAssertNil(d.unsure)
+        XCTAssertNil(d.slept)
     }
 
     func testWhatIsNotOneOfOursIsNotDecoded() {

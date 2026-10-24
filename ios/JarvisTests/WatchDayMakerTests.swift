@@ -148,6 +148,21 @@ final class WatchDayMakerTests: XCTestCase {
         XCTAssertNil(day().ride)
     }
 
+    func testTheStretchSheIsNotSureOfIsTheLatestOneWithAYes() {
+        let u = day().unsure
+        XCTAssertEqual(u?.title, "写作业")                     // 歇一会儿 asks a question with options, which the wrist does not offer; 没有记录 asks to be filled in
+        XCTAssertEqual(u?.span, "17:35–18:15")
+        XCTAssertEqual(u?.yes, "写作业")
+        XCTAssertFalse(u?.line.isEmpty ?? true)
+        XCTAssertNil(day(minute: 600).unsure)                 // at 10:00 none of them has happened
+    }
+
+    func testHowLongHeSleptIsThePhonesSleepNumber() {
+        let model = DayTimelineModel.build(TimelineFixture.today(Cal.cur, doing: true), now: now)
+        XCTAssertEqual(day().slept, model.chips.first { $0.lens == .sleep }?.minutes)
+        XCTAssertNotNil(day().slept)
+    }
+
     func testTheActionIdsOfACardAreItsButtonsPlaces() {
         XCTAssertEqual(WatchActionID.card(2), "a2")
         XCTAssertEqual(WatchActionID.cardIndex("a2"), 2)

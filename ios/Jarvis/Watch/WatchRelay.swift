@@ -171,6 +171,9 @@ final class WatchRelay: NSObject, WCSessionDelegate {
                 }
                 schedule()
             }
+        case WatchActionID.unsure:                              // his 对 to the stretch she is not sure of: her words for it, as the phone's 是 sends them
+            guard let day = sent, let u = day.unsure, u.id == id, !Self.fixture else { return }
+            Task { @MainActor in if await TLBrain.live.choose(day.date, id, nil, u.yes) == .done { BrainLink.shared.opened() } }
         default: break
         }
     }

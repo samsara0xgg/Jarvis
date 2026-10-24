@@ -30,6 +30,10 @@ struct WatchDay: Codable, Equatable {
     var ride: Ride?
     /// when he should leave for the bus he means to take (the watch taps 该出门了 then)
     var leaveAt: Date?
+    /// a stretch she is not sure of, which the wrist can say 对 to (the most recent one); optional, as is `slept`, so a day from an older phone decodes
+    var unsure: Unsure?
+    /// how long he slept the night that ended this day, in minutes (the phone's 睡 number); the wrist's 早 card says it
+    var slept: Int?
 
     struct Block: Codable, Equatable {
         var t0: Double, t1: Double          // minutes from the day's midnight
@@ -68,6 +72,15 @@ struct WatchDay: Codable, Equatable {
     struct Action: Codable, Equatable {
         var id: String                      // what the phone answers with (a card's answer, or `ack` for a reminder)
         var title: String                   // `吃了`, `发吧`
+    }
+    struct Unsure: Codable, Equatable, Identifiable {
+        var id: String                      // the stretch's span id, which the brain's answer takes
+        var symbol: String
+        var rgb: UInt32?
+        var title: String                   // `在图书馆学习`
+        var span: String                    // `15:20–16:30`
+        var line: String                    // how she came to think so
+        var yes: String                     // the words a 对 stands for
     }
     struct Ride: Codable, Equatable {
         var route: String                   // `12 路`

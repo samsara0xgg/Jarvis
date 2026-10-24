@@ -6,6 +6,8 @@ import Foundation
 /// the id of the action that says a reminder that rang is known, and the two that say what he thinks of an event his mail made
 enum WatchActionID {
     static let ack = "ack", confirm = "confirm", deny = "deny"
+    /// his 对 to the stretch she is not sure of (`WatchDay.unsure`), sent with the stretch's id
+    static let unsure = "unsure"
     /// a card's button is its place in the card's list
     static func card(_ index: Int) -> String { "a\(index)" }
     static func cardIndex(_ id: String) -> Int? { id.hasPrefix("a") ? Int(id.dropFirst()) : nil }
@@ -59,6 +61,8 @@ enum WatchDayMaker {
         }
         day.leaveAt = planned.lazy.filter { $0.kind == .departure }.compactMap { e in r.items.first { $0.id == e.id }?.leave_at_ms }
             .map { Date(timeIntervalSince1970: Double($0) / 1000) }.first { $0 > made }
+        day.unsure = entries.last { $0.kind == .segment && $0.unsure && !$0.later && $0.ask?.yes != nil }.map(unsure)
+        day.slept = model.chips.first { $0.lens == .sleep }?.minutes
         if let riding {
             day.ride = ride(riding, now: made)
             day.headline = .init(title: day.ride?.route ?? "", note: day.ride?.title ?? "", waits: riding.state.isArriving)
@@ -91,6 +95,12 @@ enum WatchDayMaker {
         default: return nil
         }
         return WatchDay.Waiting(id: e.id, kind: .reminder, symbol: e.symbol, title: e.title, sub: [e.time, e.detail].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " "), actions: actions)
+    }
+
+    /// a stretch she is not sure of, as its open row says it: her line for how she knows, else the model's
+    private static func unsure(_ e: TLEntry) -> WatchDay.Unsure {
+        WatchDay.Unsure(id: e.id, symbol: symbol(e), rgb: e.color.map(hex), title: e.title, span: clock(e.t0) + "–" + tlEnd(e.t1 ?? e.t0),
+                        line: e.knows ?? e.note ?? "", yes: e.ask?.yes ?? e.title)
     }
 
     /// a card, with the buttons that need nothing typed and nothing opened on the phone; none left: the card is not for the wrist
