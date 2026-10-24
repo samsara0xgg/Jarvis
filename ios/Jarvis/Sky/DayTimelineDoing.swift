@@ -161,6 +161,9 @@ extension DayTimelineModel {
         return inside.map { $0.row }.filter { $0.kind == .stay && held($0) > 0 }.max { held($0) < held($1) }
     }
 
+    /// a run in Claude Code that says nothing more of what it was on
+    static let untitled = "没起名的会话"
+
     /// The runs of his attention a stretch has that are drawn as lines: the first eight, the rest are one line
     static let runsShown = 8
 
@@ -177,9 +180,12 @@ extension DayTimelineModel {
         func minutes(_ ms: Double?) -> Int { tlInt((ms ?? 0) / 60_000) }
         var timed: [(t: Double, line: TLLine)] = []
         for (k, x) in runs.prefix(runsShown).enumerated() {
-            let t = threads[x.row.thread], name = tlText(t?.name) ?? x.row.thread
-            let made = (t?.keys ?? []).compactMap { tlText($0.name) }.filter { $0 != name }.prefix(2)
-            timed.append((x.t0, TLLine(id: "\(s.id)-run-\(k)", time: clock(x.t0), mark: .dot(TLCategory.of(t?.category).color), title: name,
+            let t = threads[x.row.thread], whole = tlText(t?.name) ?? x.row.thread
+            var made = Array((t?.keys ?? []).compactMap { tlText($0.name) }.filter { $0 != whole }.prefix(2))
+            // a run in Claude Code wears its mark, and says what it was on, not the app's name
+            let claude = whole.hasPrefix("Claude Code"), rest = claude ? String(whole.dropFirst("Claude Code".count)).trimmingCharacters(in: CharacterSet(charactersIn: " ·:：-")) : whole
+            let name = rest.isEmpty && !made.isEmpty ? made.removeFirst() : rest.isEmpty ? Self.untitled : rest
+            timed.append((x.t0, TLLine(id: "\(s.id)-run-\(k)", time: clock(x.t0), mark: claude ? .claude(cloud: false) : .dot(TLCategory.of(t?.category).color), title: name,
                                        detail: made.isEmpty ? nil : made.joined(separator: " · "), right: tlDur(max(1, minutes(x.row.ms ?? (x.t1 - x.t0) * 60_000))), span: x.t0...x.t1)))
         }
         let moments: Set<TLEntry.Kind> = runs.isEmpty ? [.talk, .stay, .sleep] : [.talk, .stay, .sleep, .work, .screen]

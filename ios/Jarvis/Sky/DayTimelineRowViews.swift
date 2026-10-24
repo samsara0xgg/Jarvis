@@ -210,7 +210,7 @@ struct TLRowView: View, Equatable {
         } else {
             ZStack {
                 if e.later { Circle().strokeBorder(Look.ink.opacity(0.34), style: StrokeStyle(lineWidth: 1, dash: [2.5, 2.5])) } else { Circle().fill(Color.white.opacity(0.06)) }
-                Image(systemName: e.later ? e.symbol.replacingOccurrences(of: ".fill", with: "") : e.symbol).font(.system(size: 14))
+                TLSymbol(name: e.later ? e.symbol.replacingOccurrences(of: ".fill", with: "") : e.symbol, size: 14)
                     .foregroundStyle(e.kind == .segment ? e.color?.color ?? Look.ink2 : iconColor)          // a stretch's icon is its category's colour
             }
             .frame(width: TLColumns.bead, height: TLColumns.bead)
@@ -300,7 +300,7 @@ struct TLRowView: View, Equatable {
             ZStack {
                 Circle().fill(beadFill)
                 if e.later { Circle().strokeBorder(Look.ink.opacity(0.34), style: StrokeStyle(lineWidth: 1, dash: [2.5, 2.5])) }
-                Image(systemName: e.later ? e.symbol.replacingOccurrences(of: ".fill", with: "") : e.symbol).font(.system(size: 14))
+                TLSymbol(name: e.later ? e.symbol.replacingOccurrences(of: ".fill", with: "") : e.symbol, size: 14)
                     .foregroundStyle(e.kind == .segment ? e.color?.color ?? Look.ink2 : iconColor)
             }
             .frame(width: PhoneCol.bead, height: PhoneCol.bead)
@@ -443,7 +443,7 @@ private struct TLPreview: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 10) {
                 Text(e.time).font(Look.figures(11.5)).foregroundStyle(Look.ink2)
-                Image(systemName: e.symbol).font(.system(size: 14)).foregroundStyle(e.kind == .segment ? e.color?.color ?? Look.ink2 : iconColor).frame(width: 28, height: 28).background(Color.white.opacity(0.06), in: Circle())
+                TLSymbol(name: e.symbol, size: 14).foregroundStyle(e.kind == .segment ? e.color?.color ?? Look.ink2 : iconColor).frame(width: 28, height: 28).background(Color.white.opacity(0.06), in: Circle())
                 VStack(alignment: .leading, spacing: 2) {
                     Text(e.title).font(.system(size: 15)).foregroundStyle(e.unknown ? Look.ink2 : Look.ink).lineLimit(3)
                     if let d = e.detail { Text(d).font(.system(size: 12)).foregroundStyle(Look.ink2).lineLimit(4) }

@@ -693,3 +693,18 @@ struct ClaudeMark: Shape {
         return p
     }
 }
+
+/// A row's icon by its symbol's name: an SF Symbol, or `TLSymbol.claude` for the Claude mark, drawn at the symbol's size and weight
+struct TLSymbol: View {
+    static let claude = "claude.mark"
+    let name: String
+    var size: Double
+
+    var body: some View {
+        if name == Self.claude {
+            ClaudeMark().stroke(style: StrokeStyle(lineWidth: size / 9, lineCap: .round)).frame(width: size * 0.9, height: size * 0.9)
+        } else {
+            Image(systemName: name).font(.system(size: size))
+        }
+    }
+}

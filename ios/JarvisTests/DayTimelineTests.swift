@@ -24,7 +24,7 @@ final class DayTimelineTests: XCTestCase {
         let kinds = m.entries.map(\.kind)
         XCTAssertEqual(kinds, [.sleep, .stay, .reminder, .code, .work, .trip, .trip, .stay, .payment, .trip, .stay, .trip, .stay, .event, .picture, .call, .workout, .trip, .stay,
                                .work, .code, .payment, .claude, .reminder, .now, .event, .reminder, .departure], "her two talks are no rows: the conversation holds them (yilun 10-20)")
-        XCTAssertEqual(m.entries.map(\.title).prefix(5), ["睡觉", "家", "带伞", "Claude Code · 3 个会话", "在 Mac 上工作"])
+        XCTAssertEqual(m.entries.map(\.title).prefix(5), ["睡觉", "家", "带伞", "3 个会话", "在 Mac 上工作"])
         let t = m.entries.map(\.t0)
         XCTAssertEqual(t, t.sorted(), "the list runs forward in time")
         XCTAssertEqual(m.nowIndex, 24)
@@ -137,7 +137,7 @@ final class DayTimelineTests: XCTestCase {
         XCTAssertFalse(m.entries.contains { $0.kind == .talk }, "her talks are in the conversation, not in the day's list (yilun 10-20)")
         XCTAssertEqual(m.entries.filter { $0.lenses.contains(.talk) }.map(\.id), ["stay-1", "stay-13"], "the places they were in are what 和她 brings forward")
         XCTAssertEqual(m.marks(of: .talk), [TLMark(t0: 612, t1: 622), TLMark(t0: 1240, t1: 1262)], "and the bar shows when they were")
-        XCTAssertEqual(m.readout(at: 615).elsewhere, ["Claude Code · 接上天气和身体数据", "明天下午有什么安排？"], "a finger on the bar reads the talk by its topic")
+        XCTAssertEqual(m.readout(at: 615).elsewhere, ["接上天气和身体数据", "明天下午有什么安排？"], "a finger on the bar reads the talk by its topic")
         XCTAssertEqual(m.readout(at: 1245).elsewhere.last, "和她说话 · 14 句", "and one with none by how long it was")
     }
 
@@ -596,7 +596,7 @@ final class DayTimelineTests: XCTestCase {
     func testAFingerOnAStayReadsItsHoursAndLengthAndWhatElseWentOnThen() {
         let r = build(TimelineFixture.today(cal)).readout(at: 615)
         XCTAssertEqual(r.head, "家 · 09:05–11:25 · 2 小时 20 分")
-        XCTAssertEqual(r.second, "Claude Code · 接上天气和身体数据 · 明天下午有什么安排？", "the session and the talk that cover 10:15, Claude Code first; the Mac work 15 minutes on is too far")
+        XCTAssertEqual(r.second, "接上天气和身体数据 · 明天下午有什么安排？", "the session and the talk that cover 10:15, Claude Code first; the Mac work 15 minutes on is too far")
         XCTAssertNotNil(r.hue)
         XCTAssertTrue(r.strong, "a place he keeps")
         XCTAssertFalse(r.ahead)
@@ -643,8 +643,8 @@ final class DayTimelineTests: XCTestCase {
     func testAtMostTwoThingsAreToldAndTheMostTellingComeFirst() {
         let r = build(TimelineFixture.today(cal)).readout(at: 1245)
         XCTAssertEqual(r.head, "家 · 18:50 起 · 3 小时", "a stay still going has its start and how long so far")
-        XCTAssertEqual(r.elsewhere, ["Jarvis · Xcode", "Claude Code · 论文第三章的数据", "和她说话 · 14 句"], "Mac work, Claude Code, then the talk: all cover 20:45")
-        XCTAssertEqual(r.second, "Jarvis · Xcode · Claude Code · 论文第三章的数据", "the phone says the first two")
+        XCTAssertEqual(r.elsewhere, ["Jarvis · Xcode", "论文第三章的数据", "和她说话 · 14 句"], "Mac work, Claude Code, then the talk: all cover 20:45")
+        XCTAssertEqual(r.second, "Jarvis · Xcode · 论文第三章的数据", "the phone says the first two")
         XCTAssertEqual(r.elsewhere.count, 3)
         let more = build(TimelineFixture.today(cal)).readout(at: 1225)
         XCTAssertEqual(more.elsewhere, ["Jarvis · Xcode", "Claude · 积分换元的符号问题"], "the Mac work and the chat with Claude cover 20:25; the session that ended seven minutes before and the talk 15 minutes on do not")

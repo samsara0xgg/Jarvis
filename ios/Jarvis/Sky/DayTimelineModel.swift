@@ -216,9 +216,9 @@ struct TLSession: Equatable, Identifiable {
     var prompts: Int?                       // what he typed in it (0: it ran by itself); none from a brain that does not say
 
     /// what its row and its line in a group are called
-    var name: String { title ?? "Claude Code" }
+    var name: String { title ?? "没起名的会话" }
     /// what the glance and the readout say of it
-    var told: String { title.map { "Claude Code · " + $0 } ?? "Claude Code" }
+    var told: String { name }
 }
 
 /// one line of the list
@@ -779,8 +779,8 @@ struct DayTimelineModel: Equatable {
             let codes = (members[s] ?? []).filter { list[$0].kind == .code }
             guard codes.count > 1 else { continue }
             let sessions = codes.flatMap { list[$0].sessions }
-            var g = TLEntry(id: "code-group-" + list[s].id, kind: .code, t0: sessions.map(\.t0).min() ?? list[codes[0]].t0, title: "Claude Code · \(codes.count) 个会话")
-            g.time = clock(g.t0); g.t1 = sessions.map(\.t1).max(); g.symbol = "terminal.fill"; g.lens = .work
+            var g = TLEntry(id: "code-group-" + list[s].id, kind: .code, t0: sessions.map(\.t0).min() ?? list[codes[0]].t0, title: "\(codes.count) 个会话")
+            g.time = clock(g.t0); g.t1 = sessions.map(\.t1).max(); g.symbol = TLSymbol.claude; g.lens = .work
             let titled = sessions.sorted { $0.t1 > $1.t1 }.compactMap(\.title).prefix(2)      // the two newest that have a title
             g.detail = titled.isEmpty ? nil : titled.joined(separator: " · ")
             g.sessions = sessions

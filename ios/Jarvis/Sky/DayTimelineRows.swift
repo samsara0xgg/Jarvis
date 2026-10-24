@@ -275,7 +275,7 @@ extension DayTimelineModel {
             e.glance = [word, i.distance_m.flatMap(tlDistance)].compactMap { $0 }.joined(separator: " · ")
         case "code":
             e.kind = .code
-            e.symbol = "terminal.fill"
+            e.symbol = TLSymbol.claude
             let project = tlText(i.project), account = tlText(i.account)?.uppercased()
             let s = TLSession(id: i.id, t0: t0, t1: max(t0, end ?? t0), time: e.time, title: tlText(i.title), project: project, account: account, right: dur ?? "", recap: tlText(i.detail), prompts: i.prompts)
             e.title = s.name
