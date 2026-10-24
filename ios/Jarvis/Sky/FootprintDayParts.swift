@@ -116,17 +116,21 @@ struct FootprintDayMap: View {
     let model: FootprintModel?
     let fitKey: String
     var ground = false                  // the phone: the map is the ground and runs to the top edge, under the strip and her; the iPad's sheet keeps it under its head
+    var room: (fit: UIEdgeInsets, legal: CGFloat)? = nil          // the iPad's 地图: the room kept clear round the route and under Apple's marks; it fades the map's edges itself
 
     var body: some View {
         let state = ui.footprint, moment = state.moment
         let dot = moment.map { m in model.flatMap { FootprintDayContent.dot($0, moment: m) } } ?? state.minute.flatMap { t in model.flatMap { FootprintDayContent.dot($0, minute: t) } }
         let h = ground ? FootprintDayPage.Y.groundH : FootprintDayPage.Y.mapH
         let clear = ground ? FootprintDayPage.Y.clear : 60          // from the top of the map to where the route may stand: under the strip and her sentence
-        FootprintMapView(routes: content.routes, places: content.places, tokens: content.tokens, now: content.now, dot: dot, follow: moment?.follow,
-                         fitPadding: UIEdgeInsets(top: clear, left: 24, bottom: 36, right: 110), fitKey: fitKey, locateTick: state.locateTick, legalInset: 44, touched: { state.player.touch() })          // MapKit's legal label stands above the fade
-            .mask(LinearGradient(stops: [.init(color: ground ? .black : .clear, location: 0), .init(color: .black, location: ground ? 0 : 70 / h),
-                                         .init(color: .black, location: 1 - 36 / h), .init(color: .clear, location: 1)],
-                                 startPoint: .top, endPoint: .bottom))
+        let map = FootprintMapView(routes: content.routes, places: content.places, tokens: content.tokens, now: content.now, dot: dot, follow: moment?.follow,
+                                   fitPadding: room?.fit ?? UIEdgeInsets(top: clear, left: 24, bottom: 36, right: 110), fitKey: fitKey, locateTick: state.locateTick,
+                                   legalInset: room?.legal ?? 44, touched: { state.player.touch() })          // MapKit's legal label stands above the fade
+        if room != nil { map } else {
+            map.mask(LinearGradient(stops: [.init(color: ground ? .black : .clear, location: 0), .init(color: .black, location: ground ? 0 : 70 / h),
+                                            .init(color: .black, location: 1 - 36 / h), .init(color: .clear, location: 1)],
+                                    startPoint: .top, endPoint: .bottom))
+        }
     }
 }
 
@@ -135,16 +139,17 @@ struct FootprintDayReplay: View {
     let ui: StarUI
     let model: FootprintModel
     let entries: [TLEntry]
+    var room: CGSize? = nil             // the iPad's map: ▶ at the lower right of this room and the caption over it; the phone's stand on its map in the design space
 
     var body: some View {
-        let state = ui.footprint
+        let state = ui.footprint, w = room.map { Double($0.width) } ?? W, foot = room.map { Double($0.height) }
         ZStack(alignment: .topLeading) {
             if model.replay(.day) != nil {
-                FootprintReplayButton(player: state.player, play: play).offset(x: W - 30 - 36, y: FootprintDayPage.Y.map + 264)
+                FootprintReplayButton(player: state.player, play: play).offset(x: w - 30 - 36, y: foot.map { $0 - 36 } ?? FootprintDayPage.Y.map + 264)
             }
-            FootprintBeatCaption(beat: state.moment?.beat, model: model, day: true).frame(width: W).offset(y: FootprintDayPage.Y.map + 222)
+            FootprintBeatCaption(beat: state.moment?.beat, model: model, day: true).frame(width: w).offset(y: foot.map { $0 - 78 } ?? FootprintDayPage.Y.map + 222)
         }
-        .frame(width: W, height: H, alignment: .topLeading)
+        .frame(width: w, height: foot ?? H, alignment: .topLeading)
         .onAppear {
             #if DEBUG
             FootprintHooks.play = play
@@ -321,6 +326,7 @@ struct FootprintDayList: View {
     let ui: StarUI
     let engine: StarEngine
     let entries: [TLEntry]
+    var height: Double? = nil           // the iPad's: from the list's top to the window's foot; the phone's runs from `Y.list` to the screen's
     let open: (TLEntry) -> Void
     @State private var pos = ScrollPosition()
     @Environment(\.accessibilityReduceMotion) private var reduce
@@ -333,7 +339,7 @@ struct FootprintDayList: View {
         ScrollView(showsIndicators: false) {
             VStack(spacing: 0) {
                 ForEach(Array(entries.enumerated()), id: \.element.id) { i, e in
-                    TLRowView(e: e, dim: next.map { i >= $0 } == true ? Self.later : 1, top: tops[i], room: FootprintDayPage.Y.viewport, tl: tl, engine: engine, tap: { open(e) }).equatable()
+                    TLRowView(e: e, dim: next.map { i >= $0 } == true ? Self.later : 1, top: tops[i], room: height.map { $0 - TLLayout.fade - TLLayout.under } ?? FootprintDayPage.Y.viewport, tl: tl, engine: engine, tap: { open(e) }).equatable()
                 }
             }
             .overlay(alignment: .topLeading) {
@@ -349,11 +355,11 @@ struct FootprintDayList: View {
         .onChange(of: tl.request) { _, r in
             if r.glide && !reduce { withAnimation(TLMotion.follow) { pos.scrollTo(y: r.y) } } else { pos.scrollTo(y: r.y) }
         }
-        .frame(width: W, height: FootprintDayPage.Y.viewport + TLLayout.fade + TLLayout.under, alignment: .top)          // to the screen's foot, under the bar
+        .frame(width: W, height: height ?? FootprintDayPage.Y.viewport + TLLayout.fade + TLLayout.under, alignment: .top)          // to the screen's foot, under the bar
         .mask(alignment: .top) {
             VStack(spacing: 0) {
                 LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom).frame(height: TLLayout.fadeTop)
-                Color.black.frame(height: FootprintDayPage.Y.viewport + TLLayout.under - TLLayout.fadeTop)
+                Color.black.frame(height: height.map { $0 - TLLayout.fade - TLLayout.fadeTop } ?? FootprintDayPage.Y.viewport + TLLayout.under - TLLayout.fadeTop)
                 LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom).frame(height: TLLayout.fade)
             }
         }

@@ -13,6 +13,40 @@ enum SettingsPage: Hashable {
     }
 }
 
+/// The groups of the main list, which the iPad's 设置 lists at its left, one shown at a time at its right
+enum SettingsGroup: Hashable, CaseIterable {
+    case home, brain, talk, senses, lifelog, notices, sound, data
+
+    var title: String {
+        switch self {
+        case .home: "首页"
+        case .brain: "大脑"
+        case .talk: "和她说话"
+        case .senses: "手机感知"
+        case .lifelog: "随身录音"
+        case .notices: "通知"
+        case .sound: "声音"
+        case .data: "数据"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .home: "square.grid.2x2"
+        case .brain: "cloud"
+        case .talk: "message"
+        case .senses: "iphone"
+        case .lifelog: "mic"
+        case .notices: "bell"
+        case .sound: "speaker.wave.2"
+        case .data: "cylinder"
+        }
+    }
+
+    /// the groups this device has: an iPad senses and records nothing (ADR 0338)
+    static var here: [SettingsGroup] { allCases.filter { DeviceRole.senses || ($0 != .senses && $0 != .lifelog) } }
+}
+
 /// Position 0...1 of a CSS `animation-direction: alternate` loop at `date`, shaped by `curve`.
 private func alternate(_ date: Date, period: Double, curve: UnitCurve) -> Double {
     let u = (date.timeIntervalSinceReferenceDate / period).truncatingRemainder(dividingBy: 2)
@@ -28,6 +62,8 @@ struct SettingsMainPage: View {
     /// the phone home's page: the line under her says how the brain stands, so the card that said it here is not drawn
     var asPage = false
     var tuneNear: () -> Void = {}
+    /// the iPad's 设置: this group alone, its name already over it; the version stands under the groups
+    var group: SettingsGroup? = nil
     let push: (SettingsPage) -> Void
     /// The home-screen icon: the glass one (primary, AppIcon) or the flat one (the alternate AppIconFlat, project.yml).
     @State private var flatIcon = UIApplication.shared.alternateIconName == "AppIconFlat"
@@ -44,11 +80,11 @@ struct SettingsMainPage: View {
     var body: some View {
         VStack(spacing: 0) {
             if !asPage { SetGroup { hero } }
-            SetSection(header: "首页") {
+            if shows(.home) { SetSection(header: header(.home)) {
                 SegmentedRow(title: "App 图标", options: ["玻璃", "平面"],
                              selection: Binding(get: { flatIcon ? 1 : 0 }, set: { pickIcon(flat: $0 == 1) }))
-            }
-            SetSection(header: "大脑", footer: model.showsConversationModel ? "下一句起生效" : nil) {
+            } }
+            if shows(.brain) { SetSection(header: header(.brain), footer: model.showsConversationModel ? "下一句起生效" : nil) {
                 InfoRow(label: "连接的大脑", detail: model.brainName)
                 InfoRow(label: "延迟", detail: model.latency)
                 if model.showsConversationModel, let current = model.conversationModel, let effort = model.conversationEffort {
@@ -62,8 +98,8 @@ struct SettingsMainPage: View {
                     }
                 }
                 NavRow(label: "重新配对") { push(.pair) }
-            }
-            SetSection(header: "和她说话", footer: "「App 打开时喊 Hey Jarvis 唤醒」开着时，App 在前台会一直听，比较费电。") {
+            } }
+            if shows(.talk) { SetSection(header: header(.talk), footer: "「App 打开时喊 Hey Jarvis 唤醒」开着时，App 在前台会一直听，比较费电。") {
                 InfoRow(label: "嘿 Siri，叫 Jarvis", detail: model.siri)
                 SwitchRow(title: "操作按钮叫她", isOn: $model.actionButton)
                 SwitchRow(title: "App 打开时喊 Hey Jarvis 唤醒", isOn: $model.wakeInApp)
@@ -76,12 +112,12 @@ struct SettingsMainPage: View {
                 SegmentedRow(title: "回答语言", options: SettingsModel.AnswerLanguage.allCases.map(\.title),
                              selection: Binding(get: { model.language.rawValue },
                                                 set: { model.language = .init(rawValue: $0) ?? .followMe }))
-            }
+            } }
             if DeviceRole.senses {          // an iPad senses and records nothing (ADR 0338): no switches for it
-                SetSection(header: "手机感知", footer: "这些只发给你自己的大脑，随时可以关。") {
+                if shows(.senses) { SetSection(header: header(.senses), footer: "这些只发给你自己的大脑，随时可以关。") {
                     ForEach($model.senses) { $s in SwitchRow(title: s.title, detail: s.detail, isOn: $s.isOn) }
-                }
-                SetSection(header: "随身录音", footer: "只在 Wi-Fi 下上传。") {
+                } }
+                if shows(.lifelog) { SetSection(header: header(.lifelog), footer: "只在 Wi-Fi 下上传。") {
                     SwitchRow(title: "随身录音", isOn: $model.lifelogOn)
                     TimelineView(.periodic(from: .now, by: 30)) { t in
                         VStack(alignment: .leading, spacing: 3) {
@@ -92,26 +128,31 @@ struct SettingsMainPage: View {
                         .foregroundStyle(LifelogUploader.shared.needsRepair ? SetColor.faint : SetColor.muted)
                         .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 16).padding(.bottom, 11)
                     }
-                }
+                } }
             }
-            SetSection(header: "通知") {
+            if shows(.notices) { SetSection(header: header(.notices)) {
                 ForEach($model.notices) { $s in SwitchRow(title: s.title, detail: s.detail, isOn: $s.isOn) }
                 NavRow(label: "免打扰时段", detail: model.quietHours)
-            }
-            SetSection(header: "声音") {
+            } }
+            if shows(.sound) { SetSection(header: header(.sound)) {
                 SwitchRow(title: "声音效果", isOn: $model.soundOn)
-            }
-            SetSection(header: "数据") {
+            } }
+            if shows(.data) { SetSection(header: header(.data)) {
                 NavRow(label: "查看手机报给大脑的记录") { push(.log) }
                 DeleteRow(count: model.todayCount, onDelete: model.deleteToday)
+            } }
+            if group == nil {
+                if !HomeModule.shared.isTimeline { SetSection { NavRow(label: "调整近景视角", action: tuneNear) } }       // the near view is the dial's
+                Text(model.version).font(.footnote).foregroundStyle(SetColor.muted).padding(.top, 32)
             }
-            if !HomeModule.shared.isTimeline { SetSection { NavRow(label: "调整近景视角", action: tuneNear) } }       // the near view is the dial's
-            Text(model.version).font(.footnote).foregroundStyle(SetColor.muted).padding(.top, 32)
         }
         .padding(.top, asPage ? 0 : 14)
         .padding(.bottom, 56)
         .onChange(of: isCurrent, initial: true) { _, now in if now { BrainLink.shared.ping(); LifelogUploader.shared.refresh(); Task { await model.refreshConversation() } } }
     }
+
+    private func shows(_ g: SettingsGroup) -> Bool { group == nil || group == g }
+    private func header(_ g: SettingsGroup) -> String? { group == nil ? g.title : nil }
 
     private var hero: some View {
         HStack(spacing: 14) {

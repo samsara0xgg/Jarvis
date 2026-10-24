@@ -4,6 +4,7 @@ import SwiftUI
 // as a column), at the right the one conversation (the phone's page, `TalkPanel`, laid out in the column), running up under her to the status bar's narrow blur. The round button at
 // the top left folds the column away, the one at the top right is 她出不出声. A topic's 前情, 看原话 and the ‹ › bar over the field are the phone's own, and so is the field
 // (`ChatComposer`), 8 pt over the bar and 8 pt over the keys while he types.
+// Narrower (portrait, Split View) the conversation takes the window's width, and the round button at the top left drops the phone's card of search and topics over it instead.
 // Laid out at the mock's places (13" landscape, design/ipad-src/ipad.html), from the top of the window.
 
 struct PadChat: View {
@@ -11,16 +12,18 @@ struct PadChat: View {
     let width: Double
     let height: Double                  // the window's, to its foot under the bar
     let top: Double                     // the status bar's height
+    let wide: Bool                      // wide enough for the column of topics beside the talk
     @Binding var folded: Bool
     @Binding var focused: Bool          // the field has the keyboard (the home's, which the engine's beginEditing / endEditing set)
     let keyboard: Double                // how far the keyboard reaches up from the foot
     @State private var past = ChatSearchModel()
+    @State private var searching = false          // one column: the card of search and topics is down from the left button
     @AppStorage(VoicePrefs.key) private var spoken = true      // 她出不出声
 
     private var ui: StarUI { engine.ui }
     private static let columnW = 380.0, side = 28.0
     /// the conversation's own width, the column's room beside the left one (the mock's 404 on): folded, the same width in the middle, so no row wraps again
-    private var talkW: Double { width - Self.columnW - 24 }
+    private var talkW: Double { wide ? width - Self.columnW - 24 : width }
     /// where the field's foot is: 8 pt over the bar, and over the keys while they are up (the bar goes while he types)
     static func fieldFoot(height: Double, keyboard: Double) -> Double { keyboard > 0 ? height - keyboard - StarUI.keyGap : height - PadHome.barH - 8 }
     /// The phone's field with what it attaches, its foot at `foot`; what is attached grows it upward, and the panel that picks it opens over it as on the phone
@@ -37,7 +40,7 @@ struct PadChat: View {
     var body: some View {
         ZStack(alignment: .topLeading) {
             conversation
-            if !folded {
+            if wide && !folded {
                 ChatSearchCard(model: past, engine: engine, close: {}, column: true)
                     .frame(width: Self.columnW - 28).frame(maxHeight: .infinity, alignment: .top)
                     .padding(.leading, 14).padding(.top, top + 70).padding(.bottom, PadHome.barRoom)
@@ -46,12 +49,14 @@ struct PadChat: View {
                     .transition(.opacity)
             }
             edge
+            if !wide { search }
             buttons
             Self.field(engine: engine, focused: $focused, x: talkX + 20 + TalkPage.side, width: talkW - 40 - 2 * TalkPage.side, foot: Self.fieldFoot(height: height, keyboard: keyboard))
         }
         .frame(width: width, height: height, alignment: .topLeading)
         .animation(padMotion, value: folded)
         .task(id: ui.page == .talk) { if ui.page == .talk { await past.refreshTopics() } }          // the page stays made under the others: her topics as they are now each time it comes up
+        .onChange(of: ui.page) { _, p in if p != .talk { setSearch(false) } }
     }
 
     /// the phone's page in the right column, 40 pt in from each side as the mock's messages; its rows as wide as the mock's (62% of the room)
@@ -65,7 +70,7 @@ struct PadChat: View {
             .offset(x: talkX + 20)
     }
     /// where the conversation's room begins: beside the column, or in the middle when it is folded
-    private var talkX: Double { folded ? (width - talkW) / 2 : width - talkW }
+    private var talkX: Double { folded || !wide ? (width - talkW) / 2 : width - talkW }
 
     /// the one soft edge of the page: a narrow blur under the status bar, so the clock reads over the messages that went by under it (the phone's `statusEdge`, the mock's `.topblur`)
     private var edge: some View {
@@ -78,10 +83,30 @@ struct PadChat: View {
         .allowsHitTesting(false)
     }
 
+    /// one column: the phone's card of search and topics, dropped from the left button, over a layer that takes the tap that closes it
+    @ViewBuilder private var search: some View {
+        if searching {
+            Color.clear.frame(width: width, height: height).contentShape(Rectangle()).onTapGesture { setSearch(false) }
+            ChatSearchCard(model: past, engine: engine, close: { setSearch(false) })
+                .offset(x: Self.side - 12, y: top + PadHome.herY + HomeTop.button / 2 + 7)
+                .transition(.scale(scale: 0.96, anchor: UnitPoint(x: 0.06, y: 0)).combined(with: .opacity))
+        }
+    }
+
+    private func setSearch(_ on: Bool) {
+        guard searching != on else { return }
+        withAnimation(.easeOut(duration: 0.3)) { searching = on }
+        if !on { past.reset() }
+    }
+
     /// the column's fold at the left, 她出不出声 at the right, on her line
     private var buttons: some View {
         HStack {
-            TopGlassButton(symbol: "sidebar.left", label: folded ? Words.Pad.unfoldTopics : Words.Pad.foldTopics, on: !folded) { Haptic.selection(); folded.toggle() }
+            if wide {
+                TopGlassButton(symbol: "sidebar.left", label: folded ? Words.Pad.unfoldTopics : Words.Pad.foldTopics, on: !folded) { Haptic.selection(); folded.toggle() }
+            } else {
+                TopGlassButton(symbol: "magnifyingglass", label: Words.PhoneChat.history) { Haptic.selection(); setSearch(!searching) }
+            }
             Spacer()
             TopGlassButton(symbol: spoken ? "speaker.wave.2" : "speaker.slash", label: spoken ? Words.PhoneChat.spokenOn : Words.PhoneChat.spokenOff, on: spoken) {
                 Haptic.selection(); VoicePrefs.spoken = !spoken

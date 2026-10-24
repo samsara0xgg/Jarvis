@@ -5,7 +5,8 @@ import UIKit
 // the number of what waits on her, her card under her, and the bar. 今天 in a window wide enough for two columns: the strip (日历, the date under her, ✦ 润色), the day's bar at
 // the whole width with the place line and the day's numbers, pinned; under them the phone's list on the left and her stage on the right (what he is in now and what waits on
 // him, or the row he picked). Narrower (portrait, Split View) it is one column, the list's rows opening where they stand. 聊天 in a wide window is her topics at the left and
-// the conversation at the right (Pad/PadChat.swift); 地图 and 设置 are the phone's own pages for now.
+// the conversation at the right (Pad/PadChat.swift), 地图 the footprint's column at the left and the map at the right (Pad/PadMap.swift), 设置 the groups at the left and the chosen
+// one's rows at the right (Pad/PadSettings.swift); narrower, each is one column.
 // The rows, the bar, the chips and an opened row are the phone's own views; this file only lays them out at iPad size.
 
 private let ink = SetColor.ink
@@ -38,13 +39,23 @@ private struct HomeChoice: View {
 
 #if DEBUG
 /// A simulator cannot be turned or split from the command line: `-padFrame landscape` lays the home out at the iPad's landscape size on its side,
-/// `-padFrame split` in a Split View third (compact width) beside an empty pane.
+/// `-padFrame split` in a Split View third (compact width) beside an empty pane, `-padFrame half` in a Split View half of the landscape iPad (683 pt on the 13").
 private struct PadDebugFrame: ViewModifier {
     func body(content: Content) -> some View {
         switch UserDefaults.standard.string(forKey: "padFrame") {
         case "landscape":
             GeometryReader { g in
                 content.frame(width: g.size.height, height: g.size.width).rotationEffect(.degrees(-90)).position(x: g.size.width / 2, y: g.size.height / 2)
+            }
+            .ignoresSafeArea()
+        case "half":
+            GeometryReader { g in
+                HStack(spacing: 0) {
+                    content.frame(width: ((g.size.height - 10) / 2).rounded()).clipped()
+                    Color.white.opacity(0.08).frame(width: 10)
+                    Color.black
+                }
+                .frame(width: g.size.height, height: g.size.width).rotationEffect(.degrees(-90)).position(x: g.size.width / 2, y: g.size.height / 2)
             }
             .ignoresSafeArea()
         case "split":
@@ -110,7 +121,7 @@ struct PadHome: View {
     private func home(_ built: TLBuilt?, date: Date, width w: Double, height h: Double, top: Double, wide: Bool) -> some View {
         ZStack(alignment: .topLeading) {
             page(built, width: w, height: h, top: top, wide: wide)
-            if wide { chat(width: w, height: h, top: top) }
+            chat(width: w, height: h, top: top, wide: wide)
             over(width: w, height: h, top: top)
             PadFlightView(flight: flight)
         }
@@ -135,17 +146,9 @@ struct PadHome: View {
     @ViewBuilder private func page(_ built: TLBuilt?, width w: Double, height h: Double, top: Double, wide: Bool) -> some View {
         switch ui.page {
         case .day: PadToday(engine: engine, built: built, width: w, top: top, wide: wide, flight: flight, nowInView: $nowInView, listRoom: $listRoom, empty: empty)
-        case .talk:
-            // ponytail: in one column the phone's page at the phone's width, centred, its field at the window's foot, until narrow windows are revisited
-            if !wide {
-                ZStack(alignment: .topLeading) {
-                    phonePage { TalkPanel(engine: engine, ui: ui, pull: .constant(nil), page: true) }.offset(x: (w - W) / 2, y: top)
-                    PadChat.field(engine: engine, focused: $focused, x: (w - W) / 2 + TalkPage.side, width: W - 2 * TalkPage.side, foot: PadChat.fieldFoot(height: h, keyboard: keyboard))
-                }
-            }
-        // ponytail: the phone's own pages at the phone's width, centred, until each has its two panes
-        case .map: phonePage { FootprintDayLayer(engine: engine, ui: ui) }.offset(x: (w - W) / 2)
-        case .settings: SettingsSheet(asPage: true, cardUp: ui.herCardOn, tuneNear: { engine.showPage(.day) }).frame(width: W).frame(maxWidth: .infinity).padding(.top, top)
+        case .talk: EmptyView()          // 聊天 stays made over the pages (`chat`)
+        case .map: PadMap(engine: engine, width: w, height: h, top: top, wide: wide)
+        case .settings: PadSettings(engine: engine, width: w, height: h, top: top, wide: wide)
         }
     }
 
@@ -160,16 +163,12 @@ struct PadHome: View {
         tabBar(width: w, height: h)
     }
 
-    /// 聊天 in a wide window stays made while another page is on, so that coming back to it finds the talk where he left it
-    private func chat(width w: Double, height h: Double, top: Double) -> some View {
+    /// 聊天 stays made while another page is on, so that coming back to it finds the talk where he left it
+    private func chat(width w: Double, height h: Double, top: Double, wide: Bool) -> some View {
         let on = ui.page == .talk
-        return PadChat(engine: engine, width: w, height: h, top: top, folded: $chatFolded, focused: $focused, keyboard: keyboard)
+        return PadChat(engine: engine, width: w, height: h, top: top, wide: wide, folded: $chatFolded, focused: $focused, keyboard: keyboard)
             .opacity(on ? 1 : 0).allowsHitTesting(on).accessibilityHidden(!on)
             .animation(.easeOut(duration: on ? 0.25 : 0.2), value: on)
-    }
-
-    private func phonePage<P: View>(@ViewBuilder _ p: () -> P) -> some View {
-        p().frame(width: W, height: H, alignment: .topLeading).coordinateSpace(name: "design")
     }
 
     /// The bar at the foot, as on the phone: the system's own on iOS 26 at the mock's width, the drawn one before it
@@ -235,7 +234,7 @@ struct PadHome: View {
     }
 
     #if DEBUG
-    /// `-padScene row` a row of the list with more to show tapped, `-padScene bar` a block of the bar tapped
+    /// `-padScene row` a row of the list with more to show tapped, `-padScene bar` a block of the bar tapped, `settings` or `map` that page (`trip`: Pad/PadMap.swift)
     private func padScene(_ s: String) {
         switch s {
         case "topic":           // 看原话 on the first of `-scene 时间线:聊天:话题`'s topics: its last place lit, the ‹ › bar over the field
@@ -247,6 +246,8 @@ struct PadHome: View {
             return
         case "fold": chatFolded = true; return          // 聊天's left column folded away
         case "type": engine.beginEditing?(); return     // a hold on her: 聊天 with the keyboard
+        case "settings": engine.showPage(.settings); return
+        case "map": engine.showPage(.map); return
         default: break
         }
         guard let m = builtDay()?.model else { return }

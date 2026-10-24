@@ -12,6 +12,9 @@ struct FootprintOutingPage: View {
     let model: FootprintModel
     let outing: FootprintOuting
     var phone = true                    // the phone's strip at the top and the map to the top edge; the iPad's sheet keeps the old head and its map under it
+    /// the iPad's 地图 in a wide window: its size and the top of its strip's buttons. The way back, the title and the stops stand at the left in the phone's column, the map runs to the
+    /// top and right edges at the right with the numbers and the curves under it
+    var split: (size: CGSize, top: Double)? = nil
     let back: () -> Void
     @State private var moment: FootprintMoment?          // under a finger on a curve or played by the replay
     @State private var player = FootprintPlayer()
@@ -24,8 +27,8 @@ struct FootprintOutingPage: View {
     private var route: FootprintMapRoute { parts.route }
     private var fastestMs: Int64? { parts.fastestMs }
 
-    init(model: FootprintModel, outing: FootprintOuting, phone: Bool = true, back: @escaping () -> Void) {
-        self.model = model; self.outing = outing; self.phone = phone; self.back = back
+    init(model: FootprintModel, outing: FootprintOuting, phone: Bool = true, split: (size: CGSize, top: Double)? = nil, back: @escaping () -> Void) {
+        self.model = model; self.outing = outing; self.phone = phone; self.split = split; self.back = back
         track = model.tracks[outing.id]
         parts = FootprintOutingParts(model: model, outing: outing)
     }
@@ -39,6 +42,18 @@ struct FootprintOutingPage: View {
     #endif
 
     var body: some View {
+        Group { if let split { columns(split) } else { stacked } }
+        .task { FootprintStreets.shared.ask(outing.stops.filter { FootprintDayContent.name($0) == nil }.map(\.coord)) }          // the streets of the stops nobody named
+        .onDisappear { player.stop() }
+        #if DEBUG
+        .onAppear {
+            FootprintHooks.curve = { x in held(x.map { curves.ms(x: $0) }) }
+            FootprintHooks.outingPlay = play
+        }
+        #endif
+    }
+
+    private var stacked: some View {
         ZStack(alignment: .topLeading) {
             mapView.padding(.top, phone ? 0 : 76)
             if model.replay(.outing(outing.id)) != nil {
@@ -54,14 +69,36 @@ struct FootprintOutingPage: View {
             .padding(.top, 459)
         }
         .frame(width: W, height: H, alignment: .topLeading)
-        .task { FootprintStreets.shared.ask(outing.stops.filter { FootprintDayContent.name($0) == nil }.map(\.coord)) }          // the streets of the stops nobody named
-        .onDisappear { player.stop() }
-        #if DEBUG
-        .onAppear {
-            FootprintHooks.curve = { x in held(x.map { curves.ms(x: $0) }) }
-            FootprintHooks.outingPlay = play
+    }
+
+    /// The iPad's wide 地图 (跨端UI标准 §11): at the left, in the phone's column, the way back and the title on her line and the stops under them; at the right the map, from the top and
+    /// right edges down to the numbers and the curves, which keep their phone width and stand clear of the bar at the foot.
+    private func columns(_ s: (size: CGSize, top: Double)) -> some View {
+        HStack(alignment: .top, spacing: 0) {
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: 12) {
+                    TopGlassButton(symbol: "chevron.left", label: Words.Footprint.back, action: back)
+                    titleLines
+                }
+                .padding(.leading, 28).padding(.top, s.top)
+                stops
+            }
+            .frame(width: W)
+            VStack(alignment: .leading, spacing: 0) {
+                FootprintMapView(routes: [route], places: parts.places, tokens: parts.tokens, dot: dot, follow: moment?.follow, lineWidth: 4.6,
+                                 fitPadding: UIEdgeInsets(top: s.top + 96, left: 56, bottom: 56, right: 40), fitKey: outing.id, legalInset: 36, touched: { player.touch() })
+                    .mask(LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black, location: 26 / max(s.size.width - W, 1))], startPoint: .leading, endPoint: .trailing))
+                    .mask(LinearGradient(stops: [.init(color: .black, location: 0.9), .init(color: .clear, location: 1)], startPoint: .top, endPoint: .bottom))
+                    .overlay(alignment: .bottomTrailing) {
+                        if model.replay(.outing(outing.id)) != nil { FootprintReplayButton(player: player, play: play).padding(.trailing, 30).padding(.bottom, 44) }
+                    }
+                    .overlay(alignment: .bottom) { FootprintBeatCaption(beat: moment?.beat, model: model).padding(.bottom, 92) }
+                parts.figures.frame(width: FootprintCurves.width, alignment: .leading).padding(.leading, 30)
+                parts.curveBlock(scrub: scrub) { held($0) }.padding(.leading, 30)
+            }
+            .padding(.bottom, 100)
         }
-        #endif
+        .frame(width: s.size.width, height: s.size.height, alignment: .topLeading)
     }
 
     // MARK: held and played
@@ -108,12 +145,17 @@ struct FootprintOutingPage: View {
             } right: {
                 EmptyView()
             }
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.system(size: Look.title, weight: .semibold)).foregroundStyle(Look.ink).lineLimit(1)
-                Text(dateLine).font(Look.figures(Look.note)).foregroundStyle(Look.ink2).lineLimit(1)
-            }
+            titleLines
             .frame(width: W - 72 - 80, height: HomeTop.button, alignment: .leading)          // 80 pt kept at the right for her
             .offset(x: HomeTop.side + HomeTop.button + 12, y: HomeTop.buttonY)
+        }
+    }
+
+    /// the two-line title: where the outing went, and its day and hours
+    private var titleLines: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title).font(.system(size: Look.title, weight: .semibold)).foregroundStyle(Look.ink).lineLimit(1)
+            Text(dateLine).font(Look.figures(Look.note)).foregroundStyle(Look.ink2).lineLimit(1)
         }
     }
 
