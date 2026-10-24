@@ -22,7 +22,9 @@ enum TalkPage {
     static let top: Double = TLSeat.talk.y + TLSeat.talkRadius * TLSeat.listening + 6, topFade = 30.0
     /// The phone's page (跨端UI标准 §1): the stream runs from the very top of the screen and scrolls past her; its newest page rests `inset` under the top, below her. Only the status bar's
     /// strip of `edge` pt is blurred, so that the clock stays readable.
-    static let inset = 128.0, edge = 76.0          // the status bar (62 pt on a phone with an island) and a little under it, in design points
+    static let inset = 128.0, edge = 110.0          // the status bar (62 pt on a phone with an island), the strip and the top of her, in design points
+    /// how far over the stream's resting foot the soft edge at the bottom begins
+    static let footEdge = 28.0
     /// in from each side, as the field
     static let side = 20.0
     /// her cards end at least this far short of the other side, and his bubbles begin this far in: who said it shows in where it stands
@@ -436,7 +438,7 @@ struct TalkPanel: View {
                     .frame(width: W, height: H).allowsHitTesting(false)
             }
             stream(top: phone ? 0 : TalkPage.top, bottom: bottom - (phone && (ui.trail != nil || ui.following != nil) ? 44 : 0), fade: ui.typing ? 8 : 24, open: 1)          // the bar over the field takes its room
-            if phone { statusEdge; strip }
+            if phone { edges(bottom: bottom); strip }
             if let chip { pageChip(chip, bottom: bottom) }
             if phone, let t = ui.trail { ChatTrailBar(trail: t, engine: engine).frame(width: W).offset(y: bottom - 40).transition(.opacity) }
             else if phone, let t = ui.following { TopicFollowBar(topic: t, engine: engine).frame(width: W).offset(y: bottom - 40).transition(.opacity) }
@@ -449,14 +451,25 @@ struct TalkPanel: View {
         .onChange(of: ui.panelOpen) { _, on in if !on { ui.chipOpen = false; setPast(false) } else { follow = true } }
     }
 
-    /// the one soft edge of the page: a thin blur under the status bar that fades out, so the clock reads over the messages that went by under it (the prototype's `.edge`)
-    private var statusEdge: some View {
-        ZStack {
-            Rectangle().fill(.thinMaterial)
-            LinearGradient(colors: [Look.sky.opacity(0.85), Look.sky.opacity(0)], startPoint: .top, endPoint: .bottom)
+    /// The page's two soft edges, over the stream that runs on under both: at the top, behind the status bar, the strip and her, and at the foot from a little over the field down
+    /// behind it and the bar to the screen's bottom. Each is a blur and a dimming that grow toward the screen's edge, so the words go soft and dim as they pass under and the clock and
+    /// the field still read; no band, no hard line.
+    private func edges(bottom: Double) -> some View {
+        func edge(_ h: Double, towardTop: Bool, dim: Double, full: Double) -> some View {
+            let (from, to): (UnitPoint, UnitPoint) = towardTop ? (.top, .bottom) : (.bottom, .top)
+            return ZStack {
+                Rectangle().fill(.ultraThinMaterial)
+                LinearGradient(colors: [Look.sky.opacity(dim), Look.sky.opacity(0)], startPoint: from, endPoint: to)
+            }
+            .frame(width: W, height: h)
+            .mask(LinearGradient(stops: [.init(color: .black, location: 0), .init(color: .black, location: full), .init(color: .clear, location: 1)], startPoint: from, endPoint: to))
         }
-        .frame(width: W, height: TalkPage.edge)
-        .mask(LinearGradient(stops: [.init(color: .black, location: 0), .init(color: .black, location: 0.75), .init(color: .clear, location: 1)], startPoint: .top, endPoint: .bottom))
+        let foot = bottom - TalkPage.footEdge
+        return ZStack(alignment: .topLeading) {
+            edge(TalkPage.edge, towardTop: true, dim: 0.8, full: 0.35)
+            edge(H - foot, towardTop: false, dim: 0.6, full: 0)          // the words still show, soft, through the field and the bar
+                .offset(y: foot)
+        }
         .allowsHitTesting(false)
     }
 
@@ -646,6 +659,7 @@ struct TalkPanel: View {
         // Those rounds are in the last two days: read only them, not the whole history on every frame of her talk.
         let tail = days.suffix(2).flatMap(\.rows)
         let shown = Dictionary(zip(tail.map(\.id), TalkStream.reading(tail)), uniquingKeysWith: { a, _ in a })
+        let rest = phonePage ? H - bottom : fade          // under the last row: on the phone's page the stream runs on to the screen's foot, under the field and the bar (`edges`)
         return ScrollViewReader { proxy in
             ScrollView(showsIndicators: false) {
                 // on the conversation's page the days and times stand in the middle between the rows, as a chat has them, the day before the first time of it ("今天 09:19"),
@@ -683,7 +697,7 @@ struct TalkPanel: View {
             }
             // the phone's newest page rests under her and the chip, the older ones scroll up past her; elsewhere the oldest row rests clear of the fade under her
             .contentMargins(.top, phonePage ? TalkPage.inset + (chip == nil ? 0 : 28) : page ? TalkPage.topFade : 0, for: .scrollContent)
-            .contentMargins(.bottom, fade, for: .scrollContent)
+            .contentMargins(.bottom, rest, for: .scrollContent)
             .id(page ? false : ui.chipOpen)         // a lazy stack resized under it loses its place now and then: opening or folding the chip starts the list again, at the bottom (on the page the chip's card is over the stream, which keeps its size)
             // It starts at the bottom, and rows fewer than its height sit at the bottom. Not anchored to the bottom as sizes change: that kept the lazy stack
             // laying out forever when the keyboard went down and the panel shut with a talk on show (the app froze, reproduced every time in the
@@ -743,16 +757,16 @@ struct TalkPanel: View {
                         .frame(width: page ? 36 : 32, height: page ? 36 : 32).background(Circle().fill(page ? card : Color.white.opacity(0.14))).overlay(Circle().stroke(Color.white.opacity(0.12), lineWidth: 0.5))
                 }
                 .buttonStyle(PressScale()).accessibilityLabel("回到最新")
-                .padding(.trailing, page ? 0 : 14).padding(.bottom, fade + 8)
+                .padding(.trailing, page ? 0 : 14).padding(.bottom, rest + 8)
                 .opacity(show ? 1 : 0).allowsHitTesting(show).animation(.easeOut(duration: 0.2), value: show)
             }
         }
         .mask(VStack(spacing: 0) {
             LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom).frame(height: phonePage ? 0 : page ? TalkPage.topFade : 24 * (1 - open))
             Color.black
-            LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom).frame(height: fade)
+            LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom).frame(height: phonePage ? 0 : fade)
         })
-        .frame(width: W, height: max(0, bottom + fade - top))
+        .frame(width: W, height: max(0, (phonePage ? H : bottom + fade) - top))
         .clipped()
         .offset(y: top)
     }

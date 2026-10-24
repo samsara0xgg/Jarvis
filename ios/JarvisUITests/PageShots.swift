@@ -35,6 +35,15 @@ final class PageShots: XCTestCase {
         shot("3-chat-under-her")
     }
 
+    func testChatScrolled() {
+        let app = open("时间线:聊天:长")
+        let w = app.windows.firstMatch
+        sleep(2)
+        w.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3)).press(forDuration: 0.05, thenDragTo: w.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.62)))
+        sleep(2)
+        shot("3f-chat-scrolled")
+    }
+
     func testChatTrail() {
         _ = open("时间线:聊天:跟")
         sleep(2)

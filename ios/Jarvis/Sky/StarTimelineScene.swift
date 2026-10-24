@@ -356,7 +356,7 @@ extension StarEngine {
         }
         case "她菜单": DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [self] in ui.tl.openArc(holding: false) }          // her cards out (`-scene 时间线:她菜单`)
         case "聊天":                                                               // the conversation's page of the bar at the foot, with a day and a half of talk on it (`:聊天:空` none)
-            if parts.count < 3 || parts[2] != "空" { talkPageRounds(cal) }
+            if parts.count < 3 || parts[2] != "空" { talkPageRounds(cal, long: parts.count > 2 && parts[2] == "长") }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [self] in showPage(.talk) }
             if parts.count > 2, parts[2] == "话题" {          // made-up topics in the search card (the brain does not serve them yet), for the card's look
                 ChatSearchModel.sceneTopics = [
@@ -595,7 +595,7 @@ extension StarEngine {
         tlUntil = nowMs() + TLTalk.stay; lingerUntil = tlUntil          // her answer is all there: it stays until he does something else
     }
 
-    private func talkPageRounds(_ cal: Cal) {
+    private func talkPageRounds(_ cal: Cal, long: Bool = false) {          // `long`: two days more before them, taller than the page
         let now = Date()
         func row(_ seq: Int, _ his: Bool, _ ago: Double, _ text: String) -> ConversationRow {
             let at = now.addingTimeInterval(-ago * 60)
@@ -605,8 +605,18 @@ extension StarEngine {
         }
         // an answer as the brain writes one: said, and written out (a voice part alone is a line before the answer, with more to come)
         func said(_ s: String) -> String { "<voice>\(s)</voice><document>\(s)</document>" }
+        let before = long ? [
+            row(-7, true, 74 * 60, "周末天气怎么样"),
+            row(-6, false, 74 * 60, said("周六晴，最高十四度；周日下午有雨，出门带伞。")),
+            row(-5, true, 73 * 60, "帮我记一下，下周三交实验报告"),
+            row(-4, false, 73 * 60, said("记下了，下周三交实验报告。周二晚上我提醒你检查一遍。")),
+            row(-3, true, 50 * 60, "今天走了多少步"),
+            row(-2, false, 50 * 60, said("八千四百步，比这周平均多一千。大部分是下午去图书馆那趟。")),
+            row(-1, true, 49 * 60, "图书馆几点关门"),
+            row(0, false, 49 * 60, said("今天开到晚上十一点，周五只到六点。")),
+        ] : []
         MainActor.assumeIsolated {
-            Conversation.shared.debugSet([
+            Conversation.shared.debugSet(before + [
                 row(1, true, 26 * 60, "明天早上提醒我九点出门"),
                 row(2, false, 26 * 60, said("好，明早八点五十提醒你，路上大概二十分钟。")),
                 row(3, true, 4 * 60, "今天要带什么"),

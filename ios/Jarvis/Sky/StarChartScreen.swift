@@ -458,10 +458,10 @@ extension View {
 }
 
 extension View {
-    /// the chat field's card (跨端UI标准 §6): deep-blue frosted, with a hairline and, while it has the keyboard, her light round it
+    /// the chat field's card (跨端UI标准 §6): deep-blue glass, with a hairline and, while it has the keyboard, her light round it
     func composerCard(focused: Bool) -> some View {
         let shape = RoundedRectangle(cornerRadius: 26)
-        return background(shape.fill(.ultraThinMaterial)).background(shape.fill(Look.card.opacity(0.78)))
+        return background(shape.fill(.ultraThinMaterial.opacity(0.7))).background(shape.fill(Look.card.opacity(0.25)))          // see-through: the words going under it show, blurred
             .overlay(shape.strokeBorder(Look.glow.opacity(focused ? 0.5 : 0.18), lineWidth: focused ? 1 : 0.6))
             .animation(.easeOut(duration: 0.25), value: focused)
     }
