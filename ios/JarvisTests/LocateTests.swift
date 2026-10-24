@@ -60,7 +60,7 @@ final class LocateTests: XCTestCase {
 
     private static let fix = LocateFix(lat: 48.4521, lng: -123.3018, accuracyM: 8, at: Date(timeIntervalSince1970: 1_791_650_000.5))
 
-    /// the line, asked `R1`, and what the phone sent back
+    /// the line, asked `R1`, and what the phone sent back to it (not the voice floor it reports on `ready`, ADR 0407)
     @MainActor private func ask(_ result: LocateResult, foreground: Bool = false, snapshot: @escaping (CLLocationCoordinate2D) async -> String? = { _ in "snap1" }) async -> [PhoneFrame] {
         let fake = FakeLink()
         let service = LocateService(source: { FakeSource(result: result) }, foreground: { foreground }, snapshot: snapshot, fixWait: 1, snapshotBudget: 1)
@@ -68,8 +68,9 @@ final class LocateTests: XCTestCase {
         line.endpoint = { (URL(string: "http://host")!, "t") }
         line.ensure()
         fake.out.yield(.locate(requestId: "R1"))
-        for _ in 0..<100 where fake.sent.isEmpty { try? await Task.sleep(nanoseconds: 20_000_000) }
-        return fake.sent
+        let answers = { fake.sent.filter { if case .floor = $0 { return false }; return true } }
+        for _ in 0..<100 where answers().isEmpty { try? await Task.sleep(nanoseconds: 20_000_000) }
+        return answers()
     }
 
     @MainActor func testAFreshFixIsAnsweredOnTheSocketThatAskedWithItsOwnTime() async {
