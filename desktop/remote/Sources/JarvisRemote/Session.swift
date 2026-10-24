@@ -131,13 +131,18 @@ final class Session: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
 
     // MARK: the screen
 
-    /// Main thread: wake the display and keep it awake while he is here (a sleeping display locks this Mac), lay the curtain, then capture.
+    /// Main thread: wake the display and keep it awake while he is here (a sleeping display locks this Mac), fold every other display
+    /// into the main one so all windows are where the iPad can see them, lay the curtain, then capture.
     private func start(curtain wantCurtain: Bool) {
         var poke: IOPMAssertionID = 0
         IOPMAssertionDeclareUserActivity("Jarvis Remote" as CFString, kIOPMUserActiveLocal, &poke)
         IOPMAssertionCreateWithName(kIOPMAssertionTypePreventUserIdleDisplaySleep as CFString, IOPMAssertionLevel(kIOPMAssertionLevelOn), "Jarvis Remote" as CFString, &awake)
-        if wantCurtain { curtain = Curtain.lay() }
-        Task { await capture() }
+        let folded = Displays.fold()
+        // the windows take a moment to move and the display list to settle before the curtain and the capture look at it
+        DispatchQueue.main.asyncAfter(deadline: .now() + (folded ? 2 : 0)) { [self] in
+            if wantCurtain { curtain = Curtain.lay() }
+            Task { await capture() }
+        }
     }
 
     private func capture() async {
@@ -287,11 +292,43 @@ final class Session: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
             if awake != 0 { IOPMAssertionRelease(awake) }
             guard Session.live === self else { return }
             Session.live = nil
+            Displays.unfold()
             let p = Process()
             p.executableURL = URL(fileURLWithPath: "/usr/bin/pmset")
             p.arguments = ["displaysleepnow"]
             try? p.run()
         }
+    }
+}
+
+/// The other displays mirror the main one while he is here, so the windows on them come over to the one the iPad sees.
+/// For this app only: if it dies, macOS puts the displays back by itself.
+enum Displays {
+    private static var folded: [CGDirectDisplayID] = []
+
+    static func fold() -> Bool {
+        var ids = [CGDirectDisplayID](repeating: 0, count: 16), n: UInt32 = 0
+        CGGetOnlineDisplayList(16, &ids, &n)
+        let main = CGMainDisplayID()
+        let others = ids.prefix(Int(n)).filter { $0 != main && CGDisplayMirrorsDisplay($0) == kCGNullDirectDisplay }
+        guard !others.isEmpty else { return false }
+        var cfg: CGDisplayConfigRef?
+        guard CGBeginDisplayConfiguration(&cfg) == .success else { return false }
+        others.forEach { CGConfigureDisplayMirrorOfDisplay(cfg, $0, main) }
+        let done = CGCompleteDisplayConfiguration(cfg, .forAppOnly)
+        print("fold \(others.count) display(s) into the main one: \(done.rawValue)")
+        guard done == .success else { return false }
+        folded = Array(others)
+        return true
+    }
+
+    static func unfold() {
+        guard !folded.isEmpty else { return }
+        var cfg: CGDisplayConfigRef?
+        guard CGBeginDisplayConfiguration(&cfg) == .success else { return }
+        folded.forEach { CGConfigureDisplayMirrorOfDisplay(cfg, $0, kCGNullDirectDisplay) }
+        CGCompleteDisplayConfiguration(cfg, .forAppOnly)
+        folded = []
     }
 }
 
