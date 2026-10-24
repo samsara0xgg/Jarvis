@@ -813,7 +813,7 @@ def _code_items(
             "end_ms": end,
             "state": _state(start, end, now_ms),
             "title": _newest(
-                f.get("custom_title"), f.get("desktop_title"), f.get("thread_title"),
+                f.get("custom_title"), _desktop_title(f), f.get("thread_title"),
                 names.get(remote or ""), f.get("ai_title"), f.get("agent_name"),
                 None if remote else project,
             ),
@@ -831,6 +831,14 @@ def _code_items(
 
 _BRIDGE: Final = re.compile(r"/bridge-(cse_[0-9A-Za-z]+)")
 THREAD_NAMES: Final = "thread-names.json"
+# what Claude Desktop calls a session it has no name for
+_DESKTOP_PLACEHOLDERS: Final = frozenset({"remote control session (from a project)", "session"})
+
+
+def _desktop_title(fields: dict[str, Any]) -> str | None:
+    """Claude Desktop's title of a session, unless it is Desktop's placeholder for no name."""
+    title = fields.get("desktop_title")
+    return None if str(title or "").strip().lower() in _DESKTOP_PLACEHOLDERS else title
 
 
 def _thread_names(path: Path) -> dict[str, str]:

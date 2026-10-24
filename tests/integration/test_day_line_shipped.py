@@ -480,7 +480,10 @@ def test_a_bridge_session_with_no_name_of_its_own_takes_the_thread_names_table(
 
 
 def test_a_programs_one_call_to_claude_is_no_code_item(tmp_path: Path) -> None:
-    """One prompt through the SDK and no claude.ai session: not shown; any more of him is."""
+    """One prompt through the SDK and no claude.ai session: not shown; any more of him is.
+
+    A session with no name of its own, Desktop's placeholder included, is named by its folder.
+    """
     def one(sid: str, prompts: int, entrypoints: list[str], top: str = "/work/coop") -> Any:  # noqa: ANN401
         line = _session(sid, "2026-10-10T17:00:00Z", "2026-10-10T17:01:00Z", top=top)
         line["fields"].update(user_prompts=prompts, entrypoints=entrypoints)
@@ -493,6 +496,9 @@ def test_a_programs_one_call_to_claude_is_no_code_item(tmp_path: Path) -> None:
         one("asked", 2, ["sdk-cli"]),
         one("typed", 1, ["cli"]),
         one("rc", 1, ["sdk-cli"], top=bridge),
+        {**(spawned := one("spawned", 2, ["claude-desktop"], top="/work/timesink")), "fields": {
+            **spawned["fields"], "desktop_title": "Remote Control session (from a project)",
+        }},
     ])
     start_ms, _ = day_window(parse_day("2026-10-10"), ZONE)
     line = _fold(DaySources(ZONE, shipped=directory), tmp_path, "2026-10-10",
@@ -500,6 +506,7 @@ def test_a_programs_one_call_to_claude_is_no_code_item(tmp_path: Path) -> None:
 
     assert {i["id"]: i["title"] for i in _code_items(line)} == {
         "code-asked": "coop", "code-typed": "coop", "code-rc": "",
+        "code-spawned": "timesink",  # Desktop's placeholder is no name
     }
 
 
