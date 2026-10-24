@@ -84,9 +84,11 @@ final class LocatePushTests: XCTestCase {
         }
     }
 
-    /// the delegate always calls the completion handler: a push that is not a locate, and one that finds no permission (the simulator has not been asked), end the wake at once
+    /// the delegate always calls the completion handler: a push that is not a locate, and one that finds no permission, end the wake at once. The permission is a
+    /// stand-in's: a simulator that once granted location would take a real fix and send it through the shared reporter.
     func testTheDelegateEndsTheWakeEitherWay() async {
         let delegate = ReportAppDelegate()
+        delegate.locateSource = { FakeSource(result: .denied) }
         let other = expectation(description: "not a locate"), none = expectation(description: "no permission")
         var results: [String: UIBackgroundFetchResult] = [:]
         delegate.application(.shared, didReceiveRemoteNotification: ["card": ["kind": "claude", "id": "x"]]) { results["other"] = $0; other.fulfill() }

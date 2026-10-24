@@ -3,6 +3,9 @@ import UIKit
 /// Starts the reporter and the push registration at every launch, including the background launches iOS makes for a location visit,
 /// a Health delivery or a refresh: those need their delegates and handlers in place before launch returns.
 final class ReportAppDelegate: NSObject, UIApplicationDelegate {
+    /// where a locate push's fix comes from (the tests' stand-in answers without the simulator's location permission)
+    var locateSource: @MainActor () -> any LocationSource = { OneShotLocation() }
+
     func application(
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
@@ -44,7 +47,7 @@ final class ReportAppDelegate: NSObject, UIApplicationDelegate {
         guard DeviceRole.senses, let id = LocatePush.requestId(userInfo) else { return completionHandler(.noData) }          // an iPad does not say where it lies (ADR 0338)
         Task { @MainActor in
             let hold = BackgroundHold.begin("jarvis.locate")        // the request after the fix needs the app running a little longer
-            let sent = await LocatePush.handle(id, source: OneShotLocation())
+            let sent = await LocatePush.handle(id, source: self.locateSource())
             hold.end()
             completionHandler(sent ? .newData : .failed)
         }
