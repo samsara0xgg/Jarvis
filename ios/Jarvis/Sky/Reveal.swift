@@ -80,23 +80,34 @@ private struct RevealClock: TimelineSchedule {
 }
 
 /// Her words (already styled: links amber and underlined) as they are said. With no `reveal`, a finished or earlier row, they are plain text.
+/// `grows`: as tall as the lines said so far, the line breaks still those of the whole text (her card under her); else as tall as the whole text from the first word.
 struct RevealText: View {
     let text: AttributedString
     var reveal: Reveal?
+    var grows = false
     @Environment(\.accessibilityReduceMotion) private var reduce
 
     var body: some View {
         if let r = reveal, !(reduce && !r.voiced) {
-            let tagged = Self.tagged(text), fade = reduce ? 0 : Reveal.fade
+            let parts = Self.pieces(text), tagged = Self.tagged(text, parts), fade = reduce ? 0 : Reveal.fade
             TimelineView(RevealClock(until: Date(timeIntervalSinceReferenceDate: r.end(fade: fade)))) { ctx in
-                tagged.textRenderer(RevealRenderer(reveal: r, t: ctx.date.timeIntervalSinceReferenceDate, fade: fade))
+                let t = ctx.date.timeIntervalSinceReferenceDate, whole = tagged.textRenderer(RevealRenderer(reveal: r, t: t, fade: fade))
+                if grows {
+                    // the words said so far, unseen, give the height; the whole text lies over them from the top and is cut at their foot
+                    let n = r.at.prefix { $0 <= t }.count, end = parts.last { $0.word < n }?.range.upperBound ?? text.startIndex
+                    Text(AttributedString(text[..<end])).hidden()
+                        .frame(maxWidth: .infinity)
+                        .overlay(alignment: .top) { whole.fixedSize(horizontal: false, vertical: true) }
+                        .clipped()
+                        .animation(reduce ? nil : .smooth(duration: 0.25), value: n)
+                } else { whole }
             }
         } else { Text(text) }
     }
 
     /// `text` with each word's characters tagged with the word (`Reveal.words`), its styles and links kept
-    static func tagged(_ text: AttributedString) -> Text {
-        pieces(text).reduce(Text("")) { $0 + Text(AttributedString(text[$1.range])).customAttribute(WordTag(word: $1.word)) }
+    static func tagged(_ text: AttributedString, _ parts: [(range: Range<AttributedString.Index>, word: Int)]? = nil) -> Text {
+        (parts ?? pieces(text)).reduce(Text("")) { $0 + Text(AttributedString(text[$1.range])).customAttribute(WordTag(word: $1.word)) }
     }
 
     /// the stretches of `text` that are one word each, in order

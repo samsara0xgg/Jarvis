@@ -85,7 +85,8 @@ struct HerWordsCard: View {
     let engine: StarEngine
     let ui: StarUI
     @Environment(\.accessibilityReduceMotion) private var reduce
-    @State private var tall = 0.0           // how high her words are laid out whole: past `wordsRoom` they scroll, with 去聊天接着说 under them
+    @State private var tall = 0.0           // how high her words are laid out, as far as they are said: past `wordsRoom` they scroll, with 去聊天接着说 under them
+    @State private var whole: [Int: Double] = [:]       // how high each row of hers is with all its words, said or not: what decides the side they read from
     @State private var height = 0.0         // how tall the whole card is
     @State private var dialogH = 0.0        // how tall its rounds are, laid out whole: past `wordsRoom` they scroll
     @State private var kept = ""            // her line, kept while the card fades out
@@ -95,7 +96,7 @@ struct HerWordsCard: View {
     static let most = 0.45 * H
     private let wordsRoom = most - 64
     /// her words past two lines read from the left, his line over them too; two lines or fewer stay centred
-    private var left: Bool { tall > 46 }
+    private var left: Bool { tall > 46 || whole.values.contains { $0 > 46 } }
 
     var body: some View {
         let on = ui.herCardOn, talk = !ui.panelOpen && ui.tlTalk
@@ -123,6 +124,7 @@ struct HerWordsCard: View {
         }
         .frame(width: W, height: H, alignment: .top)
         .onChange(of: ui.herLine, initial: true) { _, l in if let l { kept = l } }
+        .onChange(of: now.hers.map(\.id)) { _, ids in whole = whole.filter { ids.contains($0.key) } }          // a new round starts with no long answer
         .onChange(of: on ? Self.top + height : 0, initial: true) { _, f in ui.herCardFoot = f }
     }
 
@@ -219,9 +221,13 @@ struct HerWordsCard: View {
         if blocks.contains(where: { if case .paragraph = $0 { false } else { true } }) {
             AnswerView(blocks: blocks, size: Look.body, lineSpacing: 3)
         } else {
-            RevealText(text: styledWords(r.text, base: ink), reveal: r.reveal)
+            RevealText(text: styledWords(r.text, base: ink), reveal: r.reveal, grows: true)
                 .font(.system(size: Look.body, weight: .medium)).lineSpacing(3).multilineTextAlignment(left ? .leading : .center).tint(retryAmber)
                 .frame(maxWidth: .infinity, alignment: left ? .leading : .center)
+                .background(alignment: .top) {          // the whole answer, unseen: a long one reads from the left from its first line, not from its third
+                    Text(r.text).font(.system(size: Look.body, weight: .medium)).lineSpacing(3).fixedSize(horizontal: false, vertical: true).hidden()
+                        .onGeometryChange(for: Double.self) { Double($0.size.height) } action: { whole[r.id] = $0 }
+                }
         }
     }
 

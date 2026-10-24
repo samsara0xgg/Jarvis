@@ -1,4 +1,5 @@
 import XCTest
+import SwiftUI
 @testable import Jarvis
 
 final class RevealTests: XCTestCase {
@@ -32,6 +33,23 @@ final class RevealTests: XCTestCase {
         XCTAssertEqual(pieces.map(\.0), ["好", "的。\n\n", "明", "天", "见\n\n", "OK"])
         XCTAssertEqual(pieces.map(\.1), [0, 1, 2, 3, 4, 5])
         XCTAssertTrue(RevealText.pieces(AttributedString("")).isEmpty)
+    }
+
+    /// how tall her card's words are at width 340 with the first `said` of `n` words said
+    @MainActor private func height(_ text: String, said: Int, of n: Int, grows: Bool = true) -> Double {
+        let now = Date.timeIntervalSinceReferenceDate
+        let r = Reveal(at: (0..<n).map { $0 < said ? now - 10 : now + 3600 }, voiced: true)
+        let v = RevealText(text: AttributedString(text), reveal: r, grows: grows).font(.system(size: 17)).frame(width: 340)
+        return UIHostingController(rootView: v).sizeThatFits(in: CGSize(width: 340, height: 10_000)).height
+    }
+
+    @MainActor func testHerCardsWordsAreAsTallAsTheLinesSaidSoFar() {
+        let text = String(repeating: "明天下午三点你有一个二面，在线上进行。", count: 6), n = Reveal.count(text)
+        let part = height(text, said: n * 3 / 10, of: n), all = height(text, said: n, of: n)
+        XCTAssertLessThan(part, all - 40, "three tenths said: a few lines, not the whole answer's room")
+        XCTAssertGreaterThan(part, 20, "what is said is there")
+        XCTAssertEqual(all, height(text, said: n, of: n, grows: false), accuracy: 1, "all said: the whole text's height")
+        XCTAssertEqual(height(text, said: n * 3 / 10, of: n, grows: false), all, accuracy: 1, "a row of the conversation keeps the whole height from the first word")
     }
 
     func testATypedAnswerFadesInWholeAtOnce() {
