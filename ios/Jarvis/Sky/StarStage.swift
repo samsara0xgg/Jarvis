@@ -25,6 +25,7 @@ final class StarStage: UIView, HerDrive {
     /// the month's grid: one layer per day and per weekday letter, so the compositor does the fading and scaling and nothing is redrawn per frame
     private let monthBox = CALayer()
     private var cells: [CALayer] = [], heads: [CALayer] = [], cellImg: [CGImage?] = [], headImg: [CGImage?] = []
+    private let over = CALayer()            // the design layer of the view over the pages (`engine.herHost`): she is in it, so every page is under her (跨端UI标准 §1)
     private let pole = CALayer(), halo = CAGradientLayer(), spikeH = CAGradientLayer(), spikeV = CAGradientLayer()
     private let her = HerView(radius: R_PS)
     private struct MapSig: Equatable { var F, q, ls, lensTh: Int; var open: String?; var n: Int; var px: Double; var calm: Int; var epoch: Int }
@@ -127,6 +128,7 @@ final class StarStage: UIView, HerDrive {
         pole.addSublayer(spikeH); pole.addSublayer(spikeV)
         her.layer.position = .zero
         pole.addSublayer(her.layer)
+        over.anchorPoint = .zero; over.bounds = design.bounds
         design.addSublayer(pole)
     }
 
@@ -142,6 +144,7 @@ final class StarStage: UIView, HerDrive {
         scale = Double(window?.screen.scale ?? traitCollection.displayScale)
         CATransaction.begin(); CATransaction.setDisableActions(true)
         design.position = CGPoint(x: ox, y: oy); design.transform = CATransform3DMakeScale(k, k, 1)
+        over.position = design.position; over.transform = design.transform
         // the sky runs to the edges: a gradient in design rows, held flat beyond them
         bg.frame = bounds
         let rows: [(Double, UIColor)] = [(0, rgbHex(0x04050c)), (300, rgbHex(0x080a1b)), (470, rgbHex(0x090a1d)), (630, rgbHex(0x070818)), (956, rgbHex(0x06070f))]
@@ -199,6 +202,10 @@ final class StarStage: UIView, HerDrive {
     }
 
     fileprivate func tick(_ l: CADisplayLink) {
+        // on the phone's timeline she is over every page, in the view over them (there once SwiftUI has made it); under the dial and on the iPad the panels go over her
+        if over.superlayer == nil, let host = engine.herHost { host.layer.addSublayer(over) }
+        let seat = HomeModule.shared.isTimeline && !engine.ui.padHome && over.superlayer != nil ? over : design
+        if pole.superlayer !== seat { CATransaction.begin(); CATransaction.setDisableActions(true); seat.addSublayer(pole); CATransaction.commit() }
         let now = nowMs()
         let dt = min(lastTime > 0 ? (now - lastTime) / 1000 : 1 / 60, 1 / 20); lastTime = now
         engine.step(now: now, dt: dt, scale: laidPx)
@@ -350,6 +357,18 @@ private final class LinkProxy {
 }
 
 func rgbHex(_ v: Int) -> UIColor { UIColor(red: CGFloat((v >> 16) & 255) / 255, green: CGFloat((v >> 8) & 255) / 255, blue: CGFloat(v & 255) / 255, alpha: 1) }
+
+/// The view over every page that she is drawn in (the stage puts her there): touches go through it to whatever is under it, the stage's own touches on her too.
+struct HerOverRepresentable: UIViewRepresentable {
+    let engine: StarEngine
+    func makeUIView(context: Context) -> UIView {
+        let v = UIView()
+        v.isUserInteractionEnabled = false; v.backgroundColor = .clear
+        engine.herHost = v
+        return v
+    }
+    func updateUIView(_ v: UIView, context: Context) {}
+}
 
 struct StageRepresentable: UIViewRepresentable {
     let engine: StarEngine

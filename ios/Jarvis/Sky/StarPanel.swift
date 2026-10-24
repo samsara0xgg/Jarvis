@@ -22,7 +22,7 @@ enum TalkPage {
     static let top: Double = TLSeat.talk.y + TLSeat.talkRadius * TLSeat.listening + 6, topFade = 30.0
     /// The phone's page (跨端UI标准 §1): the stream runs from the very top of the screen and scrolls past her; its newest page rests `inset` under the top, below her. Only the status bar's
     /// strip of `edge` pt is blurred, so that the clock stays readable.
-    static let inset = 128.0, edge = 60.0
+    static let inset = 128.0, edge = 76.0          // the status bar (62 pt on a phone with an island) and a little under it, in design points
     /// in from each side, as the field
     static let side = 20.0
     /// her cards end at least this far short of the other side, and his bubbles begin this far in: who said it shows in where it stands
@@ -452,11 +452,11 @@ struct TalkPanel: View {
     /// the one soft edge of the page: a thin blur under the status bar that fades out, so the clock reads over the messages that went by under it (the prototype's `.edge`)
     private var statusEdge: some View {
         ZStack {
-            Rectangle().fill(.ultraThinMaterial)
-            LinearGradient(colors: [Look.sky.opacity(0.6), Look.sky.opacity(0)], startPoint: .top, endPoint: .bottom)
+            Rectangle().fill(.thinMaterial)
+            LinearGradient(colors: [Look.sky.opacity(0.85), Look.sky.opacity(0)], startPoint: .top, endPoint: .bottom)
         }
         .frame(width: W, height: TalkPage.edge)
-        .mask(LinearGradient(stops: [.init(color: .black, location: 0), .init(color: .black, location: 0.5), .init(color: .clear, location: 1)], startPoint: .top, endPoint: .bottom))
+        .mask(LinearGradient(stops: [.init(color: .black, location: 0), .init(color: .black, location: 0.75), .init(color: .clear, location: 1)], startPoint: .top, endPoint: .bottom))
         .allowsHitTesting(false)
     }
 

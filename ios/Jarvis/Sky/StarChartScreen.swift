@@ -43,6 +43,16 @@ struct StarChartScreen: View {
             }
             .animation(.easeOut(duration: 0.2), value: settings)
         }
+        // her over every page, and the number on her over her (跨端UI标准 §1: the page, her card, her)
+        .overlay {
+            GeometryReader { geo in
+                ZStack(alignment: .topLeading) {
+                    HerOverRepresentable(engine: engine).allowsHitTesting(false)
+                    HerBadge(engine: engine, ui: engine.ui).frame(width: W, height: H).modifier(InDesign(fit: Self.fit(geo.size)))
+                }
+            }
+            .ignoresSafeArea()
+        }
         .overlay {
             // the bar at the foot: the system's own on iOS 26 (its lens follows the finger), the drawn one before it (Sky/HomeBar.swift)
             if #available(iOS 26.0, *) {
@@ -108,7 +118,6 @@ struct StarChrome: View {
             TalkPanel(engine: engine, ui: ui, pull: $pull, page: HomeModule.shared.isTimeline)
             voiceNote
             HerWordsCard(engine: engine, ui: ui)                    // over every page, under her
-            HerBadge(engine: engine, ui: ui)
             AttachDim(model: ui.attach)
             if ui.tuning && ui.level == -1 { NearTune(engine: engine, done: { ui.tuning = false }) }
             composer

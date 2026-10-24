@@ -124,6 +124,7 @@ final class StarEngine {
     var streamFrom: Int?
     var dateD: Int?, dateEpoch = -1
     weak var herDrive: HerDrive?
+    weak var herHost: UIView?               // the view over the pages she is drawn in (Sky/StarStage.swift)
     var endEditing: (() -> Void)?
     var beginEditing: (() -> Void)?         // the composer takes the cursor and the keyboard comes up
     /// asks the stage to go to 60 fps right now, so a touch or a button does not wait for the next 20 fps tick
