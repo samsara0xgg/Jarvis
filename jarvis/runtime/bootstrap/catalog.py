@@ -30,7 +30,7 @@ from jarvis.execution.tools import build_default_registry
 from jarvis.execution.topics_tool import build_topics_tool
 from jarvis.execution.workers import Workers, make_worker_tools
 from jarvis.runtime import device_tools
-from jarvis.runtime.bootstrap.day import _highlight_marks, _wire_plan_reader
+from jarvis.runtime.bootstrap.day import _day_rows, _highlight_marks, _wire_plan_reader
 from jarvis.runtime.bootstrap.intakes import _job_mail, _mail_reply
 from jarvis.runtime.config import Role, RuntimeBootstrapError, WebToolsSettings, WorkersSettings
 from jarvis.runtime.daily_report import DailyReportService, past_day_answer
@@ -61,6 +61,7 @@ if TYPE_CHECKING:
     from jarvis.runtime.bootstrap.core import Core
     from jarvis.runtime.bootstrap.features import Features
     from jarvis.runtime.config import RuntimeConfig
+    from jarvis.runtime.day_rows import DayRows
     from jarvis.runtime.doing_run import DoingSchedule
     from jarvis.runtime.job_mail import JobMail
     from jarvis.runtime.work_state import WorkStateService
@@ -243,9 +244,14 @@ def _register_tidy(registry: ToolRegistry, doing: DoingSchedule | None) -> None:
         registry.register(tool)
 
 
-def _register_my_day(registry: ToolRegistry, sources: LedgerSources) -> None:
-    """``my_day`` (ADR 0244): today and what he does now, a day, a span, one project."""
-    for tool in build_my_day_tool(sources):
+def _register_my_day(
+    registry: ToolRegistry, sources: LedgerSources, rows: DayRows | None,
+) -> None:
+    """``my_day`` (ADR 0244): today and what he does now, a day, a span, one project.
+
+    ``rows`` lists one day's rows with their ids (ADR 0391); without it a day lists none.
+    """
+    for tool in build_my_day_tool(sources, None if rows is None else rows.read):
         registry.register(tool)
 
 
@@ -278,6 +284,7 @@ def register_catalog(  # noqa: PLR0913 - one call site per caller, the dependenc
     memory_db: Path,
     doing: DoingSchedule | None,
     ledger: LedgerSources,
+    day_rows: DayRows | None = None,
 ) -> Catalog:
     """Every tool the daemon serves, registered in its order from dependencies already built.
 
@@ -299,7 +306,7 @@ def register_catalog(  # noqa: PLR0913 - one call site per caller, the dependenc
     _register_topics(registry, memory_db)
     _register_archive(registry, memory_db, paths.root)
     _register_tidy(registry, doing)
-    _register_my_day(registry, ledger)
+    _register_my_day(registry, ledger, day_rows)
     _register_body(registry, ledger)
     plugins.refresh_search()  # ADR 0247: every built-in tool is registered now
     return Catalog(registry, started, plugins, job_mail, home)
@@ -433,6 +440,7 @@ def serve_tools(
             None if device is None else TerminalScreen(device, wait_s=TURN_WAIT_S),
             paths.artifacts_root / ATTACHMENTS_DIRNAME,
         ),
+        day_rows=_day_rows(config, memory, paths),
     )
 
 

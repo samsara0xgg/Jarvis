@@ -149,8 +149,9 @@ def test_the_tool_is_a_small_read_only_menu_entry_that_replaces_four(tool: Tool)
         "read_activity",
         "refresh_work_state",
     }
-    # It reads the saved analysis; nothing in what it is built from can start a paid one.
-    assert list(inspect.signature(build_my_day_tool).parameters) == ["sources"]
+    # It reads the saved analysis; nothing in what it is built from can start a paid one: the
+    # day's rows (ADR 0391) are folded from the stores and the doing lane's stored run.
+    assert list(inspect.signature(build_my_day_tool).parameters) == ["sources", "rows"]
 
 
 # (arguments, the spoken summary exactly). Times are Vancouver; "today" is Thu Oct 8.

@@ -35,6 +35,7 @@ from jarvis.runtime.config import RuntimeBootstrapError
 from jarvis.runtime.turn.cancel import SUPERSEDE_WINDOW_S
 from jarvis.runtime.turn.context import (
     about_record,
+    about_row,
     file_in_topic,
     history_pictures,
     history_receipts,
@@ -55,6 +56,7 @@ from jarvis.runtime.turn.finish import (
     record_attachments,
     record_reaction,
     record_words,
+    turn_links,
     turn_places,
     turn_times,
 )
@@ -695,6 +697,9 @@ def drive_turn(  # noqa: C901, PLR0912, PLR0913, PLR0915 — composition-root en
             written_apart=written_apart,
             times=turn_times(runtime.conn, effective_turn_id),
             places=turn_places(runtime.conn, effective_turn_id),
+            links=turn_links(
+                runtime.conn, effective_turn_id, partial(about_row, runtime, user_intent_event),
+            ),
         )
         rendered = capture.getvalue()
         sys.stdout.write(rendered)

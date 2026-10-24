@@ -258,6 +258,7 @@ def render_response(  # noqa: C901, PLR0912, PLR0913, PLR0915 — closed dispatc
     written_apart: bool = False,
     times: Sequence[Mapping[str, object]] = (),
     places: Sequence[Mapping[str, object]] = (),
+    links: Sequence[Mapping[str, object]] = (),
 ) -> tuple[SurfaceState, Event]:
     """Render an approved ResponsePlan across all surfaces for ``attention_channel``.
 
@@ -355,6 +356,7 @@ def render_response(  # noqa: C901, PLR0912, PLR0913, PLR0915 — closed dispatc
             Inherent surface can show both.
         places: ADR 0283 — the places the turn's tools returned, at most eight, read from the
             turn's own log by the composition root; the audit row carries them when there are any.
+        links: ADR 0391 — the rows of his day the answer links to, at most three, the same way.
         times: ADR 0215 — the times the answer refers to, read from the turn's own log by
             the composition root; the audit row carries them when there are any.
 
@@ -528,6 +530,8 @@ def render_response(  # noqa: C901, PLR0912, PLR0913, PLR0915 — closed dispatc
         audit_payload["times"] = [dict(one) for one in times]
     if places:
         audit_payload["places"] = [dict(one) for one in places]
+    if links:
+        audit_payload["links"] = [dict(one) for one in links]
     if binding is not None:
         audit_payload.update(
             {

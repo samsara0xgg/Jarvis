@@ -2,7 +2,9 @@
 
 The answer declares what it says was done, set up or looked up, with the receipts that back it,
 and what it offers. This module reads that block and judges it; the loops decide what to do with
-the verdict (send the answer back once, or speak it). Pure: no clock, no log, no model.
+the verdict (send the answer back once, or speak it). A ``show`` line names a row of his day the
+answer is about (ADR 0391): it is no claim, so it is not judged, and :func:`shows` reads it for
+the answer's links. Pure: no clock, no log, no model.
 """
 
 from __future__ import annotations
@@ -16,11 +18,11 @@ from jarvis.shared.receipts import Receipt, said
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping, Sequence
 
-Kind = Literal["did", "looked", "offer"]
+Kind = Literal["did", "looked", "offer", "show"]
 
 # A list mark before the kind, no space before the colon, and a full-width colon all still read.
 _ENTRY: Final = re.compile(
-    r"^\s*(?:[-*\u2022]\s*|\d+[.)]\s*)?(did|looked|offer)\b\s*(.*?)\s*[:\uff1a]\s*(.*?)\s*$",
+    r"^\s*(?:[-*\u2022]\s*|\d+[.)]\s*)?(did|looked|offer|show)\b\s*(.*?)\s*[:\uff1a]\s*(.*?)\s*$",
     re.IGNORECASE,
 )
 _ID: Final = re.compile(r"\br[0-9a-f]{6}\b")
@@ -38,11 +40,15 @@ NOTE_OFFER: Final[str] = "Do it instead of offering."
 
 @dataclass(frozen=True)
 class Entry:
-    """One line of the block: what kind, what it cites (receipt ids, or a tool), and the line."""
+    """One line of the block: its kind, what it cites (receipt ids, a tool or row ids), the line.
+
+    ``what`` is the words after the colon.
+    """
 
     kind: Kind
     cites: tuple[str, ...]
     line: str
+    what: str = ""
 
 
 @dataclass(frozen=True)
@@ -70,9 +76,22 @@ def parse(block: str | None) -> list[Entry]:
         if found is None:
             continue
         kind = found.group(1).lower()
-        cites = tuple(one.strip().lower() for one in found.group(2).split(",") if one.strip())
-        entries.append(Entry(kind, cites, raw.strip()))  # type: ignore[arg-type]
+        cites = tuple(
+            one.strip() if kind == "show" else one.strip().lower()  # a row id keeps its case
+            for one in found.group(2).split(",") if one.strip()
+        )
+        entries.append(Entry(kind, cites, raw.strip(), found.group(3)))  # type: ignore[arg-type]
     return entries
+
+
+def shows(block: str | None) -> list[tuple[str, str]]:
+    """``(row id, what)`` for each row the block's ``show`` lines name, the first naming kept."""
+    found: dict[str, str] = {}
+    for entry in parse(block):
+        if entry.kind == "show":
+            for cite in entry.cites:
+                found.setdefault(cite, entry.what)
+    return list(found.items())
 
 
 def unread(block: str | None) -> int:
@@ -108,10 +127,13 @@ def check(
     ``shown`` maps the receipt ids she was shown in this request to their receipts; a cited id
     outside it has no such receipt. ``did`` needs a change that is done, ``looked`` a read that is
     done. ``offerable(tool)`` is true when the tool is on this request's menu and would only
-    read: offering it is refused, she does the lookup instead.
+    read: offering it is refused, she does the lookup instead. A ``show`` line claims nothing and
+    gets no verdict.
     """
     verdicts = []
     for entry in parse(block):
+        if entry.kind == "show":
+            continue
         why = _offer(entry, offerable) if entry.kind == "offer" else _cited(entry, shown)
         verdicts.append(Verdict(entry, why))
     return verdicts

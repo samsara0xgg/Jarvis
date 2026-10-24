@@ -16,6 +16,7 @@ each client's tests read the same files, so a rename on one side is red on the o
 | `settings/` | `GET` and `POST /inherent/settings` | both |
 | `about.json` | the `about` a phone sends with a say or a submit | client to brain |
 | `topics/` | `GET /inherent/topics` (`list`) and the page `GET /inherent/conversation?around=` opens at a topic's place (`around`); a say or submit names a topic with `topic` | brain to client |
+| `answer/links.json` | the `links` of her answer: the rows of his day it is about, on `surface.response_emitted` and her conversation row | brain to client |
 
 A file that the brain sends has `route` (or `frame` and `socket`), `direction`, `description`,
 `now_ms` (the stopped clock of the world it was made in), `exact` and `example` or `examples`.

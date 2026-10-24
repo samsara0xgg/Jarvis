@@ -206,16 +206,28 @@ def object_receipts(conn: sqlite3.Connection) -> dict[str, ObjectReceipt]:
     return latest
 
 
-def answer_places(conn: sqlite3.Connection, answer_uids: Iterable[str]) -> dict[str, list[Any]]:
-    """``{answer event uid: places}`` for the answers whose ``surface.response_emitted`` has any.
+def answer_lists(
+    conn: sqlite3.Connection, answer_uids: Iterable[str],
+) -> dict[str, dict[str, list[Any]]]:
+    """``{answer event uid: {"places"?, "links"?}}`` for answers whose row has either.
 
-    The places are the row's own ``places`` (ADR 0279), as logged: the phone redraws the map card
-    of an old answer from them. A uid with none, or that names no such row, is left out.
+    They are the ``surface.response_emitted`` row's own ``places`` (ADR 0279) and ``links``
+    (ADR 0391), as logged: the phone redraws an old answer's map card and links from them. A uid
+    with neither, or that names no such row, is left out.
     """
     rows = conn.execute(
-        "SELECT event_uid, json_extract(payload_json, '$.places') FROM events "
+        "SELECT event_uid, json_extract(payload_json, '$.places'), "
+        "json_extract(payload_json, '$.links') FROM events "
         "WHERE type = 'surface.response_emitted' "
         "AND event_uid IN (SELECT value FROM json_each(?))",
         (json.dumps(list(dict.fromkeys(answer_uids))),),
     )
-    return {str(uid): json.loads(places) for uid, places in rows if places}
+    found: dict[str, dict[str, list[Any]]] = {}
+    for uid, places, links in rows:
+        lists = {
+            key: json.loads(value)
+            for key, value in (("places", places), ("links", links)) if value
+        }
+        if lists:
+            found[str(uid)] = lists
+    return found

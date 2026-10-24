@@ -32,7 +32,7 @@ _SLEEP_STAGES: Final = ("deep", "core", "rem", "awake", "unspecified", "in_bed")
 
 
 class AboutItems:
-    """Finds the day-line item an ``about`` names and writes its record."""
+    """Finds the day-line item an ``about`` names and writes its record, or its row."""
 
     def __init__(
         self, event_log: Path, sources: DaySources, clock: Callable[[], float] = _time.time,
@@ -44,6 +44,35 @@ class AboutItems:
 
     def record(self, about: Mapping[str, Any]) -> str | None:
         """The item's record on one line, or ``None`` when the day has no item with its id."""
+        found = self._item(about)
+        return None if found is None else item_record(found[0], self._sources.zone)
+
+    def row(self, about: Mapping[str, Any]) -> dict[str, Any] | None:
+        """The item as a row an answer may link to (ADR 0391), or ``None`` as for :meth:`record`.
+
+        ``{kind: "row", id, date, start_ms, end_ms, title}``: ``date`` is the day it starts on,
+        ``end_ms`` is now for one still going and its start for a moment; ``title`` is the one
+        the phone gave, else ``None``.
+        """
+        found = self._item(about)
+        if found is None:
+            return None
+        item, now_ms = found
+        start, end = int(item["start_ms"]), item["end_ms"]
+        if end is None:
+            end = now_ms if item.get("state") == "now" else start
+        zone = self._sources.zone
+        return {
+            "kind": "row",
+            "id": str(item["id"]),
+            "date": datetime.fromtimestamp(start / 1000, zone).date().isoformat(),
+            "start_ms": start,
+            "end_ms": int(end),
+            "title": about.get("title") or None,
+        }
+
+    def _item(self, about: Mapping[str, Any]) -> tuple[dict[str, Any], int] | None:
+        """The item of the day ``about`` starts on with its id, and the time it was folded at."""
         zone = self._sources.zone
         now_ms = int(self._clock() * 1000)
         start = about.get("start_ms")
@@ -52,7 +81,7 @@ class AboutItems:
         with closing(open_runtime_event_log(self._event_log)) as conn:
             items = fold_day(conn, start_ms, end_ms, now_ms, self._sources).items
         item = next((one for one in items if str(one["id"]) == about["id"]), None)
-        return None if item is None else item_record(item, zone)
+        return None if item is None else (item, now_ms)
 
 
 def item_record(item: Mapping[str, Any], zone: tzinfo) -> str:
