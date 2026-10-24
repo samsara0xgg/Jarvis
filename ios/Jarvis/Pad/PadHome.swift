@@ -237,9 +237,11 @@ struct PadHome: View {
     }
 
     #if DEBUG
-    /// `-padScene row` a row of the list with more to show tapped (`row:<id>` that one), `-padScene bar` a block of the bar tapped, `settings` or `map` that page (`trip`: Pad/PadMap.swift)
+    /// `-padScene row` a row of the list with more to show tapped (`row:<id>` that one), `-padScene bar` a block of the bar tapped, `settings` or `map` that page (`trip`: Pad/PadMap.swift), `remote` the strip's Mac button tapped
     private func padScene(_ s: String) {
         switch s {
+        case "remote":          // the strip's laptop button: unpaired, the remote's pair card
+            RemoteMac.open()
         case "topic":           // 看原话 on the first of `-scene 时间线:聊天:话题`'s topics: its last place lit, the ‹ › bar over the field
             // a moment after the page has listed its rows, as a tap would come
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [engine] in
