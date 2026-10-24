@@ -9,7 +9,9 @@ and nothing lower, so a freeze that replaces those (the tool exam's ``time_machi
 every reader that is already on the clock.
 
 :func:`zone_data_problem` checks the tz database for one rule an old one lacks. The database is
-the pinned ``tzdata`` package, which ``jarvis/__init__.py`` makes the only one read (ADR 0386).
+the pinned ``tzdata`` package, which ``jarvis/__init__.py`` makes the only one ``zoneinfo`` reads,
+and the one the C library reads too when the host's own disagrees (:func:`pin_local_time`,
+ADR 0398).
 """
 
 from __future__ import annotations
@@ -133,22 +135,62 @@ def system_zone() -> tzinfo:
     """The machine's zone: ``TZ`` if it names one, else what ``/etc/localtime`` points at, else UTC.
 
     ``TZ`` comes first because the C library's local time (``datetime.now()`` with no zone)
-    follows it, and the clock must agree with those readers.
+    follows it, and the clock must agree with those readers. A ``TZ`` that is the path of a zone
+    file (as :func:`pin_local_time` sets it) names the zone its path ends in.
     """
     named = os.environ.get("TZ")
     if named is not None:
         name = named.removeprefix(":").strip()
         if not name:
             return UTC
-        zone = _load(name)
+        zone = _load(_tree_name(Path(name)) if name.startswith("/") else name)
         if zone is not None:
             return zone
     try:
-        parts = _LOCALTIME.resolve().parts
-        zone = _load("/".join(parts[parts.index("zoneinfo") + 1 :]))
+        zone = _load(_tree_name(_LOCALTIME.resolve()))
     except (OSError, ValueError):
         zone = None
     return UTC if zone is None else zone
+
+
+def pin_local_time() -> str | None:
+    """ADR 0398: point the C library at the package's file when the host's database disagrees.
+
+    The machine's zone is compared at now, half a year on and the rule moment. When the C
+    library's offset differs from the package's at any of them, ``TZ`` becomes the package's file
+    for that zone (``:/…/tzdata/zoneinfo/America/Vancouver``), so ``datetime.astimezone()``,
+    ``time.localtime`` and the processes Jarvis starts read the same rule as every ``ZoneInfo``.
+    Returns the zone pinned, else None; a host that agrees is left as it is.
+    """
+    zone = zone_key(system_zone())
+    if zone is None or zone == "UTC":
+        return None
+    started = time.time()
+    moments = (started, started + _HALF_YEAR_S, _RULE_AT.timestamp())
+    try:
+        package = ZoneInfo(zone)
+        if all(
+            datetime.fromtimestamp(moment, package).utcoffset()
+            == timedelta(seconds=time.localtime(moment).tm_gmtoff or 0)
+            for moment in moments
+        ):
+            return None
+        path = Path(str(files("tzdata.zoneinfo").joinpath(*zone.split("/"))))
+    except (ZoneInfoNotFoundError, ValueError, OverflowError, OSError):
+        return None
+    if not path.is_file():
+        return None
+    os.environ["TZ"] = f":{path}"
+    time.tzset()
+    return zone
+
+
+def _tree_name(path: Path) -> str:
+    """The zone a file in a zoneinfo tree is: what its path holds after the last ``zoneinfo``."""
+    parts = path.parts
+    if "zoneinfo" not in parts:
+        return ""
+    return "/".join(parts[len(parts) - parts[::-1].index("zoneinfo") :])
 
 
 def _load(name: str) -> ZoneInfo | None:
@@ -162,7 +204,7 @@ def tz_database_version(directories: Iterable[str] = TZPATH) -> str:
     """The version of the tz database the zone files are read from, else ``unknown``.
 
     The first directory that holds a zone file names it: ``tzdata.zi`` begins ``# version 2026e``,
-    and some systems keep it in ``+VERSION``. With no directory to read (ADR 0386 empties
+    and some systems keep it in ``+VERSION``. With no directory to read (ADR 0398 empties
     ``TZPATH``) the zones come from the ``tzdata`` package, and its ``IANA_VERSION`` names it.
     """
     for directory in directories:
@@ -212,7 +254,7 @@ def zone_country(zone: str | None) -> str | None:
     """The country a time zone is in (``America/Vancouver`` -> ``CA``), from ``zone.tab``.
 
     The table is the pinned ``tzdata`` package's, the same release the zones are read from
-    (ADR 0386).
+    (ADR 0398).
     """
     return _zone_countries().get(zone) if zone else None
 

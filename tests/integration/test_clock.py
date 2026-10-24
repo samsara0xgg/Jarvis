@@ -12,10 +12,16 @@ on another thread: it ends on the event or on the clock moving, never on real ti
 from __future__ import annotations
 
 import logging
+import os
+import shutil
+import subprocess
+import sys
 import threading
 import time
 import zoneinfo
 from datetime import UTC, datetime, timedelta, tzinfo
+from importlib.resources import files
+from pathlib import Path
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -40,7 +46,6 @@ from tests.support.runtime_config import boot_runtime
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
-    from pathlib import Path
 
 PARIS = ZoneInfo("Europe/Paris")
 VANCOUVER = ZoneInfo("America/Vancouver")
@@ -295,7 +300,7 @@ def test_the_version_may_be_in_a_version_file_and_is_unknown_without_one(tmp_pat
 
 
 def test_every_zone_is_read_from_the_pinned_package_not_the_host() -> None:
-    """ADR 0386: importing jarvis empties the search path, so no host directory is read.
+    """ADR 0398: importing jarvis empties the search path, so no host directory is read.
 
     The zones and the version init.sh and the boot report are the ``tzdata`` package's, which
     holds the rule for BC's clocks.
@@ -305,6 +310,65 @@ def test_every_zone_is_read_from_the_pinned_package_not_the_host() -> None:
     assert zone_data_problem() is None
     winter = datetime(2026, 11, 12, 12, tzinfo=ZoneInfo("America/Winnipeg"))
     assert winter.utcoffset() == timedelta(hours=-5)
+
+
+PACKAGE_ZONES = Path(str(files("tzdata.zoneinfo")))
+
+_LOCAL = """
+import os, time, jarvis
+from datetime import datetime
+from jarvis.shared.clock import system_zone
+noon = datetime(2026, 11, 12, 20, 0).timestamp()
+print(os.environ["TZ"], time.localtime(noon).tm_gmtoff, system_zone())
+"""
+
+
+def _local_time_in(host: Path) -> list[str]:
+    """What a fresh ``import jarvis`` leaves: ``TZ``, his offset at 2026-11-12 12:00, his zone.
+
+    The machine is on America/Vancouver and glibc reads its zone files from ``host`` (``TZDIR``).
+    """
+    env = {**os.environ, "TZ": "America/Vancouver", "TZDIR": str(host)}
+    done = subprocess.run(  # noqa: S603 - this interpreter, a fixed script.
+        [sys.executable, "-c", _LOCAL], capture_output=True, text=True, check=True, env=env,
+    )
+    return done.stdout.split()
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="glibc reads TZDIR; macOS does not")
+def test_a_host_database_without_the_rule_points_local_time_at_the_package(
+    tmp_path: Path,
+) -> None:
+    """ADR 0398: an old host gives UTC-8 in BC after 2026-11-01; local time reads the package.
+
+    The old host is US Pacific's rule under Vancouver's name, which is what a database older
+    than 2026e holds for it.
+    """
+    (tmp_path / "America").mkdir()
+    shutil.copyfile(PACKAGE_ZONES / "PST8PDT", tmp_path / "America" / "Vancouver")
+
+    pinned, offset, zone = _local_time_in(tmp_path)
+
+    assert pinned == f":{PACKAGE_ZONES / 'America' / 'Vancouver'}"
+    assert int(offset) == -7 * 3600
+    assert zone == "America/Vancouver"
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="glibc reads TZDIR; macOS does not")
+def test_a_host_database_that_agrees_with_the_package_is_left_as_it_is(tmp_path: Path) -> None:
+    """``TZ`` keeps the name the machine gave it."""
+    (tmp_path / "America").mkdir()
+    shutil.copyfile(PACKAGE_ZONES / "America" / "Vancouver", tmp_path / "America" / "Vancouver")
+
+    assert _local_time_in(tmp_path) == ["America/Vancouver", str(-7 * 3600), "America/Vancouver"]
+
+
+def test_a_tz_that_is_the_path_of_a_zone_file_names_that_zone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The form :func:`pin_local_time` leaves in ``TZ`` still names his zone."""
+    monkeypatch.setenv("TZ", f":{PACKAGE_ZONES / 'Asia' / 'Tokyo'}")
+    assert getattr(system_zone(), "key", None) == "Asia/Tokyo"
 
 
 def test_boot_logs_one_error_for_an_old_database_and_goes_on(

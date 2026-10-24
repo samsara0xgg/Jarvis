@@ -40,7 +40,7 @@ dependencies = [
     "tokenizers",         # ADR 0260 — multilingual-e5-small tokenizer for search by meaning
     "pypdf",              # ADR 0259 — pure-Python text of the Bank of China statement PDF; the Pi has no poppler
     "tzfpy>=2.1.1",
-    "tzdata>=2026.5",     # ADR 0386 — the zone data every host reads (2026e: BC, Alberta and Manitoba keep summer time)
+    "tzdata>=2026.5",     # ADR 0398 — the zone data every host reads (2026e: BC, Alberta and Manitoba keep summer time)
 ]
 
 [project.optional-dependencies]

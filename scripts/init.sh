@@ -110,15 +110,19 @@ else
         "find the new switch and update the recipe at the bottom of scripts/init.sh"
 fi
 
-# 7. The tz database (the pinned tzdata package, ADR 0386) holds the rule for BC's clocks: America/Vancouver is UTC-7 at
-#    2026-11-02 12:00. An older one puts every time of day in BC an hour off from then on, and
-#    the daemon logs one error at boot for it (jarvis.shared.clock.zone_data_problem).
+# 7. The tz database (the pinned tzdata package, ADR 0398) holds the rule for BC's clocks:
+#    America/Vancouver is UTC-7 at 2026-11-02 12:00. An older one puts every time of day in BC an
+#    hour off from then on, and the daemon logs one error at boot for it
+#    (jarvis.shared.clock.zone_data_problem). When the host's own database disagrees, importing
+#    jarvis points the C library's local time at the package too; the line says so.
 if [ -x "$PY" ]; then
     if ZONE="$("$PY" -c '
-import sys
+import os, sys
+from importlib.resources import files
 from jarvis.shared.clock import tz_database_version, zone_data_problem
 problem = zone_data_problem()
-print(problem or tz_database_version())
+pinned = os.environ.get("TZ", "").startswith(":" + str(files("tzdata.zoneinfo")))
+print(problem or tz_database_version() + ("; local time reads it, the host database is older" if pinned else ""))
 sys.exit(problem is not None)' 2>&1)"; then
         ok "tz database holds America/Vancouver's UTC-7 at 2026-11-02 (version $ZONE)"
     else

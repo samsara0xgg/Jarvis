@@ -129,7 +129,7 @@ from jarvis.deployment import load_env_file
 from jarvis.execution.mcp_tools import McpServers
 from jarvis.execution.tools import ActionLifecycle, release_turn_actions
 from jarvis.shared import ActionRequest, CallerPrincipal
-from jarvis.shared.clock import SystemClock
+from jarvis.shared.clock import SystemClock, pin_local_time
 from jarvis.shared.receipts import call_risk
 from jarvis.state import job_ledger
 from jarvis.state.event_log import emit_event
@@ -942,6 +942,7 @@ def _environment(
     saved = {k: os.environ.get(k) for k in set_env}
     os.environ.update(set_env)
     time.tzset()
+    pin_local_time()  # ADR 0398: a host older than the package reads the package's file for it
     try:
         yield
     finally:

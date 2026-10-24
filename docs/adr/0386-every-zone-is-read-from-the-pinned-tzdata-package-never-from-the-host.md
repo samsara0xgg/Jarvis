@@ -1,6 +1,6 @@
 # ADR 0386 — Every zone is read from the pinned tzdata package, never from the host
 
-**Status:** Accepted
+**Status:** Superseded-by-0398
 **Date:** 2026-10-24
 **Supersedes:** none
 
