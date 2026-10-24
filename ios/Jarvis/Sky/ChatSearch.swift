@@ -5,7 +5,7 @@ import Observation
 // and, under it, the topics she keeps (`GET /inherent/topics`: a name, one line of where it stands, how many places, when last; the open ones, then the done ones dimmed). A hit goes to
 // its place in the one conversation, those turns light up, and a small bar over the field steps through the places (`ChatTrail`). A topic opens her 前情 of it first, with 接着聊 (what
 // he sends next carries the topic's id, `TopicFollow`, and a bar over the field says 「接着陶艺课 ✕」) and 看原话 (its places, as a hit's). Only she opens topics. There is no list of days.
-// The brain builds the topics at night and does not serve them, nor take a topic on a send, yet: until it does the card is the search field alone.
+// The brain builds the topics at night (ADR 0390); while it has none the card is the search field alone.
 
 // MARK: what the brain says
 
@@ -82,7 +82,7 @@ extension BrainClient {
         return days
     }
 
-    /// `GET /inherent/topics`: the topics she keeps, newest first. Not served yet: it fails, and the card has no topics.
+    /// `GET /inherent/topics`: the topics she keeps, newest first. A brain without the route fails it, and the card has no topics.
     static func topics(bases: [URL], token: String) async throws -> [ChatTopic] {
         let r = try await send("GET", "/inherent/topics", query: [], bases: bases, token: token, unauthorized: .revoked)
         guard let list = PastParse.topics(r.data) else { throw BrainError.garbled }
@@ -94,7 +94,7 @@ extension BrainClient {
 
 /// The places a hit or a topic goes through, oldest first, and the one shown: the bar over the field (「陶艺课 · 第 4 处，共 4 处 ‹ › ✕」) steps through them.
 struct ChatTrail: Equatable {
-    struct Place: Equatable { let recordId: String; var seq: Int? = nil; var lines: [String] = [] }          // `lines`: what lights up there (a topic's day); none, the turn and its answer
+    struct Place: Equatable { let recordId: String; var lines: [String] = [] }          // `lines`: what lights up there (a topic's day); none, the turn and its answer
     let name: String
     let places: [Place]
     var at: Int
@@ -128,19 +128,7 @@ extension StarEngine {
         ui.trail = t
         let place = t.places[i]
         Task { @MainActor in
-            // a hit says no seq: a page around it does, so the paging below knows when to stop
-            var seq = place.seq
-            if seq == nil, !Conversation.shared.rows.contains(where: { $0.id == place.recordId }) {
-                let page = try? await BrainLink.shared.call { try await BrainClient.conversation(around: place.recordId, limit: 2, bases: $0, token: $1) }
-                seq = page?.rows.first { $0.id == place.recordId }?.seq
-            }
-            // ponytail: the stream holds the newest rows in one run, so an older place is reached by paging back 200 rows at a time, ten at most; a page `around` it would leave a gap
-            for _ in 0..<10 {
-                let rows = Conversation.shared.rows
-                if rows.contains(where: { $0.id == place.recordId }) { break }
-                if let s = seq, let first = rows.first?.seq, s >= first { break }
-                guard await Conversation.shared.loadOlder() else { break }
-            }
+            _ = await Conversation.shared.reach(place.recordId)          // the page around it, and the rows from there to the ones held
             let rows = Conversation.shared.rows
             guard ui.trail == t, let k = rows.firstIndex(where: { $0.id == place.recordId }) else { ui.lit = []; return }
             let next = rows.indices.contains(k + 1) && rows[k].isHis && !rows[k + 1].isHis ? [rows[k + 1].seq] : []
@@ -242,7 +230,7 @@ struct ChatSearchCard: View {
             HStack(spacing: 8) {
                 recapButton(Words.PhoneChat.goOnTopic, strong: true) { engine.endTrail(); engine.follow(t); close() }
                 recapButton(Words.PhoneChat.seeWords, strong: false) {
-                    go(ChatTrail(name: t.name, places: t.places.map { .init(recordId: $0.recordId, seq: $0.seq, lines: $0.lines) }, at: t.places.count - 1))
+                    go(ChatTrail(name: t.name, places: t.places.map { .init(recordId: $0.recordId, lines: $0.lines) }, at: t.places.count - 1))
                 }
             }
         }

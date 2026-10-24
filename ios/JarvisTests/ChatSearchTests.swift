@@ -37,6 +37,42 @@ final class ChatSearchTests: XCTestCase {
         XCTAssertNil(PastParse.topics(Data(#"{"detail":"Not Found"}"#.utf8)), "while the brain does not serve topics the answer is not one: the card has no topics")
     }
 
+    func testNoTopicsYetIsAnEmptyListAndTheCardHasNoTopicPart() async {
+        XCTAssertEqual(PastParse.topics(Data(#"{"topics":[]}"#.utf8)), [], "the brain before its first night: an answer with none")
+        let m = ChatSearchModel()
+        m.loadTopics = { [] }
+        await m.refreshTopics()
+        XCTAssertEqual(m.topics, [])
+        XCTAssertEqual(m.found, .idle, "nothing is searched, nothing waits: the card is the field alone")
+    }
+
+    /// rows `a...b`, each with the id `r<seq>`
+    private func rows(_ a: Int, _ b: Int) -> [ConversationRow] { (a...b).map { ConversationRow(seq: $0, source: $0 % 2 == 0 ? "allen" : "jarvis", ts: "", text: "x", id: "r\($0)") } }
+
+    func testAPlaceUnderTheHistoryFloorIsReachedAroundItAndTheRowsUpToTheHeldOnesFollow() async {
+        let c = Conversation()
+        c.debugSet(rows(900, 910), hasMore: false)          // the older pages stop at the floor, row 900
+        var asked: [String] = []
+        let reached = await c.reach("r12", around: { id in asked.append("around \(id)"); return ConversationPage(rows: self.rows(10, 14), hasMore: true) },
+                                    after: { seq in asked.append("after \(seq)"); return seq < 500 ? ConversationPage(rows: self.rows(seq + 1, seq + 500), hasMore: true) : ConversationPage(rows: self.rows(seq + 1, 910), hasMore: false) })
+        XCTAssertTrue(reached)
+        XCTAssertEqual(asked, ["around r12", "after 14", "after 514"], "the page around it, then 500 rows a time up to the held ones")
+        XCTAssertEqual(c.rows.map(\.seq), Array(10...910), "one run, no hole, nothing twice")
+        XCTAssertTrue(c.hasMore, "older than the page around it: the around page says so")
+    }
+
+    func testAPlaceHeldIsNotAskedForAndOneTheBrainDoesNotKnowChangesNothing() async {
+        let c = Conversation()
+        c.debugSet(rows(900, 910))
+        var asked = 0
+        let held = await c.reach("r905", around: { _ in asked += 1; return nil }, after: { _ in asked += 1; return nil })
+        XCTAssertTrue(held)
+        XCTAssertEqual(asked, 0)
+        let gone = await c.reach("nope", around: { _ in nil }, after: { _ in nil })
+        XCTAssertFalse(gone, "a 404: no message has that id")
+        XCTAssertEqual(c.rows.map(\.seq), Array(900...910))
+    }
+
     func testTheAroundContractExampleIsReadWithEachRowsTopic() {
         let json = #"{"since":"","rows":[{"seq":7,"id":"b3","ts":"2026-10-13T20:00:00-07:00","source":"allen","text":"搬家的箱子订好了","attachments":[]},{"seq":8,"id":"c1","ts":"2026-10-14T08:00:00-07:00","source":"allen","text":"陶艺课改到周日了","attachments":[],"topic":{"id":"t1","name":"陶艺课"}},{"seq":9,"id":"c2","ts":"2026-10-14T08:00:03-07:00","source":"jarvis","text":"记下了 周日上午十点","topic":{"id":"t1","name":"陶艺课"}},{"seq":10,"id":"c3","ts":"2026-10-14T08:10:00-07:00","source":"allen","text":"拉坯工具在哪买","attachments":[]}],"has_more":true,"has_newer":false}"#
         let page = ConversationPage.parse(Data(json.utf8))

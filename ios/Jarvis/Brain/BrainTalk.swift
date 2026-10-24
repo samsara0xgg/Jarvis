@@ -172,6 +172,28 @@ final class Conversation {
         return added
     }
 
+    /// A message to be shown, the place of a topic or a hit (ADR 0390): held already, or the page around it (which reaches under the history floor that the older pages stop at) and the rows
+    /// from there up to the oldest held, so the history stays one run. False when the brain has no such message, or does not answer.
+    @MainActor func reach(_ recordId: String,
+                          around: (String) async -> ConversationPage? = { id in try? await BrainLink.shared.call { try await BrainClient.conversation(around: id, limit: 40, bases: $0, token: $1) } },
+                          after: (Int) async -> ConversationPage? = { seq in try? await BrainLink.shared.call { try await BrainClient.conversation(after: seq, limit: 500, bases: $0, token: $1) } }) async -> Bool {
+        if rows.contains(where: { $0.id == recordId }) { return true }
+        guard let page = await around(recordId), page.rows.contains(where: { $0.id == recordId }), var last = page.rows.last?.seq else { return false }
+        var run = page.rows
+        if let held = rows.first?.seq {
+            // ponytail: the gap is read 500 rows a time, 20 pages at most (10,000 rows); past that the run has a hole the stream does not mark
+            for _ in 0..<20 where last < held - 1 {
+                guard let p = await after(last), let end = p.rows.last?.seq, end > last else { break }
+                run += p.rows.filter { $0.seq < held }
+                last = end
+                if !p.hasMore { break }
+            }
+        }
+        let m = ConversationPaging.prepend(held: rows, older: ConversationPage(rows: run, hasMore: page.hasMore))
+        rows = m.rows; hasMore = m.hasMore; version += 1
+        return true
+    }
+
     #if DEBUG
     /// `-scene history` and the like: made-up rows, as if the brain had served them, and the made-up page before them
     var fakeOlder: ((Int) -> ConversationPage)?

@@ -60,6 +60,13 @@ final class PageShots: XCTestCase {
         shot("3e-chat-going-on")
     }
 
+    func testChatNoTopics() {
+        let app = open("时间线:聊天:话题空")
+        app.buttons["搜我们说过的和她整理的话题"].tap()
+        sleep(2)
+        shot("3g-chat-search-no-topics")
+    }
+
     func testCard() {
         let app = open("时间线:来回")
         shot("7-card-dialog-today")
