@@ -361,8 +361,8 @@ extension StarEngine {
             ui.tl.tidyDay()
         }
         case "她菜单": DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [self] in ui.tl.openArc(holding: false) }          // her cards out (`-scene 时间线:她菜单`)
-        case "聊天":                                                               // the conversation's page of the bar at the foot, with a day and a half of talk on it (`:聊天:空` none)
-            if parts.count < 3 || parts[2] != "空" { talkPageRounds(cal, long: parts.count > 2 && parts[2] == "长") }
+        case "聊天":                                                               // the conversation's page of the bar at the foot, with a day and a half of talk on it (`:聊天:空` none, `:聊天:短` three rows)
+            if parts.count < 3 || parts[2] != "空" { talkPageRounds(cal, long: parts.count > 2 && parts[2] == "长", short: parts.count > 2 && parts[2] == "短") }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [self] in showPage(.talk) }
             if parts.count > 3, parts[3] == "中间" { DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) { [self] in ui.scrollTo = "c-3" } }          // `:聊天:长:中间` scrolled up to the middle of it
             if parts.count > 2, parts[2] == "话题空" { ChatSearchModel.sceneTopics = [] }          // the brain with no topics yet: the card is the field alone
@@ -506,7 +506,6 @@ extension StarEngine {
                     addTurn(his: true, "这段我在干嘛")
                     addTurn(his: false, "一直在 Xcode 里改时间线的行高，中间看了会儿微信。")
                 }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { [self] in openPanel(quiet: true) }     // the talk, the stretch its first row
             }
         case "拖", "在干嘛":
             let n = Int(parts.count > 2 ? parts[2] : "") ?? (mode == "拖" ? 0 : 1030), t = model.onBar(Double(n / 100 * 60 + n % 100))
@@ -628,7 +627,7 @@ extension StarEngine {
     /// GET /inherent/body for any window (ADR 0411), made up: a quiet night and a busy afternoon
     static let bodyFixture = #"{"measures":{"steps":{"kind":"total","unit":"steps","value":900,"usual":{"median":1800,"low":1500,"high":2100,"days":14},"vs_usual":"below"},"heart_rate":{"kind":"reading","unit":"bpm","value":90,"usual":{"median":74,"low":71,"high":77,"days":14},"vs_usual":"above"},"resting_heart_rate":{"kind":"reading","unit":"bpm","value":52,"usual":{"median":55,"low":54,"high":57,"days":14},"vs_usual":"below"},"hrv":{"kind":"reading","unit":"ms","value":48,"usual":{"median":46,"low":40,"high":52,"days":14},"vs_usual":"within"},"breathing_rate":{"kind":"reading","unit":"/min","value":14.5,"usual":{"median":14,"low":13.5,"high":15,"days":14},"vs_usual":"within"},"blood_oxygen":{"kind":"reading","unit":"%","value":97,"usual":{"median":97,"low":96,"high":98,"days":14},"vs_usual":"within"},"sleep":{"kind":"sleep","unit":"min","value":432,"usual":{"median":465,"low":450,"high":480,"days":14},"vs_usual":"below"}}}"#
 
-    private func talkPageRounds(_ cal: Cal, long: Bool = false) {          // `long`: two days more before them, taller than the page
+    private func talkPageRounds(_ cal: Cal, long: Bool = false, short: Bool = false) {          // `long`: two days more before them, taller than the page; `short`: its last three rows alone
         let now = Date()
         func row(_ seq: Int, _ his: Bool, _ ago: Double, _ text: String) -> ConversationRow {
             let at = now.addingTimeInterval(-ago * 60)
@@ -658,7 +657,7 @@ extension StarEngine {
                 row(6, false, 2 * 60, "<voice>走路五分钟内有三家，我列给你。</voice><document>走路五分钟内有三家：\n\n- A&W，汉堡套餐 12 块左右\n- Subway，人少\n- 学校食堂，今天有咖喱饭</document>"),
                 row(7, true, 10, "明天下午有什么安排？"),
                 row(8, false, 10, said("下午三点有一个二面，在线上。两点半我提醒你准备。")),
-            ])
+            ].suffix(short ? 3 : .max))
         }
     }
 

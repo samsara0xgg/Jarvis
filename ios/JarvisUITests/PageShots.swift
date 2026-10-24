@@ -35,6 +35,12 @@ final class PageShots: XCTestCase {
         shot("3-chat-under-her")
     }
 
+    func testChatShort() {
+        _ = open("时间线:聊天:短")
+        sleep(3)
+        shot("3h-chat-short")
+    }
+
     func testChatScrolled() {
         _ = open("时间线:聊天:长:中间")
         sleep(4)
@@ -126,9 +132,10 @@ final class PageShots: XCTestCase {
     }
 
     func testRowDoingAsk() {
-        _ = open("时间线:按在干嘛:doing-575:问她")
+        let app = open("时间线:按在干嘛:doing-575:问她")
+        sleep(1)
         shot("17b-row-doing-ask")
-        sleep(3)
+        tab(app, 1)
         shot("17c-row-doing-ask-chip")
     }
 
