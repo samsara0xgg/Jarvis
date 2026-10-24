@@ -13,7 +13,7 @@ import { accountOf, askable, ATTACHMENT, clean, clock, codeName, dur, endText, m
 export type Tone = 'ink' | 'muted';
 export type Words = { text: string; tone: Tone };
 export type Bar = { name: string; text: string; share: number };
-// One Claude Code session: when it began, its name (its project), the account `A`, how long, and its recap in full.
+// One Claude Code session: when it began, its name (its title), the account `A`, how long, and its recap in full.
 export type Session = { id: string; at: string; title: string; meta: string; length: string; recap: string };
 // What the night looked like: where each stage was on the row's own time scale, and the totals in words.
 export type Night = { from: number; to: number; at: [string, string]; slices: { stage: string; s: number; e: number }[]; totals: string };

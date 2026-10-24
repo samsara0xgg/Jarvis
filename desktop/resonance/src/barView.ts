@@ -241,7 +241,7 @@ export function peek(model: DayModel, bar: BarModel, ms: number, t: Say): Peek {
     if (d <= NEAR_MIN * MIN) near.push({ it, rank, d, at: d <= (POINT.has(it.kind) ? AT_MIN * MIN : 0) });
   }
   near.sort((x, y) => +!x.at - +!y.at || x.rank - y.rank || x.d - y.d || x.it.start_ms - y.it.start_ms);
-  // Sessions of Claude Code run side by side: more than one near is a line per project (how many, how long together), so they cannot fill the card.
+  // Sessions of Claude Code run side by side: more than one near is a line per name (how many, how long together), so they cannot fill the card.
   const codes = near.filter(x => x.it.kind === 'code' && !model.stars.has(x.it.id)), lead = codes[0] ?? null;
   const lines = near.filter(x => x === lead || !codes.includes(x)).flatMap(x => x !== lead ? [lineOf(x.it, model, t)]
     : codeLines(codes.map(c => c.it), t).map(g => ({ key: `code:${g.key}`, kind: 'code', icon: 'code' as Icon, text: [g.title, g.detail].filter(Boolean).join(' · '), side: dur(Math.max(1, covered(g.items, limit)), t), star: false, picture: null }))).slice(0, 4);

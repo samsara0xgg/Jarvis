@@ -25,12 +25,12 @@ const sp = (id, start, end, extra) => ({ id, lane: 'doing', kind: 'doing', start
 const home = { id: 'p-home', name: '家', role: 'home' };
 const HEX = 'c1'.repeat(16);
 const TITLES = Array.from({ length: 40 }, (_, i) => `第 ${i + 1} 个聊天的标题，写得比较长一点点`).join('; ');
-// A 25-minute stretch at the desk's edge: three worktree sessions of Jarvis (one he prompted, two that ran by themselves), a Remote Control session he prompted, six
+// A 25-minute stretch at the desk's edge: three worktree sessions (one he prompted, titled 部署, and two that ran by themselves), each in a repo called Jarvis that no line may say, a Remote Control session he prompted, six
 // 小红书 bursts that only came in (each spans 2 minutes, first message to last, which is no time spent) and one 微信 burst he answered.
 const code = (id, from, to, extra) => it(id, 'code', T(14, from), T(14, to), { project: 'Jarvis', account: 'A', session_id: id, ...extra });
 const burst = (id, who, extra) => it(id, 'messages', T(14, 2), T(14, 4), { device: 'iPhone', app: '小红书', conversation: who, sent: 0, received: 2, ...extra });
 const BREAK = [
-  code('code-b1', 4, 25, { title: '', prompts: 3 }), code('code-b2', 4, 25, { title: '', prompts: 0 }), code('code-b3', 4, 25, { title: '', prompts: 0 }),
+  code('code-b1', 4, 25, { title: '部署', prompts: 3 }), code('code-b2', 4, 25, { title: '', prompts: 0 }), code('code-b3', 4, 25, { title: '', prompts: 0 }),
   code('code-rc', 4, 6, { title: 'Remote Control session', prompts: 2 }),
   ...['贝小贝贝', 'yooi三要鱼', 'zoey是美少女吖', '不知道起什么网名的小女孩', 'meiyy~', '分享到小红书'].map((who, i) => burst(`msg-xhs-${i}`, who)),
   burst('msg-reply', 'Mia', { app: '微信', sent: 2, received: 3 }),
@@ -153,9 +153,9 @@ try {
   await pick('doing-3');
   const il = await page.evaluate(sel => [...document.querySelectorAll(`${sel} .dt-il`)].map(l => ({ at: l.querySelector('time').textContent, title: l.querySelector('.dt-il-t').childNodes[0].textContent, detail: l.querySelector('.dt-il-t em')?.textContent ?? '', side: l.querySelector('.dt-il-s')?.textContent ?? '', icon: !!l.querySelector('.dt-il-i svg') })), side);
   const lineOf = title => il.find(x => x.title === title);
-  const W = en ? { jarvis: 'Jarvis', two: '2 sessions', bg: '2 more background sessions', xhs: '小红书', xhsDetail: '6 people · 12 received', reply: 'Sent 2 · Received 3' } : { jarvis: 'Jarvis', two: '2 个会话', bg: '另有 2 个后台会话', xhs: '小红书', xhsDetail: '6 人 · 收到 12 条', reply: '发 2 · 收 3' };
-  check('a stretch with three worktree sessions and a Remote Control one has four lines for the lot: Jarvis with how many, the background ones together, the received bursts and the reply, each with its time', il.length === 4 && il.every(x => x.at), JSON.stringify(il));
-  check('his two sessions are one line named for the project, with how many and their time together; no "Claude Code", no worktree folder, no session title', lineOf(W.jarvis)?.detail === W.two && lineOf(W.jarvis).icon && lineOf(W.jarvis).side === (en ? '21 min' : '21 分钟') && il.every(x => !/Claude Code|bridge-cse|Remote Control/.test(x.title + x.detail)), JSON.stringify(il));
+  const W = en ? { bg: '2 more background sessions', xhs: '小红书', xhsDetail: '6 people · 12 received', reply: 'Sent 2 · Received 3' } : { bg: '另有 2 个后台会话', xhs: '小红书', xhsDetail: '6 人 · 收到 12 条', reply: '发 2 · 收 3' };
+  check('a stretch with three worktree sessions and a Remote Control one has five lines for the lot: his two sessions by their titles, the background ones together, the received bursts and the reply, each with its time', il.length === 5 && il.every(x => x.at), JSON.stringify(il));
+  check('his sessions are lines named by their title with an icon, and their length; no "Claude Code ·", no repo (Jarvis), no worktree folder', lineOf('部署')?.icon && lineOf('部署').side === (en ? '21 min' : '21 分钟') && lineOf('Remote Control session')?.icon && lineOf('Remote Control session').side === (en ? '2 min' : '2 分钟') && il.every(x => !/Claude Code|bridge-cse|Jarvis/.test(x.title + x.detail)), JSON.stringify(il));
   check('the two sessions that ran by themselves are one line of their own', lineOf(W.bg)?.side === (en ? '21 min' : '21 分钟') && lineOf(W.bg).icon, JSON.stringify(lineOf(W.bg)));
   check('the six bursts only received are one line: the app, how many people, how many messages; no minutes', lineOf(W.xhs)?.detail === W.xhsDetail && lineOf(W.xhs).side === '' && lineOf(W.xhs).icon, JSON.stringify(lineOf(W.xhs)));
   check('a burst he replied to stays its own line with sent and received, and no minutes', lineOf('Mia')?.detail === W.reply && lineOf('Mia').side === '', JSON.stringify(lineOf('Mia')));

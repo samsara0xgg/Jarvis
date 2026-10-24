@@ -244,7 +244,7 @@ export type Row = {
   seg?: { rgb: Rgb | null; unknown: boolean; counts: { icon: Icon; n: number }[]; lenses: LensKind[] };
 };
 // One line inside an opened stretch: an item of the day, the words its own row has (the detail only where short), its time or length, and a picture's id; `ids` when
-// it is several of them (sessions of one project, bursts of one app), `key` then the earliest.
+// it is several of them (sessions of one name, bursts of one app), `key` then the earliest.
 export type Inside = { key: string; ids?: string[]; icon: Icon; title: string; detail: string; side: string; picture: string; note: string };
 // A stretch of what he was doing as the pane keeps it for its row, the bar and its opening: `end` is cut to now, `place` the stay's name (empty when it has none), `knows` how she knows.
 export type Segment = { span: DoingSpan; start: number; end: number; words: string | null; place: string; placeRgb: Rgb | null; rgb: Rgb | null; icon: Icon; unknown: boolean; category: string; detail: string; inside: Inside[]; knows: string };
@@ -395,10 +395,11 @@ export function doingAt(spans: readonly DoingSpan[] | undefined, ms: number, t: 
 }
 // A Claude Code session's account, as the letter it is known by.
 export const accountOf = (it: DayItem) => /^[ab]$/i.test(clean(it.account)) ? clean(it.account).toUpperCase() : '';
-// What a Claude Code session is called: its project (a worktree's folder, `bridge-cse_…`, is no name), else its title, else just Claude Code. The glyph says the rest.
+// What a Claude Code session is called: its title (a worktree's folder name, `bridge-cse_…`, is no name), else just Claude Code; never its repo or folder (`project`). The glyph says the rest.
+// The session's own name (「部署」) goes first here once the brain serves it.
 const WORKTREE = /^bridge-cse_/i, named = (s: string) => WORKTREE.test(s) ? '' : s;
-export const codeName = (it: DayItem, t: Say) => named(clean(it.project)) || named(clean(it.title)) || t(['Claude Code', 'Claude Code']);
-// Sessions as the lines of a stretch or of the card: his (prompts above 0, or not said) are one line per project, with how many when more than one; the ones that ran by
+export const codeName = (it: DayItem, t: Say) => named(clean(it.title)) || t(['Claude Code', 'Claude Code']);
+// Sessions as the lines of a stretch or of the card: his (prompts above 0, or not said) are one line per name, with how many when more than one; the ones that ran by
 // themselves are one line together. Each line's key is its earliest session's id; `items` are in time order.
 export type CodeLine = { key: string; title: string; detail: string; items: DayItem[] };
 export function codeLines(list: DayItem[], t: Say): CodeLine[] {
@@ -509,11 +510,11 @@ function stopRow(it: DayItem, c: Ctx): Row {
     future: false, star: c.marks.has(it.id), hers: hersOf(it.id, c), wait: false, leaving: false, connector: true, onWay: false };
 }
 
-// The Claude Code sessions of one stay that were not marked, two or more, are one row: their project (or how many, when they are of several) and how long they
+// The Claude Code sessions of one stay that were not marked, two or more, are one row: their name (or how many and the two newest names, when they are of several) and how long they
 // covered together (sessions that ran side by side count once).
 function foldRow(list: DayItem[], stay: DayItem, c: Ctx): Row {
   const { t, tz, reply } = c, n = list.length, first = list[0], open = c.today ? c.now : reply.end_ms, lines = codeLines(list, t), one = lines.length === 1 ? lines[0] : null;
-  return { key: `code:${stay.id}`, kind: 'code', lens: 'work', icon: 'code', title: one ? one.title : t([`${n} sessions`, `${n} 个会话`]), detail: one ? one.detail : lines.map(x => x.title).join(' · '), at: clock(first.start_ms, tz),
+  return { key: `code:${stay.id}`, kind: 'code', lens: 'work', icon: 'code', title: one ? one.title : t([`${n} sessions`, `${n} 个会话`]), detail: one ? one.detail : [...lines].sort((a, b) => b.items.at(-1)!.start_ms - a.items.at(-1)!.start_ms).slice(0, 2).map(x => x.title).join(' · '), at: clock(first.start_ms, tz),
     ago: first.start_ms < reply.start_ms ? t(['yd', '昨']) : '', right: dur(Math.max(1, covered(list, open)), t), value: false, future: false, star: false, hers: false, wait: false, leaving: false, connector: false, onWay: false };
 }
 
@@ -549,7 +550,7 @@ function segmentOf(sp: DoingSpan, c: Ctx, byId: Map<string, DayItem>): { row: Ro
   const hit = words ? own(CATEGORIES, sp.category) ?? CATEGORIES.unknown : CATEGORIES.unknown, unknown = !words;
   const icon: Icon = unknown ? 'unknown' : sp.category === 'commute' ? items.some(x => x.kind === 'ride') ? 'bus' : moveIcon(items.find(x => x.kind === 'move')?.activity)
     : sp.category === 'unknown' && sp.basis === 'observed' ? 'call' : hit.icon;
-  // What he sent nothing in, from one app within ten minutes of each other, is one line; sessions are a line per project (codeLines). A marked session keeps its own line.
+  // What he sent nothing in, from one app within ten minutes of each other, is one line; sessions are a line per name (codeLines). A marked session keeps its own line.
   const inside: { at: number; line: Inside }[] = [], folded = (it: DayItem) => it.kind === 'code' && !c.marks.has(it.id) || it.kind === 'messages' && !it.sent && !!clean(it.app);
   for (const it of items) {
     const row = NOT_INSIDE.has(it.kind) || folded(it) ? null : rowOf(it, c);
