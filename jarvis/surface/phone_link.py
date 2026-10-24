@@ -15,7 +15,7 @@ a newer one replaces the older (the older is closed with code 4000).
                      "spoken": true, "language": "en", "confidence": 0.93,
                      "about": {"kind": "reminder", "id": "...", "title": "...", "start_ms": 0},
                      "over_her": true, "conversation": false, "continues": "<utterance_id>",
-                     "attachments": ["<id from POST /inherent/attachments>"]}
+                     "attachments": ["<id from POST /inherent/attachments>"], "topic": "t3"}
     host -> phone   {"type": "said", "utterance_id": "...", "turn_id": "T...",
                      "verdict": "turn", "record_id": "<32 hex>"}
     host -> phone   {"type": "row", "event_type": "surface.response_chunk",
@@ -68,6 +68,11 @@ none.
 
 ``say`` may carry ``about``, the item the phone has open (ADR 0214; ``jarvis.shared.about``): it
 is kept on the turn's opening row, and one that is malformed is answered with ``error bad_say``.
+
+``say`` may carry ``topic``, the id of the topic he is talking in (ADR 0390; ``GET
+/inherent/topics``): the words and her answer are filed under it at once and her state names it.
+A merged topic's id names the topic it went into, which the row keeps; an id that names no listed
+topic, or a host that keeps none, is answered with ``error bad_say``.
 
 **Judging words (ADR 0216).** ``judges`` in ``ready`` is true whenever the host can judge, which
 the regexes alone do. A phone that hears Allen over her voice holds her audio itself and sends
@@ -281,6 +286,9 @@ class PhoneHub:
     names, as ``POST /inherent/submit`` makes it: it returns, or raises
     :class:`~jarvis.state.attachments.AttachmentRefused`. It blocks and runs on a worker thread;
     ``None`` is a host that takes no attachments.
+
+    ``resolve_topic(topic_id)`` (ADR 0390) is the id of the listed topic a ``say``'s ``topic``
+    names now, or ``None``; ``None`` is a host that keeps no topics.
     """
 
     events: BrainEvents
@@ -298,6 +306,7 @@ class PhoneHub:
     supersede_turn: Callable[[str, str], str] | None = None
     pick_earlier: Callable[[str, str, str], str | None] | None = None
     check_attachments: Callable[[Sequence[str]], object] | None = None
+    resolve_topic: Callable[[str], str | None] | None = None
     live: dict[str, _Connection] = field(default_factory=dict)
 
     def connected(self, device: str) -> bool:
@@ -630,6 +639,7 @@ class _Say:
     attachments: tuple[str, ...] = ()
     continues: str | None = None
     voiceprint: Voiceprint | None = None
+    topic: str | None = None
 
     @property
     def judged(self) -> bool:
@@ -669,13 +679,34 @@ def _say(hub: PhoneHub, conn: _Connection, frame: dict[str, Any]) -> None:
         return
     if files and not text.strip():
         text = lang.t("attach.no_words")
+    topic = frame.get("topic")
+    if topic is not None:
+        topic = _listed_topic(hub, topic)
+        if topic is None:
+            conn.error("bad_say", "say's topic is the id of a topic this host lists")
+            return
     say = _Say(
         utterance_id, text, spoken, language, confidence, frame.get("about"),
         over_her, conversation, tuple(dict.fromkeys(files)),
         continues if spoken and continues != utterance_id else None,  # typed words never continue
         Voiceprint.parse(frame.get("voiceprint")) if spoken else None,
+        topic,
     )
     _route_say(hub, conn, say)
+
+
+def _listed_topic(hub: PhoneHub, topic: object) -> str | None:
+    """The listed topic a ``say``'s ``topic`` names now (ADR 0390), else ``None``.
+
+    One indexed read of the topics' small table, on the receive loop as the say's own write is.
+    """
+    if hub.resolve_topic is None or not isinstance(topic, str) or _ID.fullmatch(topic) is None:
+        return None
+    try:
+        return hub.resolve_topic(topic)
+    except sqlite3.Error:
+        LOGGER.exception("phone: reading the topics failed; the say is refused")
+        return None
 
 
 def _route_say(hub: PhoneHub, conn: _Connection, say: _Say) -> None:
@@ -810,6 +841,7 @@ def _record_say(
             conn.device, say.utterance_id, say.text, spoken=say.spoken, language=say.language,
             confidence=say.confidence, about=say.about, attachments=say.attachments,
             continues=continues, voiceprint=None if scored is None else scored.payload(),
+            topic=say.topic,
         )
     except ValueError as exc:
         LOGGER.warning("phone %s: say refused: %s", conn.device, exc)

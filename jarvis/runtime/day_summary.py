@@ -27,6 +27,7 @@ from jarvis.decision.surrogate_route import JevLog, SurrogateRoute
 from jarvis.runtime.core_memory import CoreMemorySettings, run_core_memory
 from jarvis.runtime.ledger import DayDrafts, LedgerContext, ProseSettings, run_day_prose
 from jarvis.runtime.session_compaction import build_compact_client
+from jarvis.runtime.topics_night import TopicsSettings, run_topics_nights
 from jarvis.state.cost_accounting import call_recorded_since
 from jarvis.state.event_log import open_runtime_event_log
 from jarvis.state.memory_db import (
@@ -200,16 +201,19 @@ class DaySummarySchedule:
         core_memory: CoreMemorySettings | None = None,
         jev_log: JevLog | None = None,
         ledger: LedgerContext | None = None,
+        topics: TopicsSettings | None = None,
         poll_s: float = 60.0,
         client: LLMClient | None = None,
         core_client: LLMClient | None = None,
         prose_client: LLMClient | None = None,
+        topics_client: LLMClient | None = None,
     ) -> None:
         """Bind the store and the knobs; nothing runs until :meth:`run`.
 
         ``client`` stands in for the one built from ``settings.preset`` on first use,
-        ``core_client`` for the one built from the ``core_memory`` preset, and ``prose_client``
-        for the one built from the ledger's prose preset.
+        ``core_client`` for the one built from the ``core_memory`` preset, ``prose_client``
+        for the one built from the ledger's prose preset, and ``topics_client`` for the one
+        built from the ``topics`` preset.
         """
         self._memory = memory
         self._settings = settings
@@ -222,6 +226,8 @@ class DaySummarySchedule:
         self._review: SurrogateRoute | None = None
         self._ledger = ledger
         self._prose_client = prose_client
+        self._topics = topics
+        self._topics_client = topics_client
         self._drafts: DayDrafts | None = None
         self._poll_s = poll_s
         self._client = client
@@ -265,8 +271,30 @@ class DaySummarySchedule:
         )
         if self._core_memory is not None:
             self._consolidate(self._core_memory, today)
+        self._sort_topics(today)
         self._write_prose(today)
         return outcomes
+
+    def _sort_topics(self, today: date) -> None:
+        """The topics over the days just summarised (ADR 0390); never fails what ran before."""
+        if self._topics is None:
+            return
+        try:
+            if self._topics_client is None:
+                self._topics_client = build_compact_client(self._llm_config, self._topics.preset)
+            topic_outcomes = run_topics_nights(
+                self._memory,
+                self._topics,
+                self._topics_client,
+                event_log_path=self._event_log_path,
+                pricing_table=self._pricing_table,
+                today=today,
+                zone=self._clock.zone,
+            )
+        except Exception:
+            LOGGER.exception("topics_night: run for %s failed", today)
+            return
+        LOGGER.info("topics_night: %s -> %s", today, topic_outcomes)
 
     def _write_prose(self, today: date) -> None:
         """The ledger's "The day" lines (ADR 0201); their failure never fails what ran before."""

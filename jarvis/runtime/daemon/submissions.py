@@ -8,7 +8,7 @@ import uuid
 from typing import TYPE_CHECKING, Any, Final
 
 from jarvis.runtime.turn.start import new_turn_id
-from jarvis.state import reactions
+from jarvis.state import reactions, topics
 from jarvis.state.event_log import MAC_NODE, emit_event, open_runtime_event_log
 from jarvis.state.input_submission_inbox import (
     InputReceipt,
@@ -108,15 +108,16 @@ def submit_text_v2(
             inner_conn.close()
 
 
-def submit_with_attachments(
+def submit_with_attachments(  # noqa: PLR0913 - the message's fields, all but the words keyword-only.
     event_log_path: Path, text: str, attachment_ids: Sequence[str], *, device: str = MAC_NODE,
-    about: dict[str, Any] | None = None,
+    about: dict[str, Any] | None = None, topic: str | None = None,
 ) -> str:
     """ADR 0211: the turn of ``POST /inherent/submit`` whose words came with stored files.
 
     ``device``: the paired device that sent them (ADR 0212); the turn's opening row is written
     under its name, as the ones ``/phone/ws`` writes are. ``about``: the item its phone has open
-    (ADR 0214), already checked, kept on that row.
+    (ADR 0214), already checked, kept on that row, and so is ``topic``, the listed topic it was
+    sent from (ADR 0390).
 
     Bound at daemon start and run on an ``asyncio.to_thread`` worker, so it opens its own
     connection exactly as ``submit_callable`` does. Returns the minted ``turn_id``.
@@ -126,7 +127,7 @@ def submit_with_attachments(
     try:
         emit_surface_user_intent(
             inner_conn, transcript=text, turn_id=turn_id, attachments=attachment_ids,
-            ingestion_node=device, about=about,
+            ingestion_node=device, about=about, topic=topic,
         )
     finally:
         with contextlib.suppress(sqlite3.Error):
@@ -136,7 +137,7 @@ def submit_with_attachments(
 
 def submit_as_device(  # noqa: PLR0913 - the phone message's fields, as `say` has them.
     event_log_path: Path, device: str, text: str, attachment_ids: Sequence[str],
-    about: dict[str, Any] | None, utterance_id: str | None = None,
+    about: dict[str, Any] | None, utterance_id: str | None = None, topic: str | None = None,
 ) -> str:
     """ADR 0212: the turn of words a paired ``device`` sent over HTTP, with or without files.
 
@@ -149,18 +150,38 @@ def submit_as_device(  # noqa: PLR0913 - the phone message's fields, as `say` ha
     """
     if utterance_id is None:
         return submit_with_attachments(
-            event_log_path, text, attachment_ids, device=device, about=about,
+            event_log_path, text, attachment_ids, device=device, about=about, topic=topic,
         )
     inner_conn = open_runtime_event_log(event_log_path)
     try:
         return BrainEvents(inner_conn).record_phone_say(
             device, utterance_id, text, spoken=False, about=about, attachments=attachment_ids,
+            topic=topic,
         )
     except sqlite3.IntegrityError:  # the same message's other route wrote it just now
         return phone_turn_id(device, utterance_id)
     finally:
         with contextlib.suppress(sqlite3.Error):
             inner_conn.close()
+
+
+def submit_in_topic(  # noqa: PLR0913 - the message's fields, as `submit_as_device` takes them.
+    event_log_path: Path, device: str | None, text: str, attachment_ids: Sequence[str],
+    about: dict[str, Any] | None, utterance_id: str | None, topic: str,
+) -> str:
+    """ADR 0390: the turn of words he sent from the listed ``topic``, from any device.
+
+    As :func:`submit_as_device` makes it, under ``device`` or, for ``None``, this host's own name.
+    """
+    return submit_as_device(
+        event_log_path, device or MAC_NODE, text, attachment_ids, about, utterance_id, topic,
+    )
+
+
+def resolve_topic(memory_db: Path, topic_id: str) -> str | None:
+    """ADR 0390: the id of the listed topic ``topic_id`` names now, or ``None``."""
+    live = topics.live_topic(memory_db, topic_id)
+    return None if live is None else live.id
 
 
 def set_reaction(

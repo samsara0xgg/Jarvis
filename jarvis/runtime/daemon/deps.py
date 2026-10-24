@@ -34,6 +34,7 @@ from jarvis.runtime.daemon.routes import (
     notice_deps,
     open_lifelog,
     read_conversation,
+    read_conversation_around,
     refresh_work_state_now,
     ride_act,
     save_settings,
@@ -53,6 +54,7 @@ from jarvis.runtime.highlight_marks import HighlightMarks
 from jarvis.runtime.memory_page import MemoryPage
 from jarvis.runtime.setup import Setup, save_language
 from jarvis.runtime.turn.cancel import make_response_cancel_callable, make_turn_cancel_callable
+from jarvis.state import topics
 from jarvis.state.device_tokens import PairingCodes, device_name_for_token, device_token_matches
 from jarvis.state.imports import IMPORTS_DIRNAME
 from jarvis.state.ledger import TURN_WAIT_S, TerminalScreen
@@ -189,6 +191,22 @@ def build_deps(  # noqa: PLR0913 - one declarative table: each route's reads, bo
         ),
         conversation_read=(
             None if window_memory is None else functools.partial(read_conversation, runtime)
+        ),
+        conversation_around=(
+            None if window_memory is None
+            else functools.partial(read_conversation_around, runtime)
+        ),
+        topics_read=(
+            None if window_memory is None
+            else functools.partial(topics.listed, window_memory.db_path, runtime.config.zone)
+        ),
+        topic_resolve=(
+            None if window_memory is None
+            else functools.partial(submissions.resolve_topic, window_memory.db_path)
+        ),
+        submit_in_topic=(
+            None if window_memory is None
+            else functools.partial(submissions.submit_in_topic, event_log_path)
         ),
         ask_outcome=functools.partial(ask_outcome, runtime.runtime_paths.event_log),
         turn_timings_read=functools.partial(

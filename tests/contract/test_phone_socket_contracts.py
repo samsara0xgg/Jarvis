@@ -85,7 +85,8 @@ def test_the_brain_takes_every_valid_say_and_answers_error_bad_say_to_every_inva
 ) -> None:
     """A valid say is answered ``said``; an invalid one ``error bad_say`` and writes no turn."""
     inputs = contracts.inputs("phone_ws/say", frame="say", socket=SOCKET)
-    rig = _rig(tmp_path, "say")
+    # ADR 0390: t1 is listed and t2 was merged into it; no other topic is
+    rig = _rig(tmp_path, "say", hub={"resolve_topic": {"t1": "t1", "t2": "t1"}.get})
     with brain_at(inputs.now_ms), rig.connect() as ws:
         open_ws(ws)
         taken: dict[str, str] = {}

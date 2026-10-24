@@ -174,6 +174,7 @@ def emit_surface_user_intent(  # noqa: PLR0913 — one keyword per payload field
     attachments: Sequence[str] = (),
     ingestion_node: str = "mac",
     about: Mapping[str, Any] | None = None,
+    topic: str | None = None,
 ) -> Event:
     """Emit the canonical ``surface.user_intent`` event for a CLI utterance.
 
@@ -197,6 +198,8 @@ def emit_surface_user_intent(  # noqa: PLR0913 — one keyword per payload field
         ingestion_node: The paired device the words came from (ADR 0212), else this Mac.
         about: The item that device's phone has open, already checked by
             :func:`jarvis.shared.about.clean_about` (ADR 0214); the key is written only when given.
+        topic: The listed topic the words were sent from (ADR 0390), already resolved; the key is
+            written only when given.
 
     Returns:
         The frozen Event row appended to the log (carrying the
@@ -212,6 +215,7 @@ def emit_surface_user_intent(  # noqa: PLR0913 — one keyword per payload field
             "language": language,
             **({"attachments": list(attachments)} if attachments else {}),
             **({"about": dict(about)} if about else {}),
+            **({"topic": topic} if topic else {}),
         },
         correlation={"turn_id": turn_id},
         ingestion_node=ingestion_node,

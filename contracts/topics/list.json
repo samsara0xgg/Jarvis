@@ -1,0 +1,61 @@
+{
+  "route": "GET /inherent/topics",
+  "direction": "brain -> client",
+  "description": "The topics she keeps over the one conversation (ADR 0390), open ones first, each side newest talk first. `state` is open or done; `line` is one sentence on where it stands and `recap` what she wrote of it from his words (rewritten each night; a turn sent from the topic starts from it). `count` is how many days it was talked about and `last_ms` when last. `positions` are those days, oldest first: the first line of the day (`record_id`, `seq`, `ts_ms`; open the chat there with GET /inherent/conversation?around=<record_id>), `by` him when he said any of it inside the topic and night when only the nightly pass filed it, and `lines` the record ids of that day's lines under the topic, oldest first. Send `topic` with POST /inherent/submit or a say to talk inside one; a merged topic's id still works.",
+  "now_ms": 1791993600000,
+  "exact": ["by", "state"],
+  "example": {
+    "topics": [
+      {
+        "id": "t1",
+        "name": "陶艺课",
+        "state": "open",
+        "line": "还在进行",
+        "recap": "他报了 2026-10-17 周六上午十点的陶艺课 要带一条旧围裙",
+        "count": 3,
+        "last_ms": 1791990600000,
+        "positions": [
+          {
+            "record_id": "a1",
+            "seq": 1,
+            "ts_ms": 1791734400000,
+            "by": "night",
+            "lines": ["a1", "a2"]
+          },
+          {
+            "record_id": "b1",
+            "seq": 5,
+            "ts_ms": 1791943200000,
+            "by": "night",
+            "lines": ["b1", "b2"]
+          },
+          {
+            "record_id": "c1",
+            "seq": 8,
+            "ts_ms": 1791990000000,
+            "by": "him",
+            "lines": ["c1", "c2", "c3"]
+          }
+        ]
+      },
+      {
+        "id": "t2",
+        "name": "搬家",
+        "state": "done",
+        "line": "箱子订好了",
+        "recap": "搬家的前情",
+        "count": 1,
+        "last_ms": 1791946800000,
+        "positions": [
+          {
+            "record_id": "b3",
+            "seq": 7,
+            "ts_ms": 1791946800000,
+            "by": "night",
+            "lines": ["b3"]
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -118,6 +118,7 @@ SANDBOX_WRITE = frozenset({
     "keep", "schedule", "plan", "ask_user", "dismiss_card",
     "save_place", "forget_place", "save_knowledge",
     "save_briefing", "jobs", "mark_highlight",
+    "topics",  # its reads and changes go to the sandbox's memory.db
     "bus",  # pins and rides write the sandbox; the times (to=...) read Google Routes LIVE
     "show_on_dashboard",  # its push goes to a recorder
 })

@@ -189,6 +189,33 @@ CREATE TABLE IF NOT EXISTS place_prompts (
     lng      REAL NOT NULL,
     shown_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS topic_versions (
+    id          TEXT PRIMARY KEY,
+    topic_id    TEXT NOT NULL,
+    ts          TEXT NOT NULL,
+    origin      TEXT NOT NULL,
+    name        TEXT NOT NULL,
+    state       TEXT NOT NULL,
+    merged_into TEXT,
+    line        TEXT NOT NULL,
+    recap       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS topic_versions_topic ON topic_versions (topic_id);
+CREATE TABLE IF NOT EXISTS topic_lines (
+    topic_id  TEXT NOT NULL,
+    record_id TEXT NOT NULL REFERENCES records(id),
+    by        TEXT NOT NULL,
+    ts        TEXT NOT NULL,
+    PRIMARY KEY (topic_id, record_id)
+);
+CREATE INDEX IF NOT EXISTS topic_lines_record ON topic_lines (record_id);
+CREATE TABLE IF NOT EXISTS topic_nights (
+    id      TEXT PRIMARY KEY,
+    day     TEXT NOT NULL,
+    ts      TEXT NOT NULL,
+    model   TEXT,
+    changes TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS meaning_vectors (
     kind   TEXT NOT NULL,
     ref    TEXT NOT NULL,
@@ -218,7 +245,8 @@ CREATE INDEX IF NOT EXISTS voiceprints_mic ON voiceprints (device, mic, id);
 # ``core_memory``, ``day_highlight_marks``, ``doing_runs`` and ``doing_answers`` (ADR 0302),
 # ``attention_threads`` (ADR 0315), the
 # places tables (ADR 0234), ``import_entries``
-# (ADR 0259), ``meaning_vectors`` (ADR 0260) and ``voiceprints`` (ADR 0286) are additive: an
+# (ADR 0259), ``meaning_vectors`` (ADR 0260), ``voiceprints`` (ADR 0286) and the topic tables
+# (ADR 0390) are additive: an
 # older opener ignores them, so they need no new version. So are the
 # ``day_prose`` columns ``line``, ``highlights`` and ``draft`` (ADR 0235), which
 # :func:`open_memory_db` adds to a table made before.
@@ -1349,6 +1377,35 @@ def conversation_rows(  # noqa: PLR0913 — the page's cursor and limits, all ke
         return rows, probe is not None
 
 
+def conversation_around(
+    path: Path, record_id: str, *, limit: int = 200, attachments: Attachments | None = None,
+) -> tuple[list[dict[str, object]], bool, bool] | None:
+    """A page of the conversation with the message ``record_id`` in its middle (ADR 0390).
+
+    Half of ``limit`` rows end at that message and the rest follow it, oldest first, as
+    :func:`conversation_rows` makes them and past the history floor either way. ``None`` when no
+    message of his or hers has that id. Returns ``(rows, has_older, has_newer)``.
+    """
+    with closing(open_memory_db(path)) as conn:
+        found = conn.execute(
+            f"SELECT rowid FROM records WHERE id = ? AND {_NOT_MESSAGES_SQL}",  # noqa: S608 - fixed literal
+            (record_id, *_NOT_MESSAGES),
+        ).fetchone()
+    if found is None:
+        return None
+    mark = int(found[0])
+    limit = max(1, limit)
+    older, has_older = conversation_rows(
+        path, before=mark + 1, limit=max(1, limit // 2), attachments=attachments,
+    )
+    room = limit - len(older)
+    last = int(str(older[-1]["seq"])) if older else mark
+    if room < 1:  # the page is full; one row past it says whether there are newer ones
+        return older, has_older, bool(conversation_rows(path, after=last, limit=1)[0])
+    newer, has_newer = conversation_rows(path, after=last, limit=room, attachments=attachments)
+    return [*older, *newer], has_older, has_newer
+
+
 def verbatim_stats(path: Path, *, since: str = "", recent: int = 0) -> VerbatimStats:
     """Size and time span of the records after the current anchor.
 
@@ -2011,6 +2068,7 @@ __all__ = [
     "attention_threads",
     "brief_note",
     "compaction_range",
+    "conversation_around",
     "core_memory_pending_days",
     "current_core_memory",
     "day_records",

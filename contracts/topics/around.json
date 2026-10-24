@@ -1,0 +1,52 @@
+{
+  "route": "GET /inherent/conversation?around=",
+  "direction": "brain -> client",
+  "description": "A page of the conversation with one message in its middle (ADR 0390): `around` is its record id, half of `limit` rows end at it and the rest follow, oldest first, past the history floor. `has_more` says older rows exist (page back with `before`) and `has_newer` newer ones (page on with `after`). A row he said inside a topic carries `topic` {id, name}. An id that names no message is a 404; `around` with `after` or `before` is a 400.",
+  "now_ms": 1791993600000,
+  "example": {
+    "since": "",
+    "rows": [
+      {
+        "seq": 7,
+        "id": "b3",
+        "ts": "2026-10-13T20:00:00-07:00",
+        "source": "allen",
+        "text": "搬家的箱子订好了",
+        "attachments": []
+      },
+      {
+        "seq": 8,
+        "id": "c1",
+        "ts": "2026-10-14T08:00:00-07:00",
+        "source": "allen",
+        "text": "陶艺课改到周日了",
+        "attachments": [],
+        "topic": {
+          "id": "t1",
+          "name": "陶艺课"
+        }
+      },
+      {
+        "seq": 9,
+        "id": "c2",
+        "ts": "2026-10-14T08:00:03-07:00",
+        "source": "jarvis",
+        "text": "记下了 周日上午十点",
+        "topic": {
+          "id": "t1",
+          "name": "陶艺课"
+        }
+      },
+      {
+        "seq": 10,
+        "id": "c3",
+        "ts": "2026-10-14T08:10:00-07:00",
+        "source": "allen",
+        "text": "拉坯工具在哪买",
+        "attachments": []
+      }
+    ],
+    "has_more": true,
+    "has_newer": false
+  }
+}

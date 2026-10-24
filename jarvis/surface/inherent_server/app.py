@@ -54,6 +54,7 @@ from jarvis.surface.inherent_server.settings import register_settings_routes
 from jarvis.surface.inherent_server.setup import register_setup_routes
 from jarvis.surface.inherent_server.sockets import register_terminal_route, register_ws_route
 from jarvis.surface.inherent_server.submit import register_share_route, register_submit_route
+from jarvis.surface.inherent_server.topics import register_topics_route
 from jarvis.surface.inherent_server.trips import register_departure_route, register_ride_routes
 from jarvis.surface.inherent_server.usage import register_usage_history_route, register_usage_routes
 from jarvis.surface.inherent_server.v2 import register_v2_routes
@@ -109,6 +110,7 @@ def create_app(deps: InherentDeps) -> FastAPI:  # noqa: PLR0915 — one closed r
     register_usage_routes(app, deps)
     register_work_routes(app, deps)
     register_conversation_route(app, deps)
+    register_topics_route(app, deps)
     register_card_routes(app, deps)
     register_think_route(app, deps)
     register_turn_timings_route(app, deps)
