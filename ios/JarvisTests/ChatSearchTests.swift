@@ -22,14 +22,36 @@ final class ChatSearchTests: XCTestCase {
         XCTAssertEqual(PastParse.inOrder(days).map(\.id), ["a", "b", "c", "d"], "the brain sends days newest first and a day's hits oldest first: the bar steps oldest to newest")
     }
 
-    func testTheAgreedTopicsAreReadAndATopicWithNoPlaceIsLeftOut() {
-        let json = #"{"topics":[{"id":"t1","name":"陶艺课","state":"open","line":"22:00 那节还没确认","recap":"今晚 22:00，Studio 4。还没回邮件确认。","count":4,"last_ms":1761264000000,"positions":[{"record_id":"r1","seq":10,"ts_ms":1,"by":"him"},{"record_id":"r9","seq":90,"ts_ms":2,"by":"night"}]},{"id":"t3","name":"牙医","state":"done","line":"周二看过了","recap":"","count":1,"last_ms":1,"positions":[{"record_id":"r2","seq":2,"ts_ms":1,"by":"night"}]},{"id":"t2","name":"空","line":"","count":0,"last_ms":0,"positions":[]}]}"#
+    // The examples are the brain's contracts on feat/chat-topics, copied as they are: contracts/topics/list.json, contracts/topics/around.json and contracts/phone_ws/say.json.
+
+    func testTheTopicsContractExampleIsRead() {
+        let json = #"{"topics":[{"id":"t1","name":"陶艺课","state":"open","line":"还在进行","recap":"他报了 2026-10-17 周六上午十点的陶艺课 要带一条旧围裙","count":3,"last_ms":1791990600000,"positions":[{"record_id":"a1","seq":1,"ts_ms":1791734400000,"by":"night","lines":["a1","a2"]},{"record_id":"b1","seq":5,"ts_ms":1791943200000,"by":"night","lines":["b1","b2"]},{"record_id":"c1","seq":8,"ts_ms":1791990000000,"by":"him","lines":["c1","c2","c3"]}]},{"id":"t2","name":"搬家","state":"done","line":"箱子订好了","recap":"搬家的前情","count":1,"last_ms":1791946800000,"positions":[{"record_id":"b3","seq":7,"ts_ms":1791946800000,"by":"night","lines":["b3"]}]}]}"#
         let topics = PastParse.topics(Data(json.utf8))
-        XCTAssertEqual(topics?.map(\.name), ["陶艺课", "牙医"], "a topic with no place is left out; the brain's order is kept")
-        XCTAssertEqual(topics?.first?.places.map(\.seq), [10, 90])
-        XCTAssertEqual(topics?.first?.recap, "今晚 22:00，Studio 4。还没回邮件确认。")
+        XCTAssertEqual(topics?.map(\.name), ["陶艺课", "搬家"], "the brain's order: open ones first")
         XCTAssertEqual(topics?.map(\.done), [false, true], "a done topic is drawn dimmed under the open ones")
+        XCTAssertEqual(topics?.first?.count, 3, "count is days")
+        XCTAssertEqual(topics?.first?.places.map(\.seq), [1, 5, 8], "one place a day, oldest first: the bar steps day by day")
+        XCTAssertEqual(topics?.first?.places.last?.lines, ["c1", "c2", "c3"], "a day lights exactly its lines")
+        XCTAssertEqual(topics?.first?.places.last?.by, "him")
+        XCTAssertEqual(topics?.first?.recap, "他报了 2026-10-17 周六上午十点的陶艺课 要带一条旧围裙")
         XCTAssertNil(PastParse.topics(Data(#"{"detail":"Not Found"}"#.utf8)), "while the brain does not serve topics the answer is not one: the card has no topics")
+    }
+
+    func testTheAroundContractExampleIsReadWithEachRowsTopic() {
+        let json = #"{"since":"","rows":[{"seq":7,"id":"b3","ts":"2026-10-13T20:00:00-07:00","source":"allen","text":"搬家的箱子订好了","attachments":[]},{"seq":8,"id":"c1","ts":"2026-10-14T08:00:00-07:00","source":"allen","text":"陶艺课改到周日了","attachments":[],"topic":{"id":"t1","name":"陶艺课"}},{"seq":9,"id":"c2","ts":"2026-10-14T08:00:03-07:00","source":"jarvis","text":"记下了 周日上午十点","topic":{"id":"t1","name":"陶艺课"}},{"seq":10,"id":"c3","ts":"2026-10-14T08:10:00-07:00","source":"allen","text":"拉坯工具在哪买","attachments":[]}],"has_more":true,"has_newer":false}"#
+        let page = ConversationPage.parse(Data(json.utf8))
+        XCTAssertEqual(page?.rows.map(\.seq), [7, 8, 9, 10])
+        XCTAssertEqual(page?.hasMore, true)
+        XCTAssertEqual(page?.hasNewer, false)
+        XCTAssertEqual(page?.rows.map { $0.topic?.name }, [nil, "陶艺课", "陶艺课", nil], "a row said inside a topic carries it")
+    }
+
+    func testTheSayContractInATopicIsTheFrameThePhoneSends() throws {
+        let json = #"{"type":"say","text":"把它推到明天","spoken":false,"utterance_id":"t30","topic":"t1"}"#
+        let frame = PhoneFrame(Data(json.utf8))
+        XCTAssertEqual(frame, .say(utteranceId: "t30", text: "把它推到明天", language: nil, confidence: nil, spoken: false, topic: "t1"))
+        let back = try XCTUnwrap(frame.map { try JSONSerialization.jsonObject(with: $0.json) as? NSDictionary })
+        XCTAssertEqual(back, try JSONSerialization.jsonObject(with: Data(json.utf8)) as? NSDictionary, "what the phone sends is the contract's frame, field for field")
     }
 
     func testWhatIsSentWhileGoingOnWithATopicCarriesItsIdAndNothingElseDoes() throws {

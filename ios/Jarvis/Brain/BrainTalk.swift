@@ -31,6 +31,7 @@ struct ConversationRow: Equatable {
     var attachments: [RowAttachment] = []      // what he sent with the words; his words alone are `text` then (empty for a turn of files only)
     var reactions = RowReactions()     // his and hers on this message (ADR 0256)
     var places: [AnswerPlace] = []     // the places her answer names, for the map under it; empty for most rows
+    var topic: RowTopic?               // the topic it was said in (the brain's contracts/topics/around.json)
     var isHis: Bool { source == "allen" }
     /// a line she says before the answer comes (only a voice part): more is on its way
     var isLeadIn: Bool { !isHis && AnswerText.isLeadIn(text) }
@@ -42,19 +43,25 @@ struct ConversationRow: Equatable {
             guard let seq = r["seq"] as? Int, let source = r["source"] as? String, let text = r["text"] as? String else { return nil }
             AnswerLinkStore.shared.note(id: (r["id"] as? String) ?? "", raw: r["links"])          // the 今天 rows and 地图 trips her answer points at (Sky/ChatLinks.swift)
             return ConversationRow(seq: seq, source: source, ts: (r["ts"] as? String) ?? "", text: text, steps: StepsInfo.parse(r),
-                                   id: (r["id"] as? String) ?? "", attachments: RowAttachment.parse(r), reactions: RowReactions.parse(r), places: AnswerPlace.parse(r["places"]))
+                                   id: (r["id"] as? String) ?? "", attachments: RowAttachment.parse(r), reactions: RowReactions.parse(r), places: AnswerPlace.parse(r["places"]),
+                                   topic: (r["topic"] as? [String: Any]).flatMap { t in (t["id"] as? String).map { RowTopic(id: $0, name: t["name"] as? String ?? "") } })
         }
     }
 }
 
-/// One page of `GET /inherent/conversation`: its rows oldest first, and whether older rows exist beyond the first (below the history floor too, ADR 0215).
+/// the topic a row was said in
+struct RowTopic: Equatable { let id: String; let name: String }
+
+/// One page of `GET /inherent/conversation`: its rows oldest first, and whether older rows exist beyond the first (below the history floor too, ADR 0215); a page `around` a message
+/// also says whether newer ones exist past its last.
 struct ConversationPage: Equatable {
     var rows: [ConversationRow]
     var hasMore: Bool
+    var hasNewer = false
 
     static func parse(_ data: Data) -> ConversationPage? {
         guard let rows = ConversationRow.parse(data), let o = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return nil }
-        return ConversationPage(rows: rows, hasMore: o["has_more"] as? Bool ?? false)
+        return ConversationPage(rows: rows, hasMore: o["has_more"] as? Bool ?? false, hasNewer: o["has_newer"] as? Bool ?? false)
     }
 }
 
@@ -115,6 +122,13 @@ extension BrainClient {
     /// `GET /inherent/conversation`: with neither cursor the newest `limit` rows, with `after` the rows past that `seq`, with `before` the newest rows older than it (never both: the brain refuses that).
     static func conversation(after: Int = 0, before: Int = 0, limit: Int, bases: [URL], token: String) async throws -> ConversationPage {
         let r = try await send("GET", "/inherent/conversation", query: conversationQuery(after: after, before: before, limit: limit), bases: bases, token: token, unauthorized: .revoked)
+        guard let page = ConversationPage.parse(r.data) else { throw BrainError.garbled }
+        return page
+    }
+
+    /// `GET /inherent/conversation?around=<record id>`: a page with that message in its middle (404 when it names none). Asked for where a search hit is: it says the hit's `seq`.
+    static func conversation(around: String, limit: Int, bases: [URL], token: String) async throws -> ConversationPage {
+        let r = try await send("GET", "/inherent/conversation", query: [URLQueryItem(name: "around", value: around), URLQueryItem(name: "limit", value: String(limit))], bases: bases, token: token, unauthorized: .revoked)
         guard let page = ConversationPage.parse(r.data) else { throw BrainError.garbled }
         return page
     }

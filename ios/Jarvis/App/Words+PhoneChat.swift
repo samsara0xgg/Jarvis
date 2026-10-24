@@ -20,6 +20,7 @@ extension Words {
         static var searchFailed: String { pick(zh: "没连上，等会儿再搜", en: "Couldn't reach her. Try again later") }
         static var his: String { pick(zh: "我", en: "Me") }
         static var hers: String { pick(zh: "她", en: "Her") }
+        static func days(_ n: Int) -> String { pick(zh: "\(n) 天", en: n == 1 ? "1 day" : "\(n) days") }
         static var topics: String { pick(zh: "她整理的话题", en: "Topics she keeps") }
         static func place(_ i: Int, of n: Int) -> String { pick(zh: "第 \(i) 处，共 \(n) 处", en: "\(i) of \(n)") }
         static var earlierPlace: String { pick(zh: "前一处", en: "Earlier") }

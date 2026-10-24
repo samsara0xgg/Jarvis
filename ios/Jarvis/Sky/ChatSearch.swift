@@ -27,13 +27,14 @@ struct PastHitDay: Equatable, Identifiable {
 
 /// One topic she keeps (`GET /inherent/topics`, agreed with the brain 2026-10-24): its places oldest first, one a sentence.
 struct ChatTopic: Equatable, Identifiable {
-    struct Place: Equatable { let recordId: String; let seq: Int }
+    /// a day it was talked about: its first line, by him or filed by the night, and the ids of that day's lines under it, oldest first
+    struct Place: Equatable { let recordId: String; let seq: Int; var by = "night"; var lines: [String] = [] }
     let id: String
     let name: String
     var done = false                    // `state` "done": under the open ones, dimmed
     let line: String                    // where it stands now, in one line
     var recap = ""                      // her 前情: where it stands, what is decided, what is still open
-    let count: Int
+    let count: Int                      // how many days it was talked about
     let lastMs: Int64
     let places: [Place]
 }
@@ -52,7 +53,8 @@ enum PastParse {
         }
     }
 
-    /// the topics of an answer of `GET /inherent/topics` (`{topics: [{id, name, state, line, recap, count, last_ms, positions: [{record_id, seq, ts_ms, by}]}]}`), in the brain's order
+    /// the topics of an answer of `GET /inherent/topics` (`{topics: [{id, name, state, line, recap, count, last_ms, positions: [{record_id, seq, ts_ms, by, lines}]}]}`, the brain's
+    /// contracts/topics/list.json), in the brain's order
     /// (the open ones newest first, then the done ones); a topic with no place is left out
     static func topics(_ data: Data) -> [ChatTopic]? {
         guard let o = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any], let list = o["topics"] as? [[String: Any]] else { return nil }
@@ -60,7 +62,7 @@ enum PastParse {
             guard let id = t["id"] as? String, let name = t["name"] as? String, let ps = t["positions"] as? [[String: Any]] else { return nil }
             let places = ps.compactMap { p -> ChatTopic.Place? in
                 guard let r = p["record_id"] as? String, let s = p["seq"] as? Int else { return nil }
-                return ChatTopic.Place(recordId: r, seq: s)
+                return ChatTopic.Place(recordId: r, seq: s, by: p["by"] as? String ?? "night", lines: p["lines"] as? [String] ?? [r])
             }
             guard !places.isEmpty else { return nil }
             return ChatTopic(id: id, name: name, done: t["state"] as? String == "done", line: t["line"] as? String ?? "", recap: t["recap"] as? String ?? "", count: t["count"] as? Int ?? places.count,
@@ -92,7 +94,7 @@ extension BrainClient {
 
 /// The places a hit or a topic goes through, oldest first, and the one shown: the bar over the field (「陶艺课 · 第 4 处，共 4 处 ‹ › ✕」) steps through them.
 struct ChatTrail: Equatable {
-    struct Place: Equatable { let recordId: String; var seq: Int? = nil }
+    struct Place: Equatable { let recordId: String; var seq: Int? = nil; var lines: [String] = [] }          // `lines`: what lights up there (a topic's day); none, the turn and its answer
     let name: String
     let places: [Place]
     var at: Int
@@ -126,17 +128,24 @@ extension StarEngine {
         ui.trail = t
         let place = t.places[i]
         Task { @MainActor in
-            // ponytail: pages back 200 rows at a time, ten at most; `GET /inherent/conversation?around=` opens there in one ask once the brain serves it
+            // a hit says no seq: a page around it does, so the paging below knows when to stop
+            var seq = place.seq
+            if seq == nil, !Conversation.shared.rows.contains(where: { $0.id == place.recordId }) {
+                let page = try? await BrainLink.shared.call { try await BrainClient.conversation(around: place.recordId, limit: 2, bases: $0, token: $1) }
+                seq = page?.rows.first { $0.id == place.recordId }?.seq
+            }
+            // ponytail: the stream holds the newest rows in one run, so an older place is reached by paging back 200 rows at a time, ten at most; a page `around` it would leave a gap
             for _ in 0..<10 {
                 let rows = Conversation.shared.rows
                 if rows.contains(where: { $0.id == place.recordId }) { break }
-                if let s = place.seq, let first = rows.first?.seq, s >= first { break }
+                if let s = seq, let first = rows.first?.seq, s >= first { break }
                 guard await Conversation.shared.loadOlder() else { break }
             }
             let rows = Conversation.shared.rows
             guard ui.trail == t, let k = rows.firstIndex(where: { $0.id == place.recordId }) else { ui.lit = []; return }
             let next = rows.indices.contains(k + 1) && rows[k].isHis && !rows[k + 1].isHis ? [rows[k + 1].seq] : []
-            ui.lit = Set(([rows[k].seq] + next).map { "c\($0)" })
+            let lines = Set(place.lines)
+            ui.lit = Set((lines.isEmpty ? [rows[k].seq] + next : rows.filter { lines.contains($0.id) }.map(\.seq)).map { "c\($0)" })          // a topic's day lights its own lines
             showChatSeq(rows[k].seq)
         }
     }
@@ -233,7 +242,7 @@ struct ChatSearchCard: View {
             HStack(spacing: 8) {
                 recapButton(Words.PhoneChat.goOnTopic, strong: true) { engine.endTrail(); engine.follow(t); close() }
                 recapButton(Words.PhoneChat.seeWords, strong: false) {
-                    go(ChatTrail(name: t.name, places: t.places.map { .init(recordId: $0.recordId, seq: $0.seq) }, at: t.places.count - 1))
+                    go(ChatTrail(name: t.name, places: t.places.map { .init(recordId: $0.recordId, seq: $0.seq, lines: $0.lines) }, at: t.places.count - 1))
                 }
             }
         }
@@ -284,7 +293,7 @@ struct ChatSearchCard: View {
                     VStack(alignment: .leading, spacing: 1) {
                         HStack(alignment: .firstTextBaseline, spacing: 6) {
                             Text(t.name).font(.system(size: Look.body, weight: .medium)).foregroundStyle(Look.ink).lineLimit(1)
-                            Text("\(t.count)").font(Look.figures(Look.small)).foregroundStyle(Look.ink3)
+                            Text(Words.PhoneChat.days(t.count)).font(Look.figures(Look.small)).foregroundStyle(Look.ink3)
                             Spacer(minLength: 4)
                             Text(when(Date(timeIntervalSince1970: Double(t.lastMs) / 1000))).font(.system(size: Look.small)).foregroundStyle(Look.ink3)
                         }

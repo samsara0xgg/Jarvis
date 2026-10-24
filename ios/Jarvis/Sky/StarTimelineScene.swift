@@ -361,7 +361,7 @@ extension StarEngine {
             if parts.count > 2, parts[2] == "话题" {          // made-up topics in the search card (the brain does not serve them yet), for the card's look
                 ChatSearchModel.sceneTopics = [
                     ChatTopic(id: "t1", name: "这周的安排", line: "二面明天下午三点", recap: "明天下午三点线上二面，两点半提醒你准备。小测周三十点在 ECS 123。还没定：周末爬山要看天气。",
-                              count: 2, lastMs: Int64(Date().timeIntervalSince1970 * 1000) - 600_000, places: [.init(recordId: "rec-3", seq: 3), .init(recordId: "rec-7", seq: 7)]),
+                              count: 2, lastMs: Int64(Date().timeIntervalSince1970 * 1000) - 600_000, places: [.init(recordId: "rec-3", seq: 3, lines: ["rec-3", "rec-4"]), .init(recordId: "rec-7", seq: 7, by: "him", lines: ["rec-7", "rec-8"])]),
                     ChatTopic(id: "t2", name: "吃的", line: "学校附近三家", count: 1, lastMs: Int64(Date().timeIntervalSince1970 * 1000) - 7_200_000, places: [.init(recordId: "rec-5", seq: 5)]),
                     ChatTopic(id: "t3", name: "出门提醒", done: true, line: "每天八点五十", count: 1, lastMs: Int64(Date().timeIntervalSince1970 * 1000) - 93_600_000, places: [.init(recordId: "rec-1", seq: 1)]),
                 ]
