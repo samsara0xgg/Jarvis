@@ -41,6 +41,7 @@ if TYPE_CHECKING:
 
     from jarvis.shared.lang import Language
     from jarvis.surface.terminal_events import EventOutbox
+    from jarvis.surface.terminal_hearing import RemoteHearing
     from jarvis.surface.voice_tts import TTSAudioEvent
 
 LOGGER = logging.getLogger("jarvis.surface.terminal_speaker")
@@ -129,7 +130,16 @@ class VoiceLink:
         self._last_row: int | None = None
         self._closed = False
         self._brain_speaks = False
+        self._brain_hears = False
         self._asks: dict[str, concurrent.futures.Future[Any]] = {}
+        self.hearing: RemoteHearing | None = None
+        """Where the brain's ``hear`` frames go (ADR 0400); set by the terminal's recognizer."""
+
+    @property
+    def brain_hears(self) -> bool:
+        """The brain is connected and hears this terminal's utterances in the cloud (ADR 0400)."""
+        with self._lock:
+            return self._send is not None and self._brain_hears
 
     @property
     def last_row(self) -> int | None:
@@ -155,6 +165,7 @@ class VoiceLink:
                            "this terminal will be answered")
         with self._lock:
             self._send, self._loop, self._brain_speaks = send, loop, speaks
+            self._brain_hears = ready.get("hear") is True
 
     def down(self) -> None:
         """The link dropped: every provider session in flight fails, and none is resumed."""
@@ -167,11 +178,17 @@ class VoiceLink:
         for pending in asks:
             if not pending.done():
                 pending.set_exception(BrainCallError("the brain link dropped"))
+        if self.hearing is not None:
+            self.hearing.down()
 
     def on_frame(self, frame: Mapping[str, Any]) -> None:
-        """One ``row``, ``tts`` or ``reply`` frame from the brain."""
+        """One ``row``, ``tts``, ``hear`` or ``reply`` frame from the brain."""
         if frame.get("type") == "reply":
             self._on_reply(frame)
+            return
+        if frame.get("type") == "hear":
+            if self.hearing is not None:
+                self.hearing.receive(frame)
             return
         if frame.get("type") == "row":
             row_id = frame.get("id")

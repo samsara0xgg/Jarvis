@@ -28,6 +28,7 @@ from jarvis.surface import (
     voice_session,
     voice_tts,
 )
+from jarvis.surface.terminal_hearing import CloudFinalRecognizer
 from jarvis.surface.voice_media.config import streaming_media_config_from_mapping
 from jarvis.surface.voice_media.contract import StreamingMediaStartupError, StreamingTTSProvider
 from jarvis.surface.voice_media.pipeline import StreamingTTSPipeline
@@ -46,6 +47,7 @@ if TYPE_CHECKING:
     from jarvis.state.voiceprint import VoiceprintBook
     from jarvis.surface.ambient_sounds import AmbientSounds
     from jarvis.surface.inherent_output import InherentBroadcaster
+    from jarvis.surface.terminal_hearing import RemoteHearing
     from jarvis.surface.voice_cues import VoiceCues
 
 LOGGER = logging.getLogger(__name__)
@@ -305,10 +307,16 @@ def voice_models_preflight(
 
 def final_recognizer(
     runtime: _ConfigHost, sensevoice: voice_asr.SenseVoiceRecognizer,
+    hearing: RemoteHearing | None = None,
 ) -> voice_asr.AsrRecognizer:
-    """``realtime.final_asr``: SenseVoice, Whisper as 言文 hears (proposal), or both (ADR 0132)."""
+    """``realtime.final_asr``: SenseVoice, Whisper as 言文 hears (proposal), both (ADR 0132).
+
+    Or ``cloud``: Qwen through the brain (ADR 0400), for a terminal's ``hearing`` only.
+    """
     realtime = runtime.config.raw.get("realtime")
     choice = realtime.get("final_asr") if isinstance(realtime, Mapping) else None
+    if choice == "cloud":
+        return _cloud_recognizer(runtime, sensevoice, hearing)
     if choice == "hybrid":
         # A loop is heard as nothing, so SenseVoice's words stand: a hotter retry took 4.6 s on
         # his laughter and still gave 886 characters of "beginning," (2026-10-03 15:56).
@@ -340,6 +348,21 @@ def final_recognizer(
     return voice_asr.WhisperFinalRecognizer(whisper=whisper, partials=sensevoice)
 
 
+def _cloud_recognizer(
+    runtime: _ConfigHost, sensevoice: voice_asr.SenseVoiceRecognizer,
+    hearing: RemoteHearing | None,
+) -> voice_asr.AsrRecognizer:
+    """Qwen's words through the brain, with the owner's Yana word list as hot words."""
+    if hearing is None:
+        LOGGER.warning("realtime.final_asr: cloud is a terminal's; hearing with SenseVoice")
+        return sensevoice
+    vocab = Path(str((runtime.config.raw.get("dictation") or {}).get("vocab_path", "")))
+    LOGGER.info("voice turns hear with Qwen through the brain; SenseVoice keeps the captions")
+    return CloudFinalRecognizer(
+        sensevoice=sensevoice, hearing=hearing, terms=functools.partial(load_user_terms, vocab),
+    )
+
+
 class _ConfigHost(Protocol):
     """A host of which the voice builders read only the loaded config."""
 
@@ -360,13 +383,14 @@ class _PipelineHost(_ConfigHost, Protocol):
     def voice_cues(self) -> VoiceCues | None: ...
 
 
-def build_voice_pipeline(
+def build_voice_pipeline(  # noqa: PLR0913 - one keyword per thing the pipeline is built from
     runtime: _PipelineHost,
     *,
     broadcaster: InherentBroadcaster,
     sensevoice_dir: Path,
     emit: Callable[[Mapping[str, object], Mapping[str, str]], Event] | None = None,
     voiceprint_model: Path | None = None,
+    hearing: RemoteHearing | None = None,
 ) -> voice_pipeline.VoicePipeline:
     """Construct the L5 :class:`VoicePipeline` with a fresh-conn factory.
 
@@ -378,7 +402,8 @@ def build_voice_pipeline(
     sends the utterance to the brain, and the audio it keeps stays on its own disk.
 
     With ``voiceprint_model`` (ADR 0286) a turn is embedded beside its final ASR; a model file
-    that is not there means no voiceprint.
+    that is not there means no voiceprint. A terminal's ``hearing`` is what
+    ``realtime.final_asr: cloud`` streams through (ADR 0400).
     """
     # realtime.final_asr_language pins SenseVoice's language, and with it the hybrid's Whisper.
     realtime = runtime.config.raw.get("realtime")
@@ -386,7 +411,7 @@ def build_voice_pipeline(
     sensevoice = voice_asr.SenseVoiceRecognizer(
         model_dir=sensevoice_dir, language=str(pinned or "") or None,
     )
-    recognizer = final_recognizer(runtime, sensevoice)
+    recognizer = final_recognizer(runtime, sensevoice, hearing)
     db_path = runtime.runtime_paths.event_log
     memory = runtime.memory
     artifacts_dir = memory.audio_dir if memory is not None and memory.retain_audio else None

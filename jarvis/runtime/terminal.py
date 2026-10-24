@@ -123,6 +123,7 @@ from jarvis.surface.lifelog_recorder import LANE_CAPACITY, OUTBOX_DIRNAME, Lifel
 from jarvis.surface.mac_ship import ShipConfig, run_shipper, ship_config
 from jarvis.surface.repo_observer import RepoObserver
 from jarvis.surface.terminal_events import EventOutbox
+from jarvis.surface.terminal_hearing import RemoteHearing
 from jarvis.surface.terminal_link import (
     MAX_FRAME_CHARS,
     Execute,
@@ -718,6 +719,7 @@ async def _start_listening(
         return build_voice_pipeline(
             seat, broadcaster=broadcaster, sensevoice_dir=sensevoice_dir,
             emit=turn.emit_utterance, voiceprint_model=voiceprint_model,
+            hearing=RemoteHearing(link),
         )
 
     def build() -> tuple[SessionAttempt, Dictation | None]:

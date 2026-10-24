@@ -26,7 +26,7 @@ from jarvis.runtime.turn.cancel import (
 )
 from jarvis.shared.pricing import load_pricing_table
 from jarvis.state.event_log import open_runtime_event_log
-from jarvis.surface import terminal_listen, terminal_voice, voice_artifact_store
+from jarvis.surface import terminal_hearing, terminal_listen, terminal_voice, voice_artifact_store
 from jarvis.surface.phone_link import PhoneHub
 from jarvis.surface.phone_player import PHONE_SAMPLE_RATE_HZ, PhoneAudioStreamPlayer
 from jarvis.surface.voice_media.config import streaming_media_config_from_mapping
@@ -73,6 +73,20 @@ def build_brain_voice(
             None if runtime.response_runs is None else runtime.response_runs.turn_text_only,
         ),
     )
+
+
+def build_brain_hearing() -> terminal_hearing.BrainHearing | None:
+    """What hears a voice terminal's utterances in the cloud: Qwen, with the key (ADR 0400).
+
+    ``None`` without ``BAILIAN_API_KEY``: a terminal is told the brain does not hear, and its
+    own SenseVoice writes the words.
+    """
+    api_key = os.environ.get(terminal_hearing.KEY_ENV)
+    if not api_key:
+        LOGGER.info("%s unset; a voice terminal hears with its own recognizer.",
+                    terminal_hearing.KEY_ENV)
+        return None
+    return terminal_hearing.BrainHearing(terminal_hearing.QwenEars(api_key))
 
 
 def phone_barge_in(runtime: JarvisRuntime, device: str) -> str:
