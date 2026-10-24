@@ -8,10 +8,14 @@
 # API into the Pi's RAM (/dev/shm), pulled to ~/.jarvis/backups/pi-brain/<date>/, checked here with
 # quick_check, and removed on the Pi before the next one starts. A database bigger than half of
 # /dev/shm's free space is staged on the Pi's disk beside ~/.jarvis (~/.jarvis-backup-stage-<date>)
-# instead of in RAM, and removed right after the pull. Only *.db files and the nightly event-log
-# reports (~/.jarvis/logs/check-log-*.json, ADR 0324; ids, counts and times, no content) travel: env,
-# tokens and every other file stay on the Pi. The newest 7 days are kept. A day's folder is itself a
-# runtime root for `jarvis check-log --runtime-root <folder>`.
+# instead of in RAM, and removed right after the pull. Only *.db files, the nightly event-log
+# reports (~/.jarvis/logs/check-log-*.json, ADR 0324; ids, counts and times, no content) and the
+# recorded-day archive travel: env, tokens and every other file stay on the Pi. The newest 7 days are
+# kept. A day's folder is itself a runtime root for `jarvis check-log --runtime-root <folder>`.
+#
+# The recorded-day archive (~/.jarvis/lifelog: audio and motion pieces, ADR 0238) only grows, so it
+# is one mirror in ~/.jarvis/backups/pi-brain/lifelog/, outside the 7-day rotation: rsync pulls the
+# pieces it lacks and deletes nothing, here or on the Pi.
 set -euo pipefail
 
 HOST="${JARVIS_PI_HOST:-allen@jarvis}"
@@ -100,6 +104,14 @@ if scp -q -o BatchMode=yes "$HOST:.jarvis/logs/check-log-*.json" "$dest/"; then
     echo "$(date '+%F %T') check-log reports ok ($(ls -1 "$dest"/check-log-*.json | wc -l | tr -d ' '))"
 else
     echo "$(date '+%F %T') no check-log reports pulled from $HOST (none yet, or the pull failed)" >&2
+fi
+# The recorded-day archive: only the pieces this mirror lacks travel. Dot files are a piece still
+# being written. Like the reports, a failed pull is a note: the databases are already here.
+mkdir -p "$DEST_ROOT/lifelog"
+if rsync -a --exclude '.*' -e "ssh -o BatchMode=yes -o ConnectTimeout=20" "$HOST:.jarvis/lifelog/" "$DEST_ROOT/lifelog/"; then
+    echo "$(date '+%F %T') lifelog ok ($(find "$DEST_ROOT/lifelog" -type f | wc -l | tr -d ' ') pieces, $(du -sh "$DEST_ROOT/lifelog" | cut -f1))"
+else
+    echo "$(date '+%F %T') lifelog not pulled from $HOST (none yet, or the pull failed)" >&2
 fi
 # Keep the newest $KEEP days.
 ls -1d "$DEST_ROOT"/????-??-?? | sort -r | tail -n +"$((KEEP + 1))" | while read -r old; do rm -rf "$old"; done
