@@ -189,6 +189,8 @@ final class RemoteCanvas: UIView {
         tap.allowedTouchTypes = anyPointer
         let rightTap = UITapGestureRecognizer(target: self, action: #selector(rightTapped))
         rightTap.buttonMaskRequired = .secondary
+        // a finger has no buttons: left to itself this recogniser took plain taps and turned them into right clicks
+        rightTap.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.indirectPointer.rawValue)]
         let hold = UILongPressGestureRecognizer(target: self, action: #selector(holding))
         hold.allowedTouchTypes = direct
         let drag = UIPanGestureRecognizer(target: self, action: #selector(dragging))
