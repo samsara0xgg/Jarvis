@@ -5,6 +5,8 @@
   most 12 hours, per device, as rows of :data:`jarvis.state.phone_track.COLUMNS`
 - ``GET /inherent/footprint?date=`` — ADR 0323; his footprint of a day: the long stays and the
   outings between them, each with its route, stops, distance, speeds and heart rate
+- ``GET /inherent/body?start_ms=&end_ms=`` — ADR 0411; a few measures of his body over a window
+  of at most a day, each beside his usual level for those hours
 - ``POST /inherent/day/highlight`` — ADR 0296; body ``{"day", "id", "on", "label"?}`` marks or
   unmarks one item of a day as a highlight for him; ``{"ok", "highlights"}``
 - ``POST /inherent/day/mark`` — ADR 0409; body ``{"day", "at_ms", "label"?}`` marks for him the
@@ -69,6 +71,23 @@ def register_track_route(app: FastAPI, deps: InherentDeps) -> None:
         """``{from_ms, to_ms, columns, tracks: [{device, fixes}]}``, fixes oldest first."""
         try:
             return await track_read(from_ms, to_ms)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+
+
+def register_body_route(app: FastAPI, deps: InherentDeps) -> None:
+    """ADR 0411: ``GET /inherent/body``, his body over a window beside usual; open as the day is."""
+    if deps.body_read is None:
+        return
+    body_read = deps.body_read
+
+    @app.get("/inherent/body")
+    async def body(
+        start_ms: Annotated[int, Query(ge=0)], end_ms: Annotated[int, Query(ge=0)],
+    ) -> dict[str, Any]:
+        """``{tz, start_ms, end_ms, now_ms, baseline, measures}``; the window ends now at most."""
+        try:
+            return await body_read(start_ms, end_ms)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from None
 

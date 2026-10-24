@@ -245,6 +245,10 @@ class InherentDeps:
     # from the log off the loop thread. A ValueError (a window backwards or over 12 hours) is a
     # 400; ``None`` leaves ``GET /inherent/track`` unregistered.
     track_read: Callable[[int, int], Awaitable[dict[str, Any]]] | None = None
+    # ADR 0411: ``(start_ms, end_ms)`` -> a few measures of his body over that window beside his
+    # usual level then, off the loop thread; ValueError (an empty, future or over-long window) is
+    # 400; ``None`` leaves ``GET /inherent/body`` unregistered.
+    body_read: Callable[[int, int], Awaitable[dict[str, Any]]] | None = None
     # ADR 0323: his footprint of one day, folded from the log when asked: the day asked for, or
     # ``None`` for today in the owner's zone. Off the loop thread. A ValueError is a 400; ``None``
     # leaves ``GET /inherent/footprint`` unregistered.

@@ -39,6 +39,7 @@ from jarvis.runtime.daemon.routes import (
     refresh_work_state_now,
     ride_act,
     save_settings,
+    serve_body,
     serve_day,
     serve_footprint,
     serve_today,
@@ -219,6 +220,9 @@ def build_deps(  # noqa: PLR0913 - one declarative table: each route's reads, bo
             serve_turn_timings, runtime.runtime_paths.event_log,
         ),
         track_read=functools.partial(serve_track, runtime.runtime_paths.event_log),
+        body_read=functools.partial(
+            serve_body, runtime.runtime_paths.event_log, runtime.config.zone,
+        ),
         footprint_read=functools.partial(
             serve_footprint,
             runtime.runtime_paths.event_log,

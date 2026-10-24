@@ -162,8 +162,6 @@ _WITH_STRETCHES: Final = 3
 """Measures asked for at most this many come with their stretches; more get one line each."""
 _MAX_STRETCHES: Final = 48
 _SPAN_DAYS: Final = 31
-_USUAL_DAYS: Final = 14
-_USUAL_MIN_DAYS: Final = 3
 _NIGHTS_SHOWN: Final = 7
 _READINGS_WINDOW: Final = timedelta(hours=6)
 _GAP: Final = timedelta(minutes=30)
@@ -384,31 +382,6 @@ def _plural(count: int, word: str, many: str = "") -> str:
     return f"{count:,} {word if count == 1 else many or word + 's'}"
 
 
-@dataclass(frozen=True)
-class _Usual:
-    """His usual level: the median and middle half of what the days before held."""
-
-    median: float
-    low: float
-    high: float
-    days: int
-
-    @classmethod
-    def of(cls, values: Sequence[float], days: int) -> _Usual:
-        if len(values) == 1:
-            return cls(values[0], values[0], values[0], days)
-        low, mid, high = statistics.quantiles(values, n=4, method="inclusive")
-        return cls(mid, low, high, days)
-
-    def versus(self, value: float) -> str:
-        """Where a value stands against the middle half: below, within or above it."""
-        if value < self.low:
-            return "below"
-        if value > self.high:
-            return "above"
-        return "within"
-
-
 # --- one read --------------------------------------------------------------------------------
 
 
@@ -450,7 +423,7 @@ class _Read:
     def _usual_spans(self) -> list[tuple[int, int]]:
         """The same hours on each of the 14 days before the window, or those whole days."""
         found = []
-        for back in range(1, _USUAL_DAYS + 1):
+        for back in range(1, body.USUAL_DAYS + 1):
             day = self.window.first - timedelta(days=back)
             if self.window.one_day:
                 begin, end = self.window.same_hours(day, self.zone)
@@ -567,7 +540,7 @@ def _nothing(read: _Read, measure: _Measure, *, nearest: bool) -> tuple[dict[str
 
 def _usual_readings(
     read: _Read, measure: _Measure,
-) -> tuple[_Usual | None, _Usual | None, int]:
+) -> tuple[body.Usual | None, body.Usual | None, int]:
     """His usual readings for the window's hours, all and while still, and the days that had any."""
     pooled: list[float] = []
     still: list[float] = []
@@ -577,9 +550,9 @@ def _usual_readings(
         days += bool(found)
         pooled += [r.value for r in found]
         still += [r.value for r in found if r.at_rest]
-    if days < _USUAL_MIN_DAYS:
+    if days < body.USUAL_MIN_DAYS:
         return None, None, days
-    return _Usual.of(pooled, days), _Usual.of(still, days) if still else None, days
+    return body.Usual.of(pooled, days), body.Usual.of(still, days) if still else None, days
 
 
 def _readings_block(
@@ -781,10 +754,10 @@ def _totals_block(read: _Read, measure: _Measure, *, full: bool) -> tuple[dict[s
         _sum_by(read, held, b)
         for held, b in ((read.totals(measure.metric, a, b), b) for a, b in read.usual) if held
     ]
-    if len(usual_sums) < _USUAL_MIN_DAYS:
+    if len(usual_sums) < body.USUAL_MIN_DAYS:
         block["usual"] = f"only {len(usual_sums)} of the 14 days before have it, too few to say"
     else:
-        usual = _Usual.of(usual_sums, len(usual_sums))
+        usual = body.Usual.of(usual_sums, len(usual_sums))
         block["usual"] = {
             "median": _number(measure, usual.median),
             "middle_half": f"{_bare(measure, usual.low)} to {_said(measure, usual.high)}",
@@ -919,10 +892,10 @@ def _sleep_block(read: _Read, measure: _Measure, *, full: bool) -> tuple[dict[st
         max(_asleep(b) for b in held)
         for held in (_woke_in(read, a, b) for a, b in _usual_whole_days(read)) if held
     ]
-    if len(usual_nights) < _USUAL_MIN_DAYS:
+    if len(usual_nights) < body.USUAL_MIN_DAYS:
         block["usual"] = f"only {len(usual_nights)} nights in the 14 days before, too few to say"
     else:
-        usual = _Usual.of(usual_nights, len(usual_nights))
+        usual = body.Usual.of(usual_nights, len(usual_nights))
         block["usual"] = {
             "asleep": speakable.duration(usual.median * 60),
             "middle_half": (
@@ -969,7 +942,7 @@ def _woke(block: Span, read: _Read) -> str:
 def _usual_whole_days(read: _Read) -> list[tuple[int, int]]:
     """The 14 whole days before the window: a night is his whatever hours were asked."""
     found = []
-    for back in range(1, _USUAL_DAYS + 1):
+    for back in range(1, body.USUAL_DAYS + 1):
         day = read.window.first - timedelta(days=back)
         found.append((_ms(_at(day, time(0), read.zone)), _ms(_midnight_after(day, read.zone))))
     return found
@@ -1039,8 +1012,8 @@ def _stand_block(read: _Read, measure: _Measure, *, full: bool) -> tuple[dict[st
         sum(held.values())
         for held in (_stood(read, read.hour_floor(a), b) for a, b in read.usual) if held
     ]
-    if len(usual_counts) >= _USUAL_MIN_DAYS:
-        usual = _Usual.of(usual_counts, len(usual_counts))
+    if len(usual_counts) >= body.USUAL_MIN_DAYS:
+        usual = body.Usual.of(usual_counts, len(usual_counts))
         block["usual"] = {"stood": round(usual.median), "days": usual.days}
         block["vs_usual"] = usual.versus(stood)
         head += f"; usual {round(usual.median)} {_usual_words(read)}, so {block['vs_usual']} it"

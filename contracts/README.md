@@ -13,6 +13,7 @@ each client's tests read the same files, so a rename on one side is red on the o
 | `phone_ws/` | `/phone/ws` frames: `hello`, `say`, `ready`, `said`, `step`, `error` | both |
 | `waiting/` | `GET /inherent/waiting`, the two cards, and the bodies that answer them | both |
 | `day/timeline.json` | `GET /inherent/day` | brain to client |
+| `body/window.json` | `GET /inherent/body`: his body over a window beside his usual level | brain to client |
 | `settings/` | `GET` and `POST /inherent/settings` | both |
 | `about.json` | the `about` a phone sends with a say or a submit | client to brain |
 | `topics/` | `GET /inherent/topics` (`list`) and the page `GET /inherent/conversation?around=` opens at a topic's place (`around`); a say or submit names a topic with `topic` | brain to client |

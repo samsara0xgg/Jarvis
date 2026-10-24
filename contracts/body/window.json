@@ -1,0 +1,235 @@
+{
+  "route": "GET /inherent/body",
+  "direction": "brain -> client",
+  "description": "A few measures of his body over `[start_ms, end_ms)` (at most 25 hours; one that runs past now ends now, and `end_ms` says so), each beside his usual level for the same clock hours (`baseline`: the days before, in the owner's zone `tz`). `measures` maps a name to `{kind, unit, value, usual: {median, low, high, days}, vs_usual}`: `value` is null when nothing was recorded in the window, the usual numbers are null when fewer than `baseline.min_days` days hold any, and `vs_usual` (below, within or above the middle half `low`..`high`) is null without both. A reading (heart rates, HRV, breathing, blood oxygen) is the median of the readings, with their count `readings`, `low` and `high`; a total (steps) is the sum of every hour the window touches; sleep is the minutes asleep of the sleeps he woke from in the window, with their count `sleeps`. A window that is empty, has not begun or is longer is a 400. A client keeps what it does not know: new measures come.",
+  "now_ms": 1792802160000,
+  "exact": ["kind", "tz", "unit", "vs_usual"],
+  "examples": {
+    "afternoon": {
+      "tz": "America/Vancouver",
+      "start_ms": 1792789200000,
+      "end_ms": 1792802160000,
+      "now_ms": 1792802160000,
+      "baseline": {
+        "days_before": 14,
+        "min_days": 3,
+        "rule": "the same clock hours on each of the 14 days before; his usual level is the median of what those days held, with its middle half (the 25th to the 75th percentile), when at least 3 of them hold any"
+      },
+      "measures": {
+        "steps": {
+          "kind": "total",
+          "unit": "steps",
+          "value": 900,
+          "usual": {
+            "median": 1800,
+            "low": 1800,
+            "high": 1800,
+            "days": 14
+          },
+          "vs_usual": "below"
+        },
+        "heart_rate": {
+          "kind": "reading",
+          "unit": "bpm",
+          "value": 90,
+          "usual": {
+            "median": 74,
+            "low": 71,
+            "high": 77,
+            "days": 14
+          },
+          "vs_usual": "above",
+          "readings": 36,
+          "low": 84,
+          "high": 96
+        },
+        "resting_heart_rate": {
+          "kind": "reading",
+          "unit": "bpm",
+          "value": null,
+          "usual": {
+            "median": null,
+            "low": null,
+            "high": null,
+            "days": 0
+          },
+          "vs_usual": null,
+          "readings": 0,
+          "low": null,
+          "high": null
+        },
+        "hrv": {
+          "kind": "reading",
+          "unit": "ms",
+          "value": null,
+          "usual": {
+            "median": null,
+            "low": null,
+            "high": null,
+            "days": 0
+          },
+          "vs_usual": null,
+          "readings": 0,
+          "low": null,
+          "high": null
+        },
+        "breathing_rate": {
+          "kind": "reading",
+          "unit": "/min",
+          "value": null,
+          "usual": {
+            "median": null,
+            "low": null,
+            "high": null,
+            "days": 0
+          },
+          "vs_usual": null,
+          "readings": 0,
+          "low": null,
+          "high": null
+        },
+        "blood_oxygen": {
+          "kind": "reading",
+          "unit": "%",
+          "value": null,
+          "usual": {
+            "median": null,
+            "low": null,
+            "high": null,
+            "days": 0
+          },
+          "vs_usual": null,
+          "readings": 0,
+          "low": null,
+          "high": null
+        },
+        "sleep": {
+          "kind": "sleep",
+          "unit": "min",
+          "value": null,
+          "usual": {
+            "median": null,
+            "low": null,
+            "high": null,
+            "days": 0
+          },
+          "vs_usual": null,
+          "sleeps": 0
+        }
+      }
+    },
+    "today": {
+      "tz": "America/Vancouver",
+      "start_ms": 1792738800000,
+      "end_ms": 1792802160000,
+      "now_ms": 1792802160000,
+      "baseline": {
+        "days_before": 14,
+        "min_days": 3,
+        "rule": "the same clock hours on each of the 14 days before; his usual level is the median of what those days held, with its middle half (the 25th to the 75th percentile), when at least 3 of them hold any"
+      },
+      "measures": {
+        "steps": {
+          "kind": "total",
+          "unit": "steps",
+          "value": 2500,
+          "usual": {
+            "median": 4800,
+            "low": 4800,
+            "high": 4800,
+            "days": 14
+          },
+          "vs_usual": "below"
+        },
+        "heart_rate": {
+          "kind": "reading",
+          "unit": "bpm",
+          "value": 90,
+          "usual": {
+            "median": 74,
+            "low": 71,
+            "high": 77,
+            "days": 14
+          },
+          "vs_usual": "above",
+          "readings": 36,
+          "low": 84,
+          "high": 96
+        },
+        "resting_heart_rate": {
+          "kind": "reading",
+          "unit": "bpm",
+          "value": 55,
+          "usual": {
+            "median": null,
+            "low": null,
+            "high": null,
+            "days": 0
+          },
+          "vs_usual": null,
+          "readings": 1,
+          "low": 55,
+          "high": 55
+        },
+        "hrv": {
+          "kind": "reading",
+          "unit": "ms",
+          "value": null,
+          "usual": {
+            "median": null,
+            "low": null,
+            "high": null,
+            "days": 0
+          },
+          "vs_usual": null,
+          "readings": 0,
+          "low": null,
+          "high": null
+        },
+        "breathing_rate": {
+          "kind": "reading",
+          "unit": "/min",
+          "value": null,
+          "usual": {
+            "median": null,
+            "low": null,
+            "high": null,
+            "days": 0
+          },
+          "vs_usual": null,
+          "readings": 0,
+          "low": null,
+          "high": null
+        },
+        "blood_oxygen": {
+          "kind": "reading",
+          "unit": "%",
+          "value": null,
+          "usual": {
+            "median": null,
+            "low": null,
+            "high": null,
+            "days": 0
+          },
+          "vs_usual": null,
+          "readings": 0,
+          "low": null,
+          "high": null
+        },
+        "sleep": {
+          "kind": "sleep",
+          "unit": "min",
+          "value": 420,
+          "usual": {
+            "median": 450,
+            "low": 450,
+            "high": 450,
+            "days": 14
+          },
+          "vs_usual": "below",
+          "sleeps": 1
+        }
+      }
+    }
+  }
+}

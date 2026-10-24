@@ -24,7 +24,7 @@ from jarvis.runtime.daemon.restart import restart_when_idle, restarting
 from jarvis.runtime.doing_day import page_reach, read_day_doing
 from jarvis.runtime.job_mail import served_notices, settle_notice
 from jarvis.shared import lang
-from jarvis.state import footprint, phone_track, places, things, topics
+from jarvis.state import body_usual, footprint, phone_track, places, things, topics
 from jarvis.state.daily_report import resolve_zone
 from jarvis.state.day_highlights import day_notes
 from jarvis.state.day_line import DaySources, day_window, fold_day
@@ -735,6 +735,35 @@ def _read_track(event_log_path: Path, from_ms: int, to_ms: int) -> dict[str, Any
 async def serve_track(event_log_path: Path, from_ms: int, to_ms: int) -> dict[str, Any]:
     """:func:`_read_track` off the loop thread."""
     return await asyncio.to_thread(_read_track, event_log_path, from_ms, to_ms)
+
+
+def _read_body(
+    event_log: Path, configured: tzinfo | None, start_ms: int, end_ms: int, now_ms: int,
+) -> dict[str, Any]:
+    """``GET /inherent/body`` (ADR 0411): a few measures over a window, beside his usual level.
+
+    The window's clock hours are moved back a day at a time in the owner's zone, as every day
+    window is cut; ``tz`` names it. The log is read on a connection of its own, so this runs on a
+    worker thread. Raises ValueError for a window :func:`body_usual.beside_usual` refuses.
+    """
+    zone_name, zone = resolve_zone(None, configured)
+    conn = open_runtime_event_log(event_log)
+    try:
+        served = body_usual.beside_usual(conn, zone, start_ms, end_ms, now_ms)
+    finally:
+        with contextlib.suppress(sqlite3.Error):
+            conn.close()
+    return {"tz": zone_name, **served}
+
+
+async def serve_body(
+    event_log: Path, configured: tzinfo | None, start_ms: int, end_ms: int,
+    *, clock: Callable[[], float] = time.time,
+) -> dict[str, Any]:
+    """:func:`_read_body` off the loop thread, at the brain's ``clock``."""
+    return await asyncio.to_thread(
+        _read_body, event_log, configured, start_ms, end_ms, int(clock() * 1000),
+    )
 
 
 def _read_footprint(

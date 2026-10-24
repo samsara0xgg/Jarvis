@@ -3,7 +3,8 @@
 The phone sends every Health sample as Health recorded it (ADR 0293): readings as
 ``phone.measure_observed`` and spans and hourly totals as ``phone.health_observed``; the watch's
 charge comes through the phone as ``phone.state_observed`` (ADR 0377). These are the named
-questions the ``body`` tool asks of them. Every row's ``ts_epoch_ms`` is the end of the span it
+questions the ``body`` tool asks of them, and its usual level (:class:`Usual`), which
+``GET /inherent/body`` reads too (ADR 0411). Every row's ``ts_epoch_ms`` is the end of the span it
 covers, so a stretch is read on the ``(type, ts_epoch_ms)`` index and kept by the sample's own
 start.
 
@@ -13,6 +14,7 @@ Layer rules: stdlib, :mod:`jarvis.shared` and other :mod:`jarvis.state` modules 
 from __future__ import annotations
 
 import json
+import statistics
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final
 
@@ -21,7 +23,7 @@ from jarvis.state.phone_day import HEALTH_EVENT, MEASURE_EVENT
 
 if TYPE_CHECKING:
     import sqlite3
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Sequence
 
     from jarvis.shared import Event
 
@@ -31,6 +33,36 @@ _HOUR_MS: Final = 60 * 60_000
 SPAN_REACH_MS: Final = 24 * _HOUR_MS
 """How long a span sample may last: a stage, a workout or a total is read up to this far past the
 end of the stretch, since its row is timed at its end."""
+USUAL_DAYS: Final = 14
+"""His usual level is read over the same hours of this many days before (ADR 0388)."""
+USUAL_MIN_DAYS: Final = 3
+"""Fewer of those days with any record than this is too few to say what is usual."""
+
+
+@dataclass(frozen=True)
+class Usual:
+    """His usual level: the median and middle half of what the days before held."""
+
+    median: float
+    low: float
+    high: float
+    days: int
+
+    @classmethod
+    def of(cls, values: Sequence[float], days: int) -> Usual:
+        """The level of ``values``, the days they came from counted as ``days``."""
+        if len(values) == 1:
+            return cls(values[0], values[0], values[0], days)
+        low, mid, high = statistics.quantiles(values, n=4, method="inclusive")
+        return cls(mid, low, high, days)
+
+    def versus(self, value: float) -> str:
+        """Where a value stands against the middle half: below, within or above it."""
+        if value < self.low:
+            return "below"
+        if value > self.high:
+            return "above"
+        return "within"
 
 
 @dataclass(frozen=True)
@@ -194,10 +226,13 @@ def watch_charge(conn: sqlite3.Connection, start_ms: int, end_ms: int) -> list[C
 __all__ = [
     "SPAN_REACH_MS",
     "STATE_EVENT",
+    "USUAL_DAYS",
+    "USUAL_MIN_DAYS",
     "WATCH_BATTERY",
     "Charge",
     "Reading",
     "Total",
+    "Usual",
     "first_after",
     "last_before",
     "readings",
