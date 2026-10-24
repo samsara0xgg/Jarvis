@@ -124,6 +124,18 @@ final class PageShots: XCTestCase {
         shot("19-today-categories")
     }
 
+    func testAnswerLinks() {
+        _ = open("时间线:链接")
+        sleep(3)
+        shot("20-answer-links")
+    }
+
+    func testAnswerLinkOpened() {
+        _ = open("时间线:链接:点")
+        sleep(4)
+        shot("21-answer-link-row")
+    }
+
     func testRowStay() {
         _ = open("时间线:开:stay-14")
         sleep(2)

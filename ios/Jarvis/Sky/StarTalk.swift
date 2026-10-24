@@ -137,7 +137,7 @@ extension StarEngine {
 
     /// every frame: a talk nobody touches goes
     func stepTalk(_ now: Double) {
-        if ui.talking && talk == nil && voiceState == .idle && !lingerHold && unsent.isEmpty && now > lingerUntil { ui.talking = false; rowKey = ""; setAbout(nil); aboutDropped = nil }
+        if ui.talking && talk == nil && voiceState == .idle && !lingerHold && unsent.isEmpty && now > lingerUntil { ui.talking = false; rowKey = ""; setAbout(nil); aboutDropped = nil; ui.tl.linked = [] }
         put(\.topTime, clock(F))
         put(\.tlTalk, HomeModule.shared.isTimeline && ui.talking && (now < tlUntil || lingerHold || !unsent.isEmpty) && !TLTalk.of(ui.liveTurns).isEmpty)
         syncStatus()
@@ -164,7 +164,17 @@ extension StarEngine {
             // the answer's row has the map; a late one is in the conversation's row and comes with it
             guard ui.talking, let i = ui.liveTurns.lastIndex(where: { !$0.his && !$0.leadIn && $0.card == nil && $0.status == nil && !$0.failed }) else { return }
             withAnimation(.easeOut(duration: 0.25)) { ui.liveTurns[i].places = ps }
+        case .links(let ls):
+            guard ui.talking, let i = ui.liveTurns.lastIndex(where: { !$0.his && !$0.leadIn && $0.card == nil && $0.status == nil && !$0.failed }) else { return }
+            setLinks(i, ls)
         }
+    }
+
+    /// her answer's links: chips under it, and on the day's page the rows they name stay lit
+    func setLinks(_ i: Int, _ ls: [AnswerLink]) {
+        guard !ls.isEmpty, ui.liveTurns[i].links != ls else { return }
+        withAnimation(.easeOut(duration: 0.25)) { ui.liveTurns[i].links = ls }
+        if ui.page == .day { withAnimation(.easeOut(duration: 0.25)) { ui.tl.light(ls) } }
     }
 
     /// Her answer names times (ADR 0215): the dial turns to each, in the order the turn did them and a moment apart, and the star there lights as it arrives. A touch on the dial ends it.
@@ -237,6 +247,7 @@ extension StarEngine {
             if !shown.isEmpty && ui.liveTurns[i].text != shown { ui.liveTurns[i].text = shown; ui.liveTurns[i].reveal = nil }
             ui.liveTurns[i].steps = row.steps ?? MainActor.assumeIsolated { StatusBoard.shared.info }
             if !row.places.isEmpty { ui.liveTurns[i].places = row.places }
+            setLinks(i, row.links)
         }
     }
 }

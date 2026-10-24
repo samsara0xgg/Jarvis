@@ -31,6 +31,7 @@ struct ConversationRow: Equatable {
     var attachments: [RowAttachment] = []      // what he sent with the words; his words alone are `text` then (empty for a turn of files only)
     var reactions = RowReactions()     // his and hers on this message (ADR 0256)
     var places: [AnswerPlace] = []     // the places her answer names, for the map under it; empty for most rows
+    var links: [AnswerLink] = []       // the 今天 rows and 地图 trips her answer points at (Sky/ChatLinks.swift)
     var topic: RowTopic?               // the topic it was said in (the brain's contracts/topics/around.json)
     var isHis: Bool { source == "allen" }
     /// a line she says before the answer comes (only a voice part): more is on its way
@@ -41,9 +42,8 @@ struct ConversationRow: Equatable {
         guard let o = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any], let rows = o["rows"] as? [[String: Any]] else { return nil }
         return rows.compactMap { r in
             guard let seq = r["seq"] as? Int, let source = r["source"] as? String, let text = r["text"] as? String else { return nil }
-            AnswerLinkStore.shared.note(id: (r["id"] as? String) ?? "", raw: r["links"])          // the 今天 rows and 地图 trips her answer points at (Sky/ChatLinks.swift)
             return ConversationRow(seq: seq, source: source, ts: (r["ts"] as? String) ?? "", text: text, steps: StepsInfo.parse(r),
-                                   id: (r["id"] as? String) ?? "", attachments: RowAttachment.parse(r), reactions: RowReactions.parse(r), places: AnswerPlace.parse(r["places"]),
+                                   id: (r["id"] as? String) ?? "", attachments: RowAttachment.parse(r), reactions: RowReactions.parse(r), places: AnswerPlace.parse(r["places"]), links: AnswerLink.parse(r["links"]),
                                    topic: (r["topic"] as? [String: Any]).flatMap { t in (t["id"] as? String).map { RowTopic(id: $0, name: t["name"] as? String ?? "") } })
         }
     }

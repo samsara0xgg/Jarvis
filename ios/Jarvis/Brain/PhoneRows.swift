@@ -21,6 +21,8 @@ enum PhoneEvent: Equatable {
     case times([AnswerTime])
     /// the final `surface.response_emitted`'s `places`: the map under her answer
     case places([AnswerPlace])
+    /// the final `surface.response_emitted`'s `links`: the rows of his day and trips her answer points at (contracts/answer/links.json)
+    case links([AnswerLink])
 }
 
 enum PhoneRows {
@@ -54,6 +56,7 @@ enum PhoneRows {
         if let e = event(r) { queue.append(e) }
         let p = places(r)
         if !p.isEmpty { queue.append(.places(p)) }
+        if r.eventType == "surface.response_emitted", r.phase != "commentary", case let l = AnswerLink.parse(r.payload["links"]), !l.isEmpty { queue.append(.links(l)) }
     }
     @MainActor static func take() -> [PhoneEvent] {
         if queue.isEmpty { return [] }

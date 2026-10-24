@@ -247,6 +247,7 @@ extension StarEngine {
         } else {
             addTurn(his: false, words, leadIn: r.isLeadIn, steps: r.isLeadIn ? nil : r.steps, recordId: recordId)
         }
+        if let recordId, let i = ui.liveTurns.lastIndex(where: { $0.recordId == recordId }) { setLinks(i, r.links) }
         return !words.isEmpty
     }
 

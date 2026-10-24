@@ -1,8 +1,8 @@
 import SwiftUI
 
-// The cards under her answer that jump to a row of the 今天 page or a trip of the 地图 (跨端UI标准 §5). The brain sends them as `links` on an answer's row (GET /inherent/conversation and
+// The chips under her answer that jump to a row of the 今天 page or a trip of the 地图 (跨端UI标准 §5). The brain sends them as `links` on an answer's row (GET /inherent/conversation and
 // /phone/ws): at most three of `{kind: "row" | "outing", id, date: "YYYY-MM-DD", start_ms, end_ms | null, title}`. A row of the day has its id of `GET /inherent/day`, a trip
-// `outing-<ms>`. An answer with no `links` has no card: nothing is made up here.
+// `outing-<ms>`. An answer with no `links` has no chip: nothing is made up here.
 
 struct AnswerLink: Equatable, Identifiable {
     enum Kind: String { case row, outing }
@@ -29,55 +29,18 @@ struct AnswerLink: Equatable, Identifiable {
     }
 }
 
-/// The links the conversation's rows brought, by the row's record id. The conversation's reader (`ConversationRow.parse`) hands each row's `links` to `note`; a row drawn asks for them.
-final class AnswerLinkStore: @unchecked Sendable {
-    static let shared = AnswerLinkStore()
-    private var held: [String: [AnswerLink]] = [:]
-    private let lock = NSLock()           // the reader runs wherever an answer is parsed; the rows read on the main actor
-
-    func note(id: String, raw: Any?) {
-        guard !id.isEmpty else { return }
-        let links = AnswerLink.parse(raw)
-        lock.withLock { held[id] = links.isEmpty ? nil : links }
-    }
-    func links(for id: String?) -> [AnswerLink] { lock.withLock { id.flatMap { held[$0] } ?? [] } }
-}
-
-/// The cards: a small round icon, the title, and when it was; a tap jumps there.
-struct AnswerLinkCards: View {
+/// The chips under her words, grey glass as the stage's (`StageChip`): the row's or the trip's title; a tap jumps there.
+struct AnswerLinkChips: View {
     let links: [AnswerLink]
     let open: (AnswerLink) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        WrapLayout(spacing: 6) {
             ForEach(links) { l in
-                Button { open(l) } label: {
-                    HStack(spacing: 10) {
-                        Image(systemName: l.kind == .row ? "calendar.day.timeline.left" : "map").font(.system(size: 13, weight: .medium)).foregroundStyle(Look.ink)
-                            .frame(width: 28, height: 28).background(Circle().fill(Color.white.opacity(0.1)))
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(l.title.isEmpty ? (l.kind == .row ? Words.PhoneChat.jumpRow : Words.PhoneChat.jumpOuting) : l.title)
-                                .font(.system(size: Look.body, weight: .medium)).foregroundStyle(Look.ink).lineLimit(1)
-                            Text(Self.when(l)).font(Look.figures(Look.note)).foregroundStyle(Look.ink3).lineLimit(1)
-                        }
-                        Spacer(minLength: 0)
-                        Image(systemName: "chevron.right").font(.system(size: 11, weight: .semibold)).foregroundStyle(Look.ink3)
-                    }
-                    .padding(.leading, 8).padding(.trailing, 12).padding(.vertical, 8)
-                    .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Color.white.opacity(0.12), lineWidth: 0.6))
-                    .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                }
-                .buttonStyle(PressScale())
+                StageChip(text: l.title.isEmpty ? (l.kind == .row ? Words.PhoneChat.jumpRow : Words.PhoneChat.jumpOuting) : l.title,
+                          symbol: l.kind == .row ? "calendar.day.timeline.left" : "map") { open(l) }
             }
         }
-    }
-
-    /// 「今天 14:50–15:19」, 「10月21日 周三 09:00」
-    static func when(_ l: AnswerLink) -> String {
-        let cal = Cal.cur.cal, start = Date(timeIntervalSince1970: Double(l.startMs) / 1000)
-        let span = [TalkStream.clock(start, cal), l.endMs.map { TalkStream.clock(Date(timeIntervalSince1970: Double($0) / 1000), cal) }].compactMap { $0 }.joined(separator: "–")
-        return TalkStream.title(start, cal, Date()) + " " + span
     }
 }
 
@@ -89,11 +52,11 @@ func chatDayNumber(iso: String) -> Int? {
 }
 
 extension StarEngine {
-    /// A tap on a card under her answer: the 今天 page at that day with the row open, or the map at that day with the trip's page over it. The day is asked for by the pages as they
+    /// A tap on a chip under her answer: the 今天 page at that day with the row open, or the map at that day with the trip's page over it. The day is asked for by the pages as they
     /// are for any other day; the row or the trip is shown once it is there (a day that does not come leaves the page on the day).
     func openLink(_ l: AnswerLink) {
         guard let d = chatDayNumber(iso: l.date), d <= ui.tl.today else { return }
-        wake(); Haptic.selection()
+        wake()
         showPage(l.kind == .row ? .day : .map)
         ui.tl.setDay(d)
         Task { @MainActor in
@@ -108,10 +71,23 @@ extension StarEngine {
 }
 
 extension TimelineState {
-    /// the row of a link opened where it stands: its id, else the row that covers the link's time; nothing when the day has none
-    func reveal(_ l: AnswerLink, in r: DayReply) {
+    /// the row of a link: its id, else the row that covers the link's time; none when the day has neither
+    func entry(_ l: AnswerLink, in r: DayReply) -> TLEntry? {
         let m = model(r), minute = TLClock(r).minute(ms: l.startMs)
-        guard let e = m.entries.first(where: { $0.id == l.target }) ?? m.entries.first(where: { $0.t0 <= minute && minute <= ($0.t1 ?? $0.t0 + 1) }), openRow != e.id else { return }
-        tapRow(e, in: m, room: TLLayout.listBottom - TLLayout.Today.listTop)
+        return m.entries.first(where: { $0.id == l.target }) ?? m.entries.first(where: { $0.t0 <= minute && minute <= ($0.t1 ?? $0.t0 + 1) })
+    }
+
+    /// the row of a link lit and opened where it stands
+    func reveal(_ l: AnswerLink, in r: DayReply) {
+        guard let e = entry(l, in: r) else { return }
+        linked.insert(e.id)
+        if openRow != e.id { tapRow(e, in: model(r), room: TLLayout.listBottom - TLLayout.Today.listTop) }
+    }
+
+    /// Her answer came with links while the day is on show: the rows of the day on show they name stay lit until the talk goes or the page leaves the day.
+    func light(_ links: [AnswerLink]) {
+        guard let r = reply else { return }
+        let iso = Cal.cur.iso(day)
+        linked.formUnion(links.filter { $0.date == iso }.compactMap { entry($0, in: r)?.id })
     }
 }

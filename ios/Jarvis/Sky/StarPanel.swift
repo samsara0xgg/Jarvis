@@ -78,9 +78,9 @@ struct TalkRowView: View, Equatable {
             if cards { words.modifier(HerCard(reactions: row.reactions, lit: lit)) } else { words }
             if !row.places.isEmpty, row.status == nil, !row.failed { PlaceMapCard(places: row.places).padding(.trailing, cards ? TalkPage.across : Self.badgeRoom).transition(.opacity) }
             if let info = row.steps, row.status == nil { StepsLine(info: info, open: stepsOpen, toggle: toggleSteps).padding(.leading, cards ? 6 : 0) }
-            // the cards her answer carries that jump to a row of the day or a trip of the map: drawn only when the brain sent `links`
-            if cards, row.status == nil, !row.failed, case let links = AnswerLinkStore.shared.links(for: row.recordId), !links.isEmpty {
-                AnswerLinkCards(links: links, open: openLink).padding(.trailing, TalkPage.across).transition(.opacity)
+            // the chips her answer carries that jump to a row of the day or a trip of the map: drawn only when the brain sent `links`
+            if cards, row.status == nil, !row.failed, !row.links.isEmpty {
+                AnswerLinkChips(links: row.links, open: openLink).padding(.trailing, TalkPage.across).transition(.opacity)
             }
         }
         .animation(.easeOut(duration: 0.2), value: row.status == nil)

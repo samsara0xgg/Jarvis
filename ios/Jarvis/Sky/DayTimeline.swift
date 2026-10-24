@@ -54,6 +54,7 @@ final class TimelineState {
     var scrub: Double?                  // the minute under his finger on the overview bar
     @ObservationIgnored var finger: CGPoint?        // and where that finger is, in the chrome's design points: where her eyes look (Sky/DayTimelineGaze.swift); nothing draws from it
     var hot: String?                    // the row that covers it, lit in the list
+    var linked: Set<String> = []        // the rows her answer's links name (Sky/ChatLinks.swift), lit while the talk stays
     @ObservationIgnored private var seen: String?       // the row the list was last sent to while the finger is down
     @ObservationIgnored private var scrubHold: Task<Void, Never>?
     @ObservationIgnored private var turning: String?        // the row a finger on the bar has reached that the iPad's stage will turn to, and the rest that waits for it
@@ -302,7 +303,7 @@ final class TimelineState {
     /// What was held on a day that is not the one on show any more, or on the timeline when it is left: the row opened, the minute under a finger, the field of a rename (which keeps
     /// the composer away while it is open) and the sun's words.
     func letGo() {
-        openRow = nil; openH = 0; litLine = nil; chosen = [:]; renaming = nil; renameNote = nil; sunSaid = false
+        openRow = nil; openH = 0; litLine = nil; chosen = [:]; renaming = nil; renameNote = nil; sunSaid = false; linked = []
         closeArc()
         follow(nil, in: nil)
     }

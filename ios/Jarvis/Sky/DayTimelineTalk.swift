@@ -110,7 +110,7 @@ struct HerWordsCard: View {
         .onChange(of: on ? Self.top + height : 0, initial: true) { _, f in ui.herCardFoot = f }
     }
 
-    /// the latest round: his heard words, hers, what waits
+    /// the latest round: his heard words, hers, the chips of her links, what waits
     private func round(_ talk: TLTalk) -> some View {
         VStack(spacing: 0) {
             if let heard = talk.heard {
@@ -118,6 +118,9 @@ struct HerWordsCard: View {
                     .frame(maxWidth: .infinity, minHeight: 16).padding(.bottom, 3)
             }
             words(talk)
+            if let links = talk.hers.last(where: { !$0.leadIn && $0.status == nil && !$0.failed })?.links, !links.isEmpty {
+                AnswerLinkChips(links: links, open: engine.openLink).padding(.top, 8).transition(.opacity)
+            }
             if talk.cards > 0 { waiting(talk.cards) }
         }
     }

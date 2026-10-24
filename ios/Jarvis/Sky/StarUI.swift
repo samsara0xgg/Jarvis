@@ -66,6 +66,7 @@ struct LiveTurn: Identifiable, Equatable {
     var send = SendState.sent           // his message: on its way, or "没发出去" with 点重试 under it
     var recordId: String?               // the conversation record of these words, once the brain has said which (ADR 0256): a row without one cannot be reacted to
     var places: [AnswerPlace] = []      // the places her answer names: a map under it
+    var links: [AnswerLink] = []        // the rows of his day and trips her answer points at: chips under it
     var at = Date()
 }
 

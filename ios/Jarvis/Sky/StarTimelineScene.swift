@@ -378,6 +378,18 @@ extension StarEngine {
         case "来回":                                                               // three rounds on one page: her card grows into a small dialog (`:来回:设置` on that page; the map's is `-scene 足迹:来回`)
             if parts.count > 2 { DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [self] in showPage(.settings) } }
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [self] in sceneRounds() }
+        case "链接":                                                               // her answer with two links: chips on her card, the rows they name lit (`:链接:点` with the row's chip tapped)
+            let c = TLClock(today), d = Cal.cur.iso(ui.tl.today)
+            let links = [AnswerLink(kind: .row, target: "stay-1", date: d, startMs: c.ms(minute: 480), endMs: c.ms(minute: 600), title: "在家"),
+                         AnswerLink(kind: .outing, target: "", date: d, startMs: c.ms(minute: 891), endMs: c.ms(minute: 919), title: "坐 27 路")]
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [self] in
+                beginTalk()
+                addTurn(his: true, "今天去了哪些地方", heard: true)
+                addTurn(his: false, "上午在家，下午坐 27 路出去了一趟。")
+                tlUntil = nowMs() + TLTalk.stay; lingerUntil = tlUntil
+                phoneEvent(.links(links))
+                if parts.count > 2 { DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [self] in openLink(links[0]) } }
+            }
         case "飘":          // her drift, without the wait for it
             if let k = Int(parts.count > 2 ? parts[2] : ""), TLSeat.perches.indices.contains(k) {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [self] in wander = (TLSeat.perches[k], nowMs() + 60_000) }
