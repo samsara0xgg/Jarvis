@@ -103,6 +103,12 @@ final class PageShots: XCTestCase {
         shot("15-row-upcoming")
     }
 
+    func testRowStay() {
+        _ = open("时间线:开:stay-14")
+        sleep(2)
+        shot("16-row-stay")
+    }
+
     func testMap() {
         _ = open("足迹")
         shot("4-map-day")
