@@ -43,6 +43,7 @@ final class PhoneLink {
     private var hears = false
     private var floorSent: [Bool]?                  // the (busy, hears) the brain was last told on this line
     private var touchedAt = -10.0
+    private var touchOwed = false                   // a touch the brain has not heard of: the line was not ready
     private var linkIsReal = false
     private var pump: Task<Void, Never>?
     private var sinks: [Int: AsyncStream<LinkEvent>.Continuation] = [:]
@@ -125,8 +126,11 @@ final class PhoneLink {
 
     private func sendFloor(touched: Bool) {
         let now = [talking.voice || talking.watch, hears]
-        guard ready, let link, touched || now != floorSent else { return }
+        let touched = touched || touchOwed
+        guard ready, let link else { touchOwed = touched; return }
+        guard touched || now != floorSent else { return }
         floorSent = now
+        touchOwed = false
         link.sendFrame(.floor(busy: now[0], hears: now[1], touched: touched))
     }
 
