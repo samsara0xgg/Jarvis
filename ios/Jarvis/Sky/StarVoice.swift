@@ -44,11 +44,16 @@ extension StarEngine {
         }
     }
 
+    /// The Mac's voice cues, quiet as there while her voice is off (她出不出声); the sound switch (jv-snd) holds them all.
+    func voiceCue(_ cue: SoundCue) { if VoicePrefs.spoken { sound(cue, SoundFeedback.gain) } }
+
     /// Every frame. While the session is idle this is a few compares. Returns the level of her voice while she speaks (the orb's `say`).
     func syncVoice(_ now: Double) -> Double? {
         let v = voiceShot(now)
         // the one status line: the model download, the last trouble for eight seconds, or what the brain said about what he sent (Sky/StarBrain)
         if v.error != voiceErr { voiceErr = v.error; voiceErrAt = now; if let e = v.error { VoiceTrace.note("error shown: \(e)"); Haptic.notify(.warning) } }
+        // the Mac's voice-exit as the session is idle again, however it got there (`interrupt` sets voiceState itself, so no change is seen below)
+        if v.state == .idle && voiceEntered { voiceEntered = false; voiceCue(.voiceExit) }
         put(\.voiceNote, v.progress.map { "正在下载中英文识别模型 \(Int(($0 * 100).rounded()))%" } ?? (now - voiceErrAt < 8000 ? v.error : nil) ?? (now < brainNoteUntil ? brainNote : nil))
         if v.state != voiceState {
             let was = voiceState
@@ -58,6 +63,7 @@ extension StarEngine {
             voiceState = v.state; voiceAt = now
             if was == .idle { captureAbout(); beginTalk() }
             if v.state == .listening {
+                if was == .idle { voiceEntered = true; voiceCue(.voiceEnter) }     // the Mac's voice-enter: the voice's engine runs by now and the cue goes through it
                 dropStatus(); closeHers(); vHis = nil; vHer = nil; vShown = 0; vShownAt = now; Haptic.impact(.light)      // a new utterance of the session: its words are new rows
                 if was == .speaking || was == .thinking { tlLinger(now) }       // her voice is done though the microphone stays open for him: the timeline's place for the round starts to go
             }

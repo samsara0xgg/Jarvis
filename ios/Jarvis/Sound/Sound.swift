@@ -4,6 +4,7 @@ import os
 enum SoundCue: String, CaseIterable {
     case listen, heard, think, turn, interrupt, end, done, ask, remind, msg, hello, bye, happy
     case open, close, module, back, send, on, off, tick, tock
+    case voiceEnter, voiceExit, mic, speakerOn          // the Mac's (SoundFeedback)
 }
 
 /// UI sounds: the desktop's FM "glass" cues, rendered offline once (see `SoundSynth`) and played through a
@@ -44,6 +45,7 @@ final class Sound {
     private var configObserver: NSObjectProtocol?
     private var suspended = false
     private var routed: AVAudioPlayerNode?
+    private var held: HeldCue?
 
     private init() {
         // An interruption or media-services reset invalidates the engine; dropping it is enough,
@@ -61,14 +63,24 @@ final class Sound {
     /// Plays a cue. `gain` is a linear volume, clamped to 0...1.
     func play(_ cue: SoundCue, gain: Float = 1) {
         guard isOn else { return }
-        queue.async { if let node = self.routed { self.start(cue, gain: gain, on: node) } else if !self.suspended { self.start(cue, gain: gain) } }
+        queue.async {
+            if let node = self.routed { self.start(cue, gain: gain, on: node) }
+            else if !self.suspended { self.start(cue, gain: gain) }
+            else { self.held = HeldCue(cue: cue, gain: gain, at: ProcessInfo.processInfo.systemUptime) }
+        }
     }
 
     /// The voice owns the audio session while it listens or speaks: no cue may start a second engine or touch the
     /// category meanwhile (a second running engine left the voice's microphone with no usable format).
-    /// Blocks until this engine is gone. `resume` when the voice has let the session go.
+    /// Blocks until this engine is gone. `resume` when the voice has let the session go: a cue asked for in its last 0.3 s plays then (`HeldCue`).
     func suspend() { queue.sync { suspended = true; teardown() } }
-    func resume() { queue.async { self.suspended = false } }
+    func resume() {
+        queue.async {
+            self.suspended = false
+            if let h = self.held, h.due(ProcessInfo.processInfo.systemUptime) { self.start(h.cue, gain: h.gain) }
+            self.held = nil
+        }
+    }
 
     /// While the voice's engine runs (VoiceAudio), cues play through its node, connected with `cueFormat`: its echo canceller hears them
     /// and no second engine starts. Nil gives them back to this engine. Blocks, so no cue is scheduled on a node being let go.
@@ -102,12 +114,13 @@ final class Sound {
     }
 
     private func buffer(for cue: SoundCue) -> AVAudioPCMBuffer {
-        if let b = buffers.withLock({ $0[cue] }) { return b }
+        let fresh = cue == .mic || cue == .speakerOn        // the Mac's clicks are new noise at a new pitch each time
+        if !fresh, let b = buffers.withLock({ $0[cue] }) { return b }
         let samples = SoundSynth.render(cue)
         let b = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(samples[0].count))!
         b.frameLength = b.frameCapacity
         for c in 0..<2 { samples[c].withUnsafeBufferPointer { b.floatChannelData![c].update(from: $0.baseAddress!, count: samples[c].count) } }
-        buffers.withLock { $0[cue] = b }
+        if !fresh { buffers.withLock { $0[cue] = b } }
         return b
     }
 

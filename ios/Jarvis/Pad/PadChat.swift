@@ -109,7 +109,7 @@ struct PadChat: View {
             }
             Spacer()
             TopGlassButton(symbol: spoken ? "speaker.wave.2" : "speaker.slash", label: spoken ? Words.PhoneChat.spokenOn : Words.PhoneChat.spokenOff, on: spoken) {
-                Haptic.selection(); VoicePrefs.spoken = !spoken
+                Haptic.selection(); if !spoken { Sound.shared.play(.speakerOn, gain: SoundFeedback.gain) }; VoicePrefs.spoken = !spoken      // the Mac's speaker-on as her voice comes back
             }
         }
         .padding(.horizontal, Self.side)

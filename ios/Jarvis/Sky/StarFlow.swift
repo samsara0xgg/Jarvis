@@ -452,8 +452,8 @@ extension StarEngine {
     }
     func interrupt() {
         speaking?.stop()
-        if voiceState != .idle { voiceState = .idle; MainActor.assumeIsolated { VoiceSession.shared.cancel() } }
-        sound(.interrupt, 1)
+        if voiceState != .idle { voiceState = .idle; MainActor.assumeIsolated { VoiceSession.shared.cancel() } }     // the voice's end sounds its voice-exit instead (StarVoice)
+        else { sound(.interrupt, 1) }
         run { _ in
             self.flyer = nil
             if self.mode == .script { self.mode = .idle; self.fs.velocity = 0 }

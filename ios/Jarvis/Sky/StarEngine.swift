@@ -103,6 +103,7 @@ final class StarEngine {
     var rowKey = "", viewKey = "", panelKey = ""
     // her phone voice (Sky/StarVoice.swift): the session state last seen and when it changed, the last trouble and when it appeared
     var voiceState = VoiceSession.State.idle, voiceAt = 0.0, voiceErr: String?, voiceErrAt = -1e9
+    var voiceEntered = false        // voice-enter has sounded and voice-exit not yet (a typed turn goes idle -> thinking -> idle without either)
     #if DEBUG
     var voiceFake: ((Double) -> VoiceShot)?
     #endif

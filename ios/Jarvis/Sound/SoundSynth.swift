@@ -44,6 +44,7 @@ enum SoundSynth {
         case .off: return ([(0, N.A6, 0.32, true), (45, N.Cs6, 0.28, true)], 1, 1)
         case .tick: return ([(0, N.Cs7, 0.16, true)], 1, 1)
         case .tock: return ([(0, N.A6, 0.12, true)], 1, 1)
+        case .voiceEnter, .voiceExit, .mic, .speakerOn: return ([], 0, 1)     // SoundFeedback's, not FM hits
         }
     }
 
@@ -86,6 +87,12 @@ enum SoundSynth {
 
     /// Stereo samples `[left, right]` for a cue at gain 1, trimmed once the tail is below -74 dBFS.
     static func render(_ cue: SoundCue) -> [[Float]] {
+        switch cue {
+        case .voiceEnter: return [SoundFeedback.enter, SoundFeedback.enter]
+        case .voiceExit: return [SoundFeedback.exit, SoundFeedback.exit]
+        case .mic, .speakerOn: let x = SoundFeedback.clicks(cue); return [x, x]
+        default: break
+        }
         let s = score(cue), sr = sampleRate
         let starts = s.hits.map { Int($0.ms / 1000 * sr) }
         var dry = [Float](repeating: 0, count: zip(starts, s.hits.map { frames($0, s.len) }).map(+).max() ?? 0)
