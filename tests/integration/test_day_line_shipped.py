@@ -428,14 +428,17 @@ def test_a_session_is_one_code_item_titled_projected_and_clipped_to_the_day(
         "title": "mine",
         "project": "jarvis",
         "prompts": 3,
+        "remote_session": None,
         "account": "a",
         "session_id": "s-custom",
         "detail": "latest",
     }
     assert items["code-s-desk"]["title"] == "desk"
     assert (items["code-s-ai"]["title"], items["code-s-ai"]["project"]) == ("ai2", "other")
-    # a session he never typed in has no prompts
-    assert items["code-s-tree"]["prompts"] == 0
+    # a Remote Control bridge's session is told by the claude.ai session it ran for
+    assert (items["code-s-tree"]["prompts"], items["code-s-tree"]["remote_session"]) == (
+        0, "cse_01FK",
+    )
     assert items["code-s-ai"]["account"] == "b"
     assert items["code-s-agent"]["title"] == "a2"
     assert "detail" not in items["code-s-none"]

@@ -812,6 +812,7 @@ def _code_items(
             ),
             "project": PurePosixPath(f.get("git_toplevel") or f.get("cwd") or "").name,
             "prompts": int(f.get("user_prompts") or 0),
+            "remote_session": _remote_session(f),
             "account": f["account"],
             "session_id": f["session_id"],
         }
@@ -819,6 +820,21 @@ def _code_items(
             item["detail"] = recap
         items.append(item)
     return items
+
+
+_BRIDGE: Final = re.compile(r"/bridge-(cse_[0-9A-Za-z]+)")
+
+
+def _remote_session(fields: dict[str, Any]) -> str | None:
+    """The claude.ai session a Remote Control bridge ran this one for, by its worktree's name.
+
+    ``claude remote-control`` runs each cloud session in a worktree named ``bridge-cse_<id>``;
+    its name is kept on claude.ai only, so the session is told by that id.
+    """
+    for path in (fields.get("git_toplevel"), fields.get("cwd")):
+        if path and (found := _BRIDGE.search(str(path))):
+            return found[1]
+    return None
 
 
 def _away_items(
