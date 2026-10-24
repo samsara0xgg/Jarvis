@@ -34,6 +34,12 @@ the brain maps `cse_<id>` to the thread's name, copied from the project's thread
 2026-10-24 at his request, and the day line reads it after `thread_title`. A missing or unreadable
 table names nothing.
 
+A session with no name from any of these is named by its folder (`project`) when it ran on the
+Mac for itself; a cloud thread's stays empty, and the device shows it as a cloud thread. A
+session a program ran through the SDK with at most one prompt (`entrypoints` only `sdk-cli`, no
+`remote_session`) is no `code` item at all: on 2026-10-23 such calls were 15 of 42 rows, he did
+no work in them, and he agreed to leave them out.
+
 ## Alternatives rejected
 
 - **Read the name from claude.ai with Claude Code's login.** The only route is an undocumented

@@ -444,7 +444,7 @@ def test_a_session_is_one_code_item_titled_projected_and_clipped_to_the_day(
     assert items["code-s-ai"]["account"] == "b"
     assert items["code-s-agent"]["title"] == "a2"
     assert "detail" not in items["code-s-none"]
-    assert items["code-s-none"]["title"] == ""
+    assert items["code-s-none"]["title"] == "jarvis"  # no name anywhere: its folder (ADR 0403)
     assert "mac" in line.missing  # no TimeSink was shipped: unchanged by the sessions
     assert "code" not in line.missing
 
@@ -477,6 +477,30 @@ def test_a_bridge_session_with_no_name_of_its_own_takes_the_thread_names_table(
     (directory / "thread-names.json").write_text("not json", encoding="utf-8")
     again = _code_items(_fold(sources, tmp_path, "2026-10-10", start_ms + 24 * 60 * MINUTE))
     assert {i["id"]: i["title"] for i in again}["code-s-old"] == "ai guess"
+
+
+def test_a_programs_one_call_to_claude_is_no_code_item(tmp_path: Path) -> None:
+    """One prompt through the SDK and no claude.ai session: not shown; any more of him is."""
+    def one(sid: str, prompts: int, entrypoints: list[str], top: str = "/work/coop") -> Any:  # noqa: ANN401
+        line = _session(sid, "2026-10-10T17:00:00Z", "2026-10-10T17:01:00Z", top=top)
+        line["fields"].update(user_prompts=prompts, entrypoints=entrypoints)
+        return line
+
+    bridge = "/Users/me/Projects/jarvis-b/.claude/worktrees/bridge-cse_01RC"
+    directory = _ship_sessions(tmp_path / "imports", [
+        one("helper", 1, ["sdk-cli"]),
+        one("silent", 0, ["sdk-cli"]),
+        one("asked", 2, ["sdk-cli"]),
+        one("typed", 1, ["cli"]),
+        one("rc", 1, ["sdk-cli"], top=bridge),
+    ])
+    start_ms, _ = day_window(parse_day("2026-10-10"), ZONE)
+    line = _fold(DaySources(ZONE, shipped=directory), tmp_path, "2026-10-10",
+                 start_ms + 24 * 60 * MINUTE)
+
+    assert {i["id"]: i["title"] for i in _code_items(line)} == {
+        "code-asked": "coop", "code-typed": "coop", "code-rc": "",
+    }
 
 
 def test_a_session_across_midnight_shows_on_both_days_clipped_with_one_id(tmp_path: Path) -> None:

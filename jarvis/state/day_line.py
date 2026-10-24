@@ -801,6 +801,10 @@ def _code_items(
             continue
         start, end = max(first, window_start), min(last, window_end)
         remote = _remote_session(f)
+        prompts = int(f.get("user_prompts") or 0)
+        if remote is None and prompts <= 1 and f.get("entrypoints") == ["sdk-cli"]:
+            continue  # a program's one call to Claude, not a session he worked in (ADR 0403)
+        project = PurePosixPath(f.get("git_toplevel") or f.get("cwd") or "").name
         item: dict[str, Any] = {
             "id": f"code-{f['session_id']}",
             "lane": "you",
@@ -811,9 +815,10 @@ def _code_items(
             "title": _newest(
                 f.get("custom_title"), f.get("desktop_title"), f.get("thread_title"),
                 names.get(remote or ""), f.get("ai_title"), f.get("agent_name"),
+                None if remote else project,
             ),
-            "project": PurePosixPath(f.get("git_toplevel") or f.get("cwd") or "").name,
-            "prompts": int(f.get("user_prompts") or 0),
+            "project": project,
+            "prompts": prompts,
             "remote_session": remote,
             "account": f["account"],
             "session_id": f["session_id"],
