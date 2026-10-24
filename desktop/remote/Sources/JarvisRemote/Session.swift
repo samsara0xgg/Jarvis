@@ -47,6 +47,11 @@ final class Session: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
     private var size = (0, 0)
     private var locked: Bool?
     private var lockWatch: DispatchSourceTimer?
+    // the bitrate follows the link: down by a third in a second the link fell behind, up a little after three clear ones
+    private static let topRate = 150_000_000, floorRate = 4_000_000, sharpRate = 60_000_000
+    private var rate = Session.topRate
+    private var stalls = 0
+    private var clear = 0
 
     private var curtain: [NSWindow] = []
     private var awake: IOPMAssertionID = 0
@@ -189,6 +194,7 @@ final class Session: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
         let t = DispatchSource.makeTimerSource(queue: q)
         t.schedule(deadline: .now(), repeating: 1)
         t.setEventHandler { [self] in
+            adapt()
             let now = (CGSessionCopyCurrentDictionary() as? [String: Any])?["CGSSessionScreenIsLocked"] as? Bool ?? false
             guard now != locked else { return }
             locked = now
@@ -196,6 +202,28 @@ final class Session: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
         }
         t.resume()
         lockWatch = t
+    }
+
+    /// Once a second: a second with stalls cuts the bitrate, three clear seconds raise it. The quantiser cap that keeps text sharp
+    /// would override a low bitrate, so it holds only while the link can afford it.
+    private func adapt() {
+        let was = rate
+        if stalls > 0 {
+            rate = max(rate * 2 / 3, Session.floorRate)
+            clear = 0
+        } else {
+            clear += 1
+            if clear >= 3 { rate = min(rate * 115 / 100, Session.topRate) }
+        }
+        stalls = 0
+        guard rate != was, let encoder else { return }
+        apply(rate, to: encoder)
+        print("bitrate \(rate / 1_000_000) Mbit/s")
+    }
+
+    private func apply(_ rate: Int, to s: VTCompressionSession) {
+        VTSessionSetProperty(s, key: kVTCompressionPropertyKey_AverageBitRate, value: rate as CFNumber)
+        VTSessionSetProperty(s, key: kVTCompressionPropertyKey_MaxAllowedFrameQP, value: (rate >= Session.sharpRate ? 20 : 51) as CFNumber)
     }
 
     private func makeEncoder(_ w: Int, _ h: Int) -> VTCompressionSession? {
@@ -208,11 +236,8 @@ final class Session: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
         VTSessionSetProperty(s, key: kVTCompressionPropertyKey_RealTime, value: kCFBooleanTrue)
         VTSessionSetProperty(s, key: kVTCompressionPropertyKey_ProfileLevel, value: kVTProfileLevel_HEVC_Main_AutoLevel)
         VTSessionSetProperty(s, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse)
-        // ponytail: fixed bitrate sized for the tailnet at home (direct over the LAN); adapt to the link if he drives it from outside
-        VTSessionSetProperty(s, key: kVTCompressionPropertyKey_AverageBitRate, value: 150_000_000 as CFNumber)
         // the average is only a ceiling: on text the encoder spends far less and lets detail go soft; a cap on the quantiser keeps it sharp
-        let qp = VTSessionSetProperty(s, key: kVTCompressionPropertyKey_MaxAllowedFrameQP, value: 20 as CFNumber)
-        print("max frame QP: \(qp == noErr ? "20" : "unsupported (\(qp))")")
+        apply(rate, to: s)
         VTSessionSetProperty(s, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: 120 as CFNumber)
         // the capture is sRGB-converted BT.709 video range: say so, or the iPad guesses and the colours wash out
         VTSessionSetProperty(s, key: kVTCompressionPropertyKey_ColorPrimaries, value: kCVImageBufferColorPrimaries_ITU_R_709_2)
@@ -229,7 +254,7 @@ final class Session: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
               let raw = info[.status] as? Int, SCFrameStatus(rawValue: raw) == .complete,
               let pixels = sb.imageBuffer else { return }
         lastPixels = pixels
-        if inFlight >= Session.fullLink { behind = true; return }
+        if inFlight >= Session.fullLink { behind = true; stalls += 1; return }
         encode(pixels, at: sb.presentationTimeStamp)
     }
 
