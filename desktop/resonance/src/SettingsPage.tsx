@@ -39,11 +39,14 @@ const DEMO: Daemon = {
 // The reSpeaker board: GET /inherent/board answers whether it is plugged in and what it hears; its settings live in /inherent/settings and apply at once.
 type Board = { present: boolean; firmware: string | null; direction: number | null; speech: boolean };
 const DEMO_BOARD: Board = { present: true, firmware: '2.1.1', direction: 251, speech: false };
-// The phones paired with this Jarvis: GET /inherent/devices answers { devices: [{ name, created_at }] }. POST /inherent/devices/pairing
-// with { name } mints a code that pairs that device once, for ten minutes: { device, code, expires_at_ms, brain }. DELETE /inherent/devices/{name} unpairs.
-type Device = { name: string; created_at: string };
+// The phones paired with this Jarvis: GET /inherent/devices answers { devices: [{ name, created_at, kind, watch }] }: kind is phone, pad, computer or null, and watch
+// whether a watch reaches her through it (ADR 0401). POST /inherent/devices/pairing with { name } mints a code that pairs that device once, for ten minutes:
+// { device, code, expires_at_ms, brain }. DELETE /inherent/devices/{name} unpairs.
+type Device = { name: string; created_at: string; kind?: 'phone' | 'pad' | 'computer' | null; watch?: boolean };
 type Pair = { name: string; code: string; brain: string[]; exp: number };
-const DEMO_DEVICES: Device[] = [{ name: 'iphone', created_at: new Date(Date.now() - 3 * 86_400_000).toISOString() }];
+const DEMO_DEVICES: Device[] = [{ name: 'iphone', created_at: new Date(Date.now() - 3 * 86_400_000).toISOString(), kind: 'phone', watch: true },
+  { name: 'iphone-2', created_at: new Date(Date.now() - 86_400_000).toISOString(), kind: 'pad', watch: false }];
+const KINDS: Record<string, string> = { phone: 'iPhone', pad: 'iPad', computer: 'Mac' };
 const STALE: Record<'hour' | 'day' | 'never', L> = { hour: ['1 h', '1 小时'], day: ['1 day', '1 天'], never: ['never', '不收'] };
 const SKIN_EN: Record<Skin, string> = { glass: 'Glass', nebula: 'Nebula', galaxy: 'Galaxy', frost: 'Frost', aurora: 'Aurora', codex: 'Icon' };
 const SKIN_BG: Record<Skin, string> = {
@@ -188,10 +191,16 @@ export function SettingsPage({ lang, port, open, cat, onCat, pairAsk = 0, ctl, a
     } catch { notify(t(['Jarvis didn’t disconnect it.', 'Jarvis 没断开。'])); }
   };
   const left = pair ? Math.max(0, pair.exp - now) : 0, clock = `${Math.floor(left / 60_000)}:${String(Math.floor(left / 1000) % 60).padStart(2, '0')}`;
-  // A device is named iphone, iphone-2…; the list shows the day it connected.
-  const deviceName = (name: string) => name.replace(/^iphone/, 'iPhone');
+  // A device is named iphone, iphone-2… when its code is made, before anyone knows what will scan it: the list says what it turned out to be, two of a kind
+  // numbered in its order, and the day it connected. A watch has no pairing of its own: it shows under the phone it reaches her through.
+  const kindName = (d: Device) => d.kind ? KINDS[d.kind] : d.name.replace(/^iphone/, 'iPhone');
+  const deviceName = (d: Device) => {
+    const n = (devices ?? []).filter(x => kindName(x) === kindName(d)).findIndex(x => x.name === d.name);
+    return n > 0 ? `${kindName(d)} ${n + 1}` : kindName(d);
+  };
+  const watchRow = (d: Device): Item => ({ id: `watch-${d.name}`, name: ['Apple Watch', 'Apple Watch'], ctl: { k: 'info', text: t([`Through ${deviceName(d)}`, `经 ${deviceName(d)}`]) } });
   const deviceRow = (d: Device): Item => {
-    const at = new Date(d.created_at), ok = !isNaN(+at), who = deviceName(d.name);
+    const at = new Date(d.created_at), ok = !isNaN(+at), who = deviceName(d);
     return { id: `dev-${d.name}`, name: [`${who}${ok ? ` · connected ${at.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}` : ''}`, `${who}${ok ? ` · ${at.getMonth() + 1} 月 ${at.getDate()} 日连上` : ''}`],
       ctl: { k: 'act', label: ['Disconnect', '断开'], run: () => setAsk(d.name) },
       extra: ask === d.name && <span className="st-sure">{t([`Disconnect ${who}?`, `断开 ${who}？`])}
@@ -313,7 +322,7 @@ export function SettingsPage({ lang, port, open, cat, onCat, pairAsk = 0, ctl, a
           <p className="st-note">{t(['Scan this with Jarvis on your iPhone. Valid for 10 minutes', '用 iPhone 上的 Jarvis 扫这个码，10 分钟内有效'])}</p>
           <button className="btn btn-ghost" disabled={busy} onClick={() => void showCode()}>{t(['New code', '换一个'])}</button>
         </div> },
-      ...(devices ?? []).map(deviceRow),
+      ...(devices ?? []).flatMap(d => d.watch ? [deviceRow(d), watchRow(d)] : [deviceRow(d)]),
     ] },
     { id: 'models', icon: <Cpu/>, name: ['Models', '模型'], daemon: true, sum: ready ? String(v('model_conversation') ?? '—') : t(['Not connected yet', '还没接上']), items: [
       ...conv,

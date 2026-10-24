@@ -21,7 +21,10 @@ final class TalkPageTests: XCTestCase {
         XCTAssertEqual(e.seat.x, TLSeat.talk.x, accuracy: 0.5, "she is at the head of the page")
         XCTAssertEqual(e.seat.y, TLSeat.talk.y, accuracy: 0.5)
         e.showPage(.map)
-        XCTAssertEqual(e.restSeat.at, TLSeat.corner)
+        XCTAssertEqual(e.restSeat.at, TLSeat.home, "on the map she stays at the top in the middle")
+        ui.footprint.openOuting = "outing-1"
+        XCTAssertEqual(e.restSeat.at, TLSeat.corner, "on a trip's page she goes to the top right")
+        ui.footprint.openOuting = nil
         e.showPage(.day)
         XCTAssertEqual(e.restSeat.at, TLSeat.home)
     }

@@ -14,8 +14,7 @@ private func serif(_ size: CGFloat) -> Font {
     UIFont(name: "Instrument Serif", size: size) != nil ? .custom("Instrument Serif", size: size) : .system(size: size, design: .serif)
 }
 private func monoF(_ size: CGFloat, _ w: Font.Weight = .medium) -> Font {
-    let face = w == .regular ? "IBMPlexMono-Regular" : "IBMPlexMono-Medium"
-    return UIFont(name: face, size: size) != nil ? .custom(face, size: size) : .system(size: size, weight: w, design: .monospaced)
+    Look.figures(size, weight: w)
 }
 
 struct StarChartScreen: View {
@@ -32,21 +31,39 @@ struct StarChartScreen: View {
                     .frame(width: W, height: H)
                     .coordinateSpace(name: "design")
                     .modifier(InDesign(fit: fit))
-                    .accessibilityHidden(settings)
             }
             .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
         }
         .ignoresSafeArea()
-        // over the chrome, the home's settings page in the screen's own points (it is a sheet anywhere else), and over everything the bar at the foot that picks the page (Sky/HomeBar.swift)
+        // over the chrome, the home's settings page in the screen's own points (it is a sheet anywhere else; it leaves her and the strip above it bare), and over everything the bar at the foot
+        // that picks the page (Sky/HomeBar.swift)
         .overlay {
             ZStack {
-                if settings { SettingsSheet(asPage: true, tuneNear: { engine.showPage(.day); engine.setLevel(-1); engine.ui.tuning = true }).transition(.opacity) }
+                if settings { SettingsSheet(asPage: true, cardUp: engine.ui.herCardOn, tuneNear: { engine.showPage(.day); engine.setLevel(-1); engine.ui.tuning = true }).ignoresSafeArea().transition(.opacity) }
             }
             .animation(.easeOut(duration: 0.2), value: settings)
         }
+        // her over every page, and the number on her over her (跨端UI标准 §1: the page, her card, her)
         .overlay {
-            GeometryReader { geo in HomeTabBar(engine: engine).modifier(InDesign(fit: Self.fit(geo.size))) }
-                .ignoresSafeArea()
+            GeometryReader { geo in
+                ZStack(alignment: .topLeading) {
+                    HerOverRepresentable(engine: engine).allowsHitTesting(false)
+                    HerBadge(engine: engine, ui: engine.ui).frame(width: W, height: H).modifier(InDesign(fit: Self.fit(geo.size)))
+                }
+            }
+            .ignoresSafeArea()
+        }
+        .overlay {
+            // the bar at the foot: the system's own on iOS 26 (its lens follows the finger), the drawn one before it (Sky/HomeBar.swift)
+            if #available(iOS 26.0, *) {
+                let shows = engine.ui.barShows
+                VStack { Spacer(); HomeStockTabs(engine: engine).frame(height: 83) }.ignoresSafeArea(edges: .bottom)          // to the screen's foot: the bar keeps the home indicator's room itself, as a tab bar does
+                    .opacity(shows ? 1 : 0).offset(y: shows ? 0 : 16).allowsHitTesting(shows).accessibilityHidden(!shows)
+                    .animation(.easeOut(duration: shows ? 0.25 : 0.2), value: shows)
+            } else {
+                GeometryReader { geo in HomeTabBar(engine: engine).modifier(InDesign(fit: Self.fit(geo.size))) }
+                    .ignoresSafeArea()
+            }
         }
         .background(Color(red: 5 / 255, green: 6 / 255, blue: 13 / 255))
         .preferredColorScheme(.dark)
@@ -63,7 +80,7 @@ struct StarChartScreen: View {
 struct DesignFit { let k, ox, oy: Double }
 
 /// a W x H view of design points, scaled to the screen and put where `StarChartScreen.fit` says
-private struct InDesign: ViewModifier {
+struct InDesign: ViewModifier {
     let fit: DesignFit
     func body(content: Content) -> some View {
         content.scaleEffect(fit.k, anchor: .topLeading)
@@ -89,29 +106,27 @@ struct StarChrome: View {
             // behind the open panel the dial dims (on the timeline the conversation is a page of its own, with her at its head: nothing of the day is behind it to dim)
             Color.black.opacity(HomeModule.shared.isTimeline ? 0 : 0.35 * panelOpenness(panelTop(ui, pull))).frame(width: W * 3, height: H * 3).offset(x: -W, y: -H)
                 .animation(pull == nil ? panelSpring(reduce, velocity: ui.panelRelease) : nil, value: ui.panelOpen).allowsHitTesting(false)
-            topRow.opacity(ui.footprintOpen ? 0 : 1).allowsHitTesting(!ui.footprintOpen)
-                .animation(TLMotion.detail(reduce: reduce), value: ui.footprintOpen)
+            if !HomeModule.shared.isTimeline { topRow }          // the dial's row; every page of the timeline draws its own strip (Sky/HomeTop.swift)
             detail
                 grabber
             Group { if ui.tlShow { DayTimelineView(engine: engine, ui: ui, pull: $pull).transition(.opacity) } }
                 .animation(.easeOut(duration: 0.35), value: ui.tlShow)
-                .opacity(ui.footprintOpen ? 0 : 1).allowsHitTesting(!ui.footprintOpen)
-                .animation(TLMotion.detail(reduce: reduce), value: ui.footprintOpen)
+                .opacity(ui.footprintOpen || ui.settingsOpen ? 0 : 1).allowsHitTesting(!ui.footprintOpen && !ui.settingsOpen).accessibilityHidden(ui.settingsOpen)
+                .animation(TLMotion.detail(reduce: reduce), value: ui.footprintOpen || ui.settingsOpen)
             herElement
             FootprintDayLayer(engine: engine, ui: ui)
             TalkPanel(engine: engine, ui: ui, pull: $pull, page: HomeModule.shared.isTimeline)
             voiceNote
+            HerWordsCard(engine: engine, ui: ui)                    // over every page, under her
             AttachDim(model: ui.attach)
             if ui.tuning && ui.level == -1 { NearTune(engine: engine, done: { ui.tuning = false }) }
             composer
             AttachOverlay(model: ui.attach, kbLift: ui.footLift)
             TapbackOverlay(engine: engine, ui: ui).animation(.easeOut(duration: 0.15), value: ui.tapback != nil)
-            HerArc(engine: engine, ui: ui)          // her cards, over everything
         }
         .frame(width: W, height: H, alignment: .topLeading)
         .onChange(of: focused) { _, f in
             StallLog.mark(f ? "keyboard up" : "keyboard down"); ui.typing = f
-            if !f { ui.composing = false }          // on the timeline the field stays out after the keyboard only with something in it
             if !HomeModule.shared.isTimeline { if f { engine.openPanel() } else { engine.closePanel() } }       // under the dial the panel comes with the keyboard and goes with it; on the timeline the day stays, and the history is his to open
         }
         .onChange(of: phase) { _, p in
@@ -122,7 +137,10 @@ struct StarChrome: View {
         .onAppear {
             engine.endEditing = { focused = false }
             StallLog.context = { [engine] in engine.stallContext() }
-            engine.beginEditing = { ui.composing = true; DispatchQueue.main.async { focused = true } }          // on the timeline the field comes out first, then takes the keyboard
+            engine.beginEditing = {          // the field is on 聊天 only: from any other page of the timeline the page comes first, then the field takes the keyboard
+                if HomeModule.shared.isTimeline { engine.showPage(.talk) }
+                DispatchQueue.main.async { focused = true }
+            }
             engine.watchVoice()
             if CardsRequest.pending { openCards() }
             #if DEBUG
@@ -171,73 +189,42 @@ struct StarChrome: View {
         else { engine.openPanel() }
     }
 
-    // MARK: the top row: the day you are looking at, and under the dial the scale and settings
-
-    /// On the timeline the top row's date, its label and the weather keep to the left of her at home (8 pt clear of her disc): what is left of that after the date is the weather's.
-    private static let headWidth: Double = TLSeat.home.x - TLSeat.radius - 8 - 30
-    /// on the conversation's page the date and the weather give way (she heads the page from the middle of the top), and the voice's line keeps left of her there
-    private static let noteWidthOnTalk: Double = TLSeat.talk.x - TLSeat.talkRadius * TLSeat.listening - 8 - 30
-    private var headRoom: Double {
-        let date = tlWidth(ui.dateText, size: 15, weight: .semibold) + (ui.dateLabel.map { tlWidth(" · " + $0, size: 13) } ?? 0)
-        return Self.headWidth - date - 8
-    }
+    // MARK: the dial's top row: the day you are looking at, the scale and settings
 
     private var topRow: some View {
-        let tlOn = HomeModule.shared.isTimeline          // the timeline in the dial's place: she sits in this row right of the date (Sky/DayTimelineSeat.swift), and there is no scale to pick
-        let note = tlOn ? ui.voiceNote : nil              // and the voice's status line is hers, beside her, in the date's place
-        return HStack(spacing: 8) {
-            ZStack(alignment: .leading) {
-                HStack(spacing: 8) {
-                    HStack(spacing: 0) {
-                        Text(ui.dateText).font(.system(size: 15, weight: .semibold)).foregroundStyle(ink).lineLimit(1).layoutPriority(1)
-                        if let l = ui.dateLabel, tlOn || !ui.talking { Text(" · " + l).font(.system(size: 13)).foregroundStyle(muted).lineLimit(1).fixedSize(horizontal: !tlOn, vertical: false) }      // beside the date; under the dial the talk's time takes its place
-                        Text("  " + ui.topTime).font(monoF(14)).foregroundStyle(ink).lineLimit(1)
-                            .opacity(ui.talking && !tlOn ? 1 : 0).animation(.easeOut(duration: 0.25), value: ui.talking)
-                            .frame(width: tlOn ? 0 : nil, alignment: .leading)
-                    }
-                    if tlOn { TLDayHead(tl: ui.tl, room: headRoom) }        // after the date: the day's weather
-                }
-                .opacity(note == nil && !ui.talkPage ? 1 : 0).allowsHitTesting(!ui.talkPage).accessibilityHidden(ui.talkPage)
-                Text(note ?? "").font(.system(size: 13)).foregroundStyle(ink.opacity(0.8)).lineLimit(1).minimumScaleFactor(0.8)
-                    .frame(maxWidth: ui.talkPage ? Self.noteWidthOnTalk : .infinity, alignment: .leading)
-                    .opacity(note == nil ? 0 : 1).accessibilityHidden(note == nil)
+        HStack(spacing: 8) {
+            HStack(spacing: 0) {
+                Text(ui.dateText).font(.system(size: 15, weight: .semibold)).foregroundStyle(ink).lineLimit(1).layoutPriority(1)
+                if let l = ui.dateLabel, !ui.talking { Text(" · " + l).font(.system(size: 13)).foregroundStyle(muted).lineLimit(1).fixedSize(horizontal: true, vertical: false) }      // beside the date; the talk's time takes its place
+                Text("  " + ui.topTime).font(monoF(14)).foregroundStyle(ink).lineLimit(1)
+                    .opacity(ui.talking ? 1 : 0).animation(.easeOut(duration: 0.25), value: ui.talking)
             }
-            .frame(maxWidth: tlOn ? Self.headWidth : .infinity, alignment: .leading)
-            .animation(.easeOut(duration: 0.3), value: note == nil)
-            .animation(.easeOut(duration: 0.25), value: ui.talkPage)
-            Spacer(minLength: 0)
+            .frame(maxWidth: .infinity, alignment: .leading)
             SegControl(level: ui.level) { engine.setLevel(Double($0)) }
-                .opacity(tlOn ? 0 : 1).allowsHitTesting(!tlOn)
-                .frame(width: tlOn ? 0 : 148, alignment: .trailing)          // no scale to pick on the timeline: its room is hers
-            if !tlOn {          // on the timeline the map and settings are pages of the bar at the foot (Sky/HomeBar.swift), and the row's right end is hers
-                Button { ui.settingsOpen = true } label: {
-                    Image(systemName: "gearshape").font(.system(size: 18, weight: .regular)).foregroundStyle(Color(red: 214 / 255, green: 220 / 255, blue: 246 / 255).opacity(0.8))
-                        .frame(width: 36, height: 36).glass(Circle())
-                        .overlay(alignment: .topTrailing) {     // the day is being recorded (随身录音); its switch is in settings
-                            if LifelogRecorder.shared.recording { Circle().fill(Color(red: 1, green: 92 / 255, blue: 92 / 255)).frame(width: 6, height: 6).offset(x: -3, y: 3) }
-                        }
-                }.buttonStyle(PressScale())
-                .accessibilityLabel(LifelogRecorder.shared.recording ? "设置，正在随身录音" : "设置")
-            }
+            Button { ui.settingsOpen = true } label: {
+                Image(systemName: "gearshape").font(.system(size: 18, weight: .regular)).foregroundStyle(Color(red: 214 / 255, green: 220 / 255, blue: 246 / 255).opacity(0.8))
+                    .frame(width: 36, height: 36).glass(Circle())
+                    .overlay(alignment: .topTrailing) {     // the day is being recorded (随身录音); its switch is in settings
+                        if LifelogRecorder.shared.recording { Circle().fill(Color(red: 1, green: 92 / 255, blue: 92 / 255)).frame(width: 6, height: 6).offset(x: -3, y: 3) }
+                    }
+            }.buttonStyle(PressScale())
+            .accessibilityLabel(LifelogRecorder.shared.recording ? "设置，正在随身录音" : "设置")
         }
         .padding(.horizontal, 30)
-        .animation(.easeOut(duration: 0.35), value: tlOn)
         .frame(width: W, height: 38)
         .offset(y: 60)
     }
 
     /// She is drawn on the stage under the chrome, which VoiceOver does not see: on the timeline an element stands in for her at her place. Its action is her tap (she listens, or a talk
-    /// stops), and her cards are its other actions, done at once.
+    /// stops); 打字 is its other action (聊天, with the keyboard up).
     @ViewBuilder private var herElement: some View {
-        if HomeModule.shared.isTimeline && ui.tlHome && !ui.footprintOpen && !ui.settingsOpen {
-            let rest = engine.restSeat          // at home, or at the head of the conversation's page
+        if HomeModule.shared.isTimeline && ui.tlHome {
+            let rest = engine.restSeat          // at the middle of the top, or at the top right on a page stepped into
             Color.clear.frame(width: 2 * rest.r, height: 2 * rest.r)
                 .accessibilityElement()
                 .accessibilityLabel(Words.Home.her).accessibilityHint(Words.Home.herHint).accessibilityAddTraits(.isButton)
                 .accessibilityAction { engine.tap(engine.seat, true) }
-                .accessibilityActions {
-                    ForEach(ui.tl.herItems.filter(\.enabled), id: \.kind) { item in Button(item.title) { ui.tl.perform(item.kind, engine: engine) } }
-                }
+                .accessibilityAction(named: Text(Words.Home.type)) { engine.beginEditing?() }
                 .allowsHitTesting(false)
                 .position(x: rest.at.x, y: rest.at.y)
         }
@@ -336,7 +323,7 @@ struct StarChrome: View {
 
     // MARK: talking to her
 
-    /// the voice's one line, just over the composer: the model download, or what went wrong (on the timeline it is in the top row, beside her)
+    /// the voice's one line, just over the composer: the model download, or what went wrong (on the timeline it is the caption under her)
     private var voiceNote: some View {
         let on = ui.voiceNote != nil && !HomeModule.shared.isTimeline
         return Text(ui.voiceNote ?? "").font(monoF(12)).tracking(1.2).foregroundStyle(muted).lineLimit(1)
@@ -346,7 +333,63 @@ struct StarChrome: View {
             .allowsHitTesting(false)
             .offset(x: 30, y: 846 - ui.attach.rise - ui.kbLift)
     }
-    // MARK: the composer: type to her, or tap the mic. A + at the left, what is attached above the words, a field that grows to five lines.
+
+    /// the composer, at its place over the bar on 聊天 (`StarUI.composerOut`); it goes up with the keyboard and with what is attached
+    private var composer: some View {
+        let out = ui.composerOut
+        return ChatComposer(engine: engine, ui: ui, focused: $focused)
+            .opacity(ui.tl.renaming == nil ? 1 : 0).allowsHitTesting(ui.tl.renaming == nil)        // a place being renamed has the keyboard: the composer does not rise over its field
+            .animation(.easeOut(duration: 0.15), value: ui.tl.renaming == nil)
+            .opacity(out ? 1 : 0).offset(y: out || reduce ? 0 : 16).allowsHitTesting(out).accessibilityHidden(!out)
+            .animation(.easeOut(duration: out ? 0.25 : 0.2), value: out)
+            .offset(x: 20, y: H - StarUI.restGap - ChatComposer.fieldBox - ui.attach.rise - ui.footLift)
+    }
+}
+
+// MARK: - the composer
+
+/// Type to her, or tap the mic: a + at the left, what is attached above the words, a field that grows to five lines, and the chips of what he may ask over it. Where it stands and when
+/// it shows are its host's (the phone's chrome, the iPad's 聊天 page); `focused` is the field's keyboard, which the host also watches.
+struct ChatComposer: View {
+    let engine: StarEngine
+    @Bindable var ui: StarUI
+    @Binding var focused: Bool
+    var width: Double = W - 40
+
+    /// how tall the composer's box is with one line (the words' own 48 and 2 pt over and under)
+    static let fieldBox = 52.0
+
+    var body: some View {
+        let at = ui.attach
+        return VStack(spacing: 0) {
+            AttachStrip(model: at)
+            ZStack(alignment: .bottom) {
+                AttachField(text: $ui.text, focused: $focused, model: at, send: sendComposer).padding(.bottom, 2)          // one line is 48 tall, the box 52
+                    .onChange(of: ui.text) { _, t in if let c = AttachField.clip(t) { ui.text = c; engine.trouble("太长了，只留了前 2 万字") } }
+                HStack(spacing: 0) {
+                    AttachPlusButton(model: at).scaleEffect(40.0 / 36)          // a 40 pt circle
+                    Spacer(minLength: 0)
+                    MicButton(state: at.hasItems ? .send : ui.mic, size: 42) { composerTap() }.padding(.bottom, -1)
+                }.padding(.horizontal, 6).padding(.bottom, 6)
+            }
+            .frame(width: width, height: at.fieldH + 4)
+        }
+        .frame(width: width, height: Self.fieldBox + at.rise, alignment: .bottom)
+        .composerCard(focused: focused)
+        .overlay(alignment: .topLeading) {
+            WrapLayout(spacing: 8) {
+                ForEach(Array(engine.talks.enumerated()), id: \.offset) { _, t in
+                    Button { engine.send(t.q) } label: { suggestion(t.q) }.buttonStyle(PressScale())
+                }
+            }
+            .frame(width: width, alignment: .leading)
+            .fixedSize(horizontal: false, vertical: true)
+            .alignmentGuide(.top) { $0[.bottom] + 58 }
+            .opacity(ui.chipsOn && !at.hasItems && !at.isOpen ? 1 : 0).offset(y: ui.chipsOn && !at.hasItems && !at.isOpen ? 0 : 8)
+            .allowsHitTesting(ui.chipsOn && !at.hasItems && !at.isOpen)
+            .animation(.easeOut(duration: 0.3), value: ui.chipsOn && !at.hasItems && !at.isOpen)
+        }
+    }
 
     /// words and attachments go together; with no words, the attachments are named
     private func sendComposer() {
@@ -368,43 +411,6 @@ struct StarChrome: View {
         Text(words).font(.system(size: 14)).foregroundStyle(Color(red: 226 / 255, green: 230 / 255, blue: 250 / 255).opacity(0.92)).lineLimit(1).fixedSize()
             .padding(.horizontal, 14).frame(height: 34).background(Color(red: 18 / 255, green: 22 / 255, blue: 52 / 255).opacity(0.66), in: Capsule())
             .overlay(Capsule().stroke(Color.white.opacity(0.1), lineWidth: 0.5))
-    }
-
-    private var composer: some View {
-        let at = ui.attach, out = ui.composerOut          // on the timeline only while he types to her (`StarUI.composerOut`)
-        return VStack(spacing: 0) {
-            AttachStrip(model: at)
-            ZStack(alignment: .bottom) {
-                AttachField(text: $ui.text, focused: $focused, model: at, send: sendComposer)
-                    .onChange(of: ui.text) { _, t in if let c = AttachField.clip(t) { ui.text = c; engine.trouble("太长了，只留了前 2 万字") } }
-                HStack(spacing: 0) {
-                    AttachPlusButton(model: at)
-                    Spacer(minLength: 0)
-                    MicButton(state: at.hasItems ? .send : ui.mic) { composerTap() }
-                }.padding(.horizontal, 6).padding(.bottom, 6)
-            }
-            .frame(width: W - 40, height: at.fieldH)
-        }
-        .frame(width: W - 40, height: 48 + at.rise, alignment: .bottom)
-        .glass(RoundedRectangle(cornerRadius: 24), focused: focused)
-        .overlay(alignment: .topLeading) {
-            WrapLayout(spacing: 8) {
-                ForEach(Array(engine.talks.enumerated()), id: \.offset) { _, t in
-                    Button { engine.send(t.q) } label: { suggestion(t.q) }.buttonStyle(PressScale())
-                }
-            }
-            .frame(width: W - 40, alignment: .leading)
-            .fixedSize(horizontal: false, vertical: true)
-            .alignmentGuide(.top) { $0[.bottom] + 58 }
-            .opacity(ui.chipsOn && !at.hasItems && !at.isOpen ? 1 : 0).offset(y: ui.chipsOn && !at.hasItems && !at.isOpen ? 0 : 8)
-            .allowsHitTesting(ui.chipsOn && !at.hasItems && !at.isOpen)
-            .animation(.easeOut(duration: 0.3), value: ui.chipsOn && !at.hasItems && !at.isOpen)
-        }
-        .opacity(ui.tl.renaming == nil ? 1 : 0).allowsHitTesting(ui.tl.renaming == nil)        // a place being renamed has the keyboard: the composer does not rise over its field
-        .animation(.easeOut(duration: 0.15), value: ui.tl.renaming == nil)
-        .opacity(out ? 1 : 0).offset(y: out || reduce ? 0 : 16).allowsHitTesting(out).accessibilityHidden(!out)
-        .animation(.easeOut(duration: out ? 0.25 : 0.2), value: out)
-        .offset(x: 20, y: H - StarUI.restGap - 48 - at.rise - ui.footLift)
     }
 }
 
@@ -451,6 +457,16 @@ extension View {
     }
 }
 
+extension View {
+    /// the chat field's card (跨端UI标准 §6): deep-blue glass, with a hairline and, while it has the keyboard, her light round it
+    func composerCard(focused: Bool) -> some View {
+        let shape = RoundedRectangle(cornerRadius: 26)
+        return background(shape.fill(.ultraThinMaterial.opacity(0.7))).background(shape.fill(Look.card.opacity(0.25)))          // see-through: the words going under it show, blurred
+            .overlay(shape.strokeBorder(Look.glow.opacity(focused ? 0.5 : 0.18), lineWidth: focused ? 1 : 0.6))
+            .animation(.easeOut(duration: 0.25), value: focused)
+    }
+}
+
 struct SegControl: View {
     let level: Int
     let pick: (Int) -> Void
@@ -476,12 +492,13 @@ struct SegControl: View {
 
 struct MicButton: View {
     let state: MicState
+    var size = 36.0
     let tap: () -> Void
     @State private var ring = false
     var body: some View {
         Button(action: tap) {
             ZStack {
-                Circle().fill(state == .mic ? Color.white.opacity(0.1) : pale)
+                Circle().fill(state == .mic ? Color.white.opacity(size > 36 ? 0.12 : 0.1) : pale)
                 Image(systemName: "mic").font(.system(size: 17, weight: .regular)).opacity(state == .send ? 0 : 1).scaleEffect(state == .send ? 0.6 : 1)
                 Image(systemName: "arrow.up").font(.system(size: 17, weight: .semibold)).opacity(state == .send ? 1 : 0).scaleEffect(state == .send ? 1 : 0.6)
                 if state == .on {
@@ -490,7 +507,7 @@ struct MicButton: View {
                         .onAppear { ring = true }.onDisappear { ring = false }
                 }
             }
-            .frame(width: 36, height: 36)
+            .frame(width: size, height: size)
             .foregroundStyle(state == .mic ? Color(red: 226 / 255, green: 230 / 255, blue: 250 / 255).opacity(0.88) : navy)
             .animation(.easeOut(duration: 0.25), value: state)
         }.buttonStyle(PressScale())

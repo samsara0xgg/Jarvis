@@ -65,6 +65,49 @@ struct FootprintDayLine: View {
     }
 }
 
+/// The line under her on the phone's map page (跨端UI标准 §2): the day and the page's name, and under it her sentence of the day on a small dark glass plate, so that it reads over the map; while the bar is
+/// held the timeline's readout of that minute (where he was, how fast and his heart under it) takes the sentence's place, and they cross, blurred.
+struct FootprintDayStrip: View {
+    let ui: StarUI
+    let summary: String
+    let bar: DayTimelineModel?
+    let model: FootprintModel?
+    @State private var last = 0.0               // where his finger was last: what the readout shows while it fades out
+    @Environment(\.accessibilityReduceMotion) private var reduce
+
+    var body: some View {
+        let held = ui.footprint.minute, holding = held != nil
+        VStack(spacing: 4) {
+            Text(Words.PhoneMap.title(date: ui.dateText)).font(.system(size: Look.note)).foregroundStyle(Look.ink2).lineLimit(1)
+            ZStack(alignment: .top) {
+                if !summary.isEmpty {
+                    Text(summary).font(.system(size: Look.body)).lineSpacing(3).foregroundStyle(Look.ink).multilineTextAlignment(.center).lineLimit(2)
+                        .padding(.horizontal, 14).padding(.vertical, 7).plate()
+                        .fadeThrough(on: !holding, reduce: reduce)
+                }
+                if let bar {
+                    let t = held ?? last, r = bar.readout(at: t), head = model.map { FootprintDayContent.heldReadout($0, minute: t, r) } ?? r
+                    TLReadoutLines(r: head, second: model.map { FootprintDayContent.heldLine($0, minute: t, elsewhere: r.second) } ?? r.second)
+                        .environment(\.tlBarWidth, W - 2 * HomeTop.side - 28)
+                        .padding(.horizontal, 14).padding(.vertical, 7).plate()
+                        .fadeThrough(on: holding, reduce: reduce).accessibilityHidden(!holding)
+                }
+            }
+        }
+        .frame(width: W - 2 * HomeTop.side, alignment: .top)
+        .allowsHitTesting(false)
+        .onChange(of: held) { _, t in if let t { last = t } }
+    }
+}
+
+private extension View {
+    /// a small dark glass plate: the words over the map's colours stay readable
+    func plate() -> some View {
+        let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
+        return background(Color.black.opacity(0.5), in: shape).glass(shape)
+    }
+}
+
 /// The map under the line, fading into the sky at its top and its foot. The shape of the day is the content's; the dot of the held moment is the one thing that moves, and while it is held (by a finger or the replay)
 /// the camera follows it.
 struct FootprintDayMap: View {
@@ -72,14 +115,17 @@ struct FootprintDayMap: View {
     let content: FootprintDayContent
     let model: FootprintModel?
     let fitKey: String
+    var ground = false                  // the phone: the map is the ground and runs to the top edge, under the strip and her; the iPad's sheet keeps it under its head
 
     var body: some View {
         let state = ui.footprint, moment = state.moment
         let dot = moment.map { m in model.flatMap { FootprintDayContent.dot($0, moment: m) } } ?? state.minute.flatMap { t in model.flatMap { FootprintDayContent.dot($0, minute: t) } }
+        let h = ground ? FootprintDayPage.Y.groundH : FootprintDayPage.Y.mapH
+        let clear = ground ? FootprintDayPage.Y.clear : 60          // from the top of the map to where the route may stand: under the strip and her sentence
         FootprintMapView(routes: content.routes, places: content.places, tokens: content.tokens, now: content.now, dot: dot, follow: moment?.follow,
-                         fitPadding: UIEdgeInsets(top: 60, left: 24, bottom: 36, right: 110), fitKey: fitKey, legalInset: 44, touched: { state.player.touch() })          // MapKit's legal label stands above the fade
-            .mask(LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black, location: 70 / FootprintDayPage.Y.mapH),
-                                         .init(color: .black, location: 1 - 36 / FootprintDayPage.Y.mapH), .init(color: .clear, location: 1)],
+                         fitPadding: UIEdgeInsets(top: clear, left: 24, bottom: 36, right: 110), fitKey: fitKey, locateTick: state.locateTick, legalInset: 44, touched: { state.player.touch() })          // MapKit's legal label stands above the fade
+            .mask(LinearGradient(stops: [.init(color: ground ? .black : .clear, location: 0), .init(color: .black, location: ground ? 0 : 70 / h),
+                                         .init(color: .black, location: 1 - 36 / h), .init(color: .clear, location: 1)],
                                  startPoint: .top, endPoint: .bottom))
     }
 }
@@ -303,11 +349,11 @@ struct FootprintDayList: View {
         .onChange(of: tl.request) { _, r in
             if r.glide && !reduce { withAnimation(TLMotion.follow) { pos.scrollTo(y: r.y) } } else { pos.scrollTo(y: r.y) }
         }
-        .frame(width: W, height: FootprintDayPage.Y.viewport + TLLayout.fade, alignment: .top)
+        .frame(width: W, height: FootprintDayPage.Y.viewport + TLLayout.fade + TLLayout.under, alignment: .top)          // to the screen's foot, under the bar
         .mask(alignment: .top) {
             VStack(spacing: 0) {
                 LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom).frame(height: TLLayout.fadeTop)
-                Color.black.frame(height: FootprintDayPage.Y.viewport - TLLayout.fadeTop)
+                Color.black.frame(height: FootprintDayPage.Y.viewport + TLLayout.under - TLLayout.fadeTop)
                 LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom).frame(height: TLLayout.fade)
             }
         }

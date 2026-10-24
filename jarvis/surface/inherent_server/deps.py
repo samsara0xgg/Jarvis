@@ -114,9 +114,10 @@ class InherentDeps:
     # ``submit``, ``ask`` or ``share`` (``ids`` may be empty). ``None``: the Mac's own name.
     # ADR 0214: ``about`` is the checked item the phone has open, or ``None`` (``submit`` only).
     # ADR 0262: ``utterance_id`` (or ``None``) is the phone's id for the message, deduplicated
-    # exactly as a ``say`` is.
+    # exactly as a ``say`` is. ADR 0401: ``via`` is ``"watch"`` when the phone asked for its watch.
     submit_as_device: (
-        Callable[[str, str, Sequence[str], dict[str, Any] | None, str | None], str] | None
+        Callable[[str, str, Sequence[str], dict[str, Any] | None, str | None, str | None], str]
+        | None
     ) = None
     share_callable: Callable[[dict[str, Any]], str] | None = None
     # ADR 0257: ``reaction_set(target, emoji)`` puts his reaction on a message record (``None``

@@ -62,6 +62,6 @@ final class HomeBarTests: XCTestCase {
 
     func testWhileTheFieldIsOutTheListEndsOverIt() {
         let fieldTop = H - StarUI.restGap - 48
-        XCTAssertEqual(TLLayout.listBottom - TLLayout.composerRoom + TLLayout.fade, fieldTop - 8, "its fade ends 8 pt over the field")
+        XCTAssertEqual(H - TLLayout.composerRoom, fieldTop - 8, "the list runs to the screen's foot; its fade ends 8 pt over the field")
     }
 }

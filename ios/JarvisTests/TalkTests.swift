@@ -98,6 +98,11 @@ final class AskTests: XCTestCase {
         XCTAssertNil(AskReply.body(String(repeating: "字", count: 1500)), "within 2000 characters but over 4 KiB as bytes: the brain answers 413")
     }
 
+    func testWordsSaidToTheWatchSaySo() throws {
+        let d = try XCTUnwrap(AskReply.body(" 能听见我说话吗 ", via: "watch"))
+        XCTAssertEqual(try JSONSerialization.jsonObject(with: d) as? [String: String], ["text": "能听见我说话吗", "via": "watch"], "ADR 0401: her turn says he spoke to his watch")
+    }
+
     func testAnAnswerHasSpokenAndMaybeWrittenAnd504IsStillWorking() {
         XCTAssertEqual(AskReply.parse(status: 200, data: Data(#"{"turn_id": "t", "spoken": "九点二十。", "written": ""}"#.utf8)), .answered(spoken: "九点二十。", written: ""))
         XCTAssertEqual(AskReply.parse(status: 200, data: Data(#"{"turn_id": "t", "spoken": "我列在下面。", "written": "- 09:20 出门"}"#.utf8)), .answered(spoken: "我列在下面。", written: "- 09:20 出门"))

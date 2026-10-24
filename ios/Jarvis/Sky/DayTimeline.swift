@@ -3,42 +3,37 @@ import SwiftUI
 import Observation
 
 // The whole day as the middle of the home screen (Settings › 首页 › 中间显示 › 时间线). Her sentence about the day, an overview bar of the whole day, and under it the day as one
-// list: sleep, a row for each stretch of what he was doing (under the place he kept when two or more were at one), and a line for now. A row with more to say opens where it stands, one
-// thing a line, and its block on the bar is framed; a row with nothing more frames its block for a moment. The words and the order are Sky/DayTimelineModel.swift; this file draws them and
-// moves them. Everything is in the chrome's 440 x 956 design points.
-
-private let ink = SetColor.ink
-private let muted = SetColor.muted
-private let faint = SetColor.faint
-private let warm = Color(red: 1, green: 240 / 255, blue: 220 / 255)               // the warm white of now
-private let amber = Color(red: 1, green: 201 / 255, blue: 143 / 255)               // what waits on him, and nothing else
-private let hair = Color(red: 157 / 255, green: 180 / 255, blue: 1).opacity(0.12)
-private let iconColor = Color(red: 214 / 255, green: 220 / 255, blue: 246 / 255).opacity(0.82)
+// list: sleep, a row for each stretch of what he was doing (under the place he kept when two or more were at one), and a warm dot on the rail for now. A row with more to say opens where it
+// stands, one thing a line, and its block on the bar is framed; a row with nothing more frames its block for a moment. The words and the order are Sky/DayTimelineModel.swift; this file
+// draws them and moves them. Everything is in the chrome's 440 x 956 design points.
 
 enum TLLayout {
+    /// The phone's 今天 page (跨端UI标准 §1–4): her at the top in the middle, the date under her, her words under that while she talks; the hours, a 44 pt bar, the place line and the
+    /// sideways row of the day's numbers, pinned; the list under them. The footprint page and the iPad keep the bar of `barY` / `barW` / `barH` below.
+    enum Today {
+        static let side = 20.0                          // in from each side: the bar, the place line, the chips and the list
+        static let dateY = 116.0, captionY = 140.0      // the date under her (13 pt), her words while she talks
+        static let hoursY = 146.0, barY = 164.0, barW = 400.0, barH = 44.0, barRadius = 8.0
+        static let placeY = 214.0                       // the place line: 4 pt, its names 9 pt under it
+        static let chipsY = 246.0, chipsH = 28.0
+        static let listTop = 286.0
+        static let fadeTop = 18.0                       // the soft edge at the top of the list, under the pinned part
+    }
     static let lineY = 108.0, lineH = 40.0             // her sentence: two lines of 15 pt
     static let barY = 176.0, barW = 380.0, barH = 22.0, barRadius = 6.0       // 28 pt over it for the time under a finger, in its chip; 12 pt under it for the hours
     static let chipsY = 220.0, chipsH = 24.0, chipsHit = 36.0                    // the day's numbers: chips of 24 pt (the first 8 pt under the hours) in a row of 36 that takes the touch
-    static let pillsY = 248.0                          // the row of the pills (the way back, what waits) between the chips and the list
     /// the list runs on into the glass bar at the foot (Sky/HomeBar.swift) and has faded out 12 pt into it, before its rounded ends: rows show through the top of the glass, and
     /// nothing of them round its ends or under it
-    static let listTop = 272.0, fade = 24.0, fadeTop = 12.0, listBottom = HomeBar.top + 12 - fade
+    static let listTop = Today.listTop, fade = 24.0, fadeTop = 12.0, listBottom = HomeBar.top + 12 - fade
     /// what the list gives up at its foot while the composer is out at rest (the bar has given way to it): its fade ends 8 pt over the field
-    static var composerRoom: Double { listBottom + fade - (H - StarUI.restGap - 48 - 8) }
+    static var composerRoom: Double { StarUI.restGap + 48 + 8 }
     static var viewport: Double { listBottom - listTop }
+    /// what is under the list's visible room, down to the screen's foot: the list runs on through it under the glass bar, its rows seen through the glass
+    static var under: Double { H - listBottom - fade }
     /// what is left of the list's height under `pinned` points of cards (and the gap under them)
     static func room(pinned: Double) -> Double { viewport - (pinned > 0 ? pinned + 4 : 0) }
     /// the pinned cards of what waits on him are never taller than this
     static let waitingMax = 260.0
-    /// The black under the list as (y, opacity): none at the bar, `strength` by 24 pt into the list, and back to none at the foot (48 pt, under the list's own fade). Both ramps are eased (smoothstep)
-    /// in `steps` steps, so that no edge shows where they start or end.
-    static func scrim(strength: Double = 0.8, steps: Int = 12) -> [(y: Double, alpha: Double)] {
-        func eased(_ t: Double) -> Double { t * t * (3 - 2 * t) }
-        let from = barY, full = listTop + 24, end = listBottom + fade, out = end - 48
-        let down = (0...steps).map { i -> (y: Double, alpha: Double) in let t = Double(i) / Double(steps); return (from + t * (full - from), strength * eased(t)) }
-        let up = (0...steps).map { i -> (y: Double, alpha: Double) in let t = Double(i) / Double(steps); return (out + t * (end - out), strength * (1 - eased(t))) }
-        return down + up
-    }
 }
 
 // MARK: - what the timeline remembers
@@ -79,6 +74,8 @@ final class TimelineState {
     var chosen: [String: String] = [:]              // his answer, by the stretch, while its row is open: the brain's next reading says it as it stands
     var choosing: String?                           // the stretch whose answer is on its way to the brain
     var waitH = 0.0                     // how tall the pinned cards over the list are
+    var waitingCount = 0                // what waits on him (the day's rows that wait, and the pinned cards): the amber number on her
+    var waitingTap = 0                  // bumped by a tap on that number: the 今天 page goes to the first of them
     // what a row does when it is opened (Sky/DayTimelineActions.swift)
     var acked: [String: Date] = [:]                 // the reminders he has just said he knows, until when the row says so before the brain's next answer does (`ackHolds`)
     var renamed: [String: Renamed] = [:]            // the places he keeps that he has just renamed, by the place's id
@@ -398,17 +395,12 @@ struct DayTimelineView: View {
             let shown = shownNow()
             let built: TLBuilt? = { if case .model(let b) = shown { return b } else { return nil } }()
             let model = built?.model
+            let waits = away ? 0 : (model?.waiting.count ?? 0) + Waiting.shared.cards.count
             ZStack(alignment: .topLeading) {
-                scrim()
-                ZStack(alignment: .topLeading) {
-                    TLTopView(ui: ui, model: model, scene: built?.scene ?? .empty, loading: !isReady(shown), room: room)
-                    TLTalkArea(engine: engine, ui: ui, model: model)            // a talk takes the place of her sentence, the bar and the chips
-                }
-                .modifier(HistoryOver(ui: ui, pull: $pull)).allowsHitTesting(!ui.panelOpen)
+                TLTopView(ui: ui, model: model, scene: built?.scene ?? .empty, loading: !isReady(shown), room: room)
+                    .modifier(HistoryOver(ui: ui, pull: $pull)).allowsHitTesting(!ui.panelOpen)
                 listArea(shown, away: away)
                 undoToast(away: away)
-                TLWaitPill(count: away ? 0 : model?.waiting.count ?? 0) { if let model { tl.revealWaiting(in: model) } }
-                    .frame(width: W - 60, alignment: .leading).offset(x: 30, y: TLLayout.pillsY + 2)
                 TLNowPill(tl: tl, nowInView: $nowInView, away: away)
                 // while he types to her, a touch anywhere on the day (a tap, or a drag up or down) lets the keyboard go and does nothing else, as in Messages: the sky under it,
                 // which did this before the day covered it, no longer gets the touch
@@ -420,6 +412,8 @@ struct DayTimelineView: View {
             }
             .frame(width: W, height: H, alignment: .topLeading)
             .onChange(of: context.date) { _, _ in tl.rollOver() }          // the day may have turned
+            .onChange(of: waits, initial: true) { _, n in tl.waitingCount = n }          // what waits on him: the amber number on her
+            .onChange(of: tl.waitingTap) { _, _ in if let model { tl.revealWaiting(in: model) } }          // a tap on that number goes to the first of them
             .onChange(of: hasDay(shown), initial: true) { _, has in release(has) }
             .onChange(of: tl.enter) { _, _ in release(hasDay(shown)) }
             .onChange(of: ui.tlHome) { _, _ in release(hasDay(shown)) }
@@ -459,16 +453,6 @@ struct DayTimelineView: View {
     private var room: Double { TLLayout.room(pinned: pinnedHeight) }
     private var pinnedHeight: Double { Waiting.shared.cards.isEmpty ? 0 : min(tl.waitH > 0 ? tl.waitH : Double(Waiting.shared.cards.count) * TLMetrics.rowDetail, TLLayout.waitingMax) }
 
-    /// From the bar down the sky is covered by black, none at the bar and 0.8 by 24 pt into the list, so the record sits on near-black as it does on the Mac (the stars nearly gone
-    /// under the list) while the header, her, the date, her sentence and the bar keep the sky; it goes as it came at the foot of the list.
-    private func scrim() -> some View {
-        let top = TLLayout.barY, h = TLLayout.listBottom + TLLayout.fade - top
-        return LinearGradient(stops: TLLayout.scrim().map { .init(color: .black.opacity($0.alpha), location: ($0.y - top) / h) }, startPoint: .top, endPoint: .bottom)
-            .frame(width: W, height: h).offset(y: top)
-            .modifier(HistoryOver(ui: ui, pull: $pull, tuning: true))
-            .allowsHitTesting(false)
-    }
-
     /// a rename he can take back, for a few seconds, over the bar at the foot
     private func undoToast(away: Bool) -> some View {
         ZStack {
@@ -480,22 +464,30 @@ struct DayTimelineView: View {
 
     // MARK: the list, and what waits above it
 
+    /// The list under the pinned top: from `TLLayout.Today.listTop` to the foot (her card stands over it and never moves it), where it runs on under the glass bar. Its top has a soft
+    /// edge of 18 pt under the pinned cards, and nothing else is laid over it. The foot's fade stays where the bar is while the list moves.
     private func listArea(_ shown: Shown, away: Bool) -> some View {
-        VStack(spacing: 0) {
-            waiting
-            ZStack(alignment: .top) {
-                page(shown).id(tl.day).transition(slideTransition)
+        let h = TLLayout.viewport + TLLayout.fade + TLLayout.under          // to the screen's foot, under the bar
+        return ZStack(alignment: .top) {
+            VStack(spacing: 0) {
+                waiting
+                ZStack(alignment: .top) {
+                    page(shown).id(tl.day).transition(slideTransition)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                // a swipe along the page is a day before or after, whatever the page is (a list, a sentence, or nothing yet) and whatever row is open, so no day is a dead end; a drag up and
+                // down is the list's own
+                .contentShape(Rectangle())
+                .simultaneousGesture(DragGesture(minimumDistance: 24).onEnded { v in
+                    if let d = TimelineState.swipe(dx: v.translation.width, dy: v.translation.height, predicted: v.predictedEndTranslation.width) { tl.swipe(d) }
+                })
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            // a swipe along the page is a day before or after, whatever the page is (a list, a sentence, or nothing yet) and whatever row is open, so no day is a dead end; a drag up and
-            // down is the list's own
-            .contentShape(Rectangle())
-            .simultaneousGesture(DragGesture(minimumDistance: 24).onEnded { v in
-                if let d = TimelineState.swipe(dx: v.translation.width, dy: v.translation.height, predicted: v.predictedEndTranslation.width) { tl.swipe(d) }
-            })
+            .frame(width: W, height: h, alignment: .top)
+            .modifier(TopFade(head: Waiting.shared.cards.isEmpty ? 0 : pinnedHeight + 4))
         }
-        .frame(width: W, height: TLLayout.viewport + TLLayout.fade, alignment: .top)
-        .modifier(FootFade(ui: ui, head: Waiting.shared.cards.isEmpty ? 0 : pinnedHeight + 4))
+        .frame(width: W, height: h, alignment: .top)
+        .clipped()
+        .modifier(FootFade(ui: ui))
         // the history takes the place of the list as it comes up: the list goes up and out with it, and comes back when the history has gone
         .modifier(HistoryOver(ui: ui, pull: $pull, tuning: true, lift: 6))
         .allowsHitTesting(!away)
@@ -510,7 +502,7 @@ struct DayTimelineView: View {
             switch shown {
             case .loading: Color.clear
             case .sentence(let s):
-                Text(s).font(.system(size: 15)).lineSpacing(4).foregroundStyle(muted)
+                Text(s).font(.system(size: 15)).lineSpacing(4).foregroundStyle(Look.ink2)
                     .frame(width: TLLayout.barW, alignment: .leading).padding(.top, 28).padding(.horizontal, 30)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .transition(arrival)
@@ -544,7 +536,7 @@ struct DayTimelineView: View {
             }
             .scrollBounceBehavior(.basedOnSize)
             .frame(height: pinnedHeight)
-            .overlay(alignment: .bottom) { Rectangle().fill(hair).frame(height: 0.5) }
+            .overlay(alignment: .bottom) { Rectangle().fill(Look.line).frame(height: 0.5) }
             .padding(.bottom, 4)
         }
     }
@@ -566,19 +558,32 @@ private struct HistoryOver: ViewModifier {
     }
 }
 
-/// The one mask of the list's area: its top fades in (12 pt, under the cards of what waits, `head` pt) and its foot fades out at the foot of the screen, or over the composer while it is out, and goes up
-/// with it when the keyboard (or what he is sending) raises it: no row shows through the field. A modifier of its own, so that the keyboard rising draws this and not the whole screen.
+/// The soft edge at the top of the list: 18 pt of fade under the pinned cards (`head` pt of them, which it leaves clear), as the proto's `.list` has it. It goes down with the list while her
+/// words push it down.
+private struct TopFade: ViewModifier {
+    let head: Double
+
+    func body(content: Content) -> some View {
+        content.mask(alignment: .top) {
+            VStack(spacing: 0) {
+                if head > 0 { Color.black.frame(height: head) }
+                LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom).frame(height: TLLayout.Today.fadeTop)
+                Color.black
+            }
+        }
+    }
+}
+
+/// The foot of the list's area fades out at the foot of the screen, or over the composer while it is out, and goes up with it when the keyboard (or what he is sending) raises it: no row
+/// shows through the field. A modifier of its own, so that the keyboard rising draws this and not the whole screen.
 private struct FootFade: ViewModifier {
     let ui: StarUI
-    let head: Double
 
     func body(content: Content) -> some View {
         let field = ui.composerOut ? TLLayout.composerRoom : 0
         content.mask(alignment: .top) {
             VStack(spacing: 0) {
-                if head > 0 { Color.black.frame(height: head) }
-                LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom).frame(height: TLLayout.fadeTop)
-                Color.black.frame(height: max(0, TLLayout.viewport - field - ui.kbLift - ui.attach.rise - head - TLLayout.fadeTop))          // (a keyboard so high that the two fades meet puts the foot's under the top's)
+                Color.black.frame(height: max(0, TLLayout.viewport + TLLayout.under - field - ui.kbLift - ui.attach.rise))
                 LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom).frame(height: TLLayout.fade)
                 Color.clear
             }
@@ -586,8 +591,8 @@ private struct FootFade: ViewModifier {
     }
 }
 
-/// The way back, in the look of the one under the dial, on the row of the pills at the right: on today 回到现在 when the line for now is out of view, on another day 回到今天. Now arriving is
-/// a firm tap of the phone.
+/// The way back: a small glass capsule at the right just over the bar at the foot, 回到现在 on today when the dot of now is out of view, 回到今天 on another day. Now arriving is a firm tap of
+/// the phone. A rename's undo toast takes the place over the bar while it is up, so this goes above it.
 private struct TLNowPill: View {
     let tl: TimelineState
     @Binding var nowInView: Bool
@@ -598,14 +603,21 @@ private struct TLNowPill: View {
         let today = tl.day == tl.today
         let show = (!today || !nowInView) && !away
         Button { Haptic.impact(.rigid); tl.goToday() } label: {
-            TLBackLabel(text: today ? Words.Home.backToNow : Words.Home.backToToday).id(today).transition(TLMotion.swapWords(reduce: reduce))
-                .contentShape(Rectangle().inset(by: -9))
+            HStack(spacing: 6) {
+                Circle().fill(Look.now).frame(width: 6, height: 6).shadow(color: Look.now.opacity(0.7), radius: 3)
+                Text(today ? Words.Home.backToNow : Words.Home.backToToday).id(today).transition(TLMotion.swapWords(reduce: reduce))
+                    .font(.system(size: Look.note, weight: .semibold)).foregroundStyle(Look.ink)
+            }
+            .padding(.horizontal, 14).frame(height: 32)
+            .jarvisGlass(Capsule())
+            .contentShape(Capsule().inset(by: -6))
         }
-        .buttonStyle(PressScale())
-        .frame(width: W - 60, alignment: .trailing)
+        .buttonStyle(GlassPress())
+        .frame(width: W - 2 * TLLayout.Today.side, alignment: .trailing)
         .opacity(show ? 1 : 0).scaleEffect(show || reduce ? 1 : 0.92).allowsHitTesting(show)
         .animation(.easeOut(duration: 0.25), value: show)
-        .offset(x: 30, y: TLLayout.pillsY + 2)
+        .offset(x: TLLayout.Today.side, y: HomeBar.top - 44 - (tl.undo == nil ? 0 : 52))
+        .animation(.easeOut(duration: 0.25), value: tl.undo == nil)
     }
 }
 
@@ -643,19 +655,24 @@ struct TLList: View {
     var body: some View {
         let offs = model.offsets, ranks = ranks(offs), open = inPlace ? tl.openRow : nil
         let nowTop = model.nowIndex.map { i in offs[i] + (open.flatMap { model.top(of: $0) }.map { $0 < offs[i] ? tl.openH : 0 } ?? 0) }          // a row open over it puts it lower
+        let nowHeight = model.nowIndex.map { model.entries[$0].height } ?? 0
+        let nowIdx = model.nowIndex
         ScrollView(showsIndicators: false) {
             VStack(spacing: 0) {
                 ForEach(Array(model.entries.enumerated()), id: \.element.id) { i, e in
-                    TLRowView(e: e, dim: dim(e), top: offs[i], room: room, tl: tl, engine: engine, tap: { tap(e) }, inPlace: inPlace, open: open == e.id)
+                    TLRowView(e: e, dim: dim(e), top: offs[i], room: room, tl: tl, engine: engine, tap: { tap(e) }, inPlace: inPlace, open: open == e.id,
+                              railUp: inPlace && i > 0 ? PhoneRail.between(model.entries[i - 1], e, ahead: nowIdx.map { i > $0 } ?? false) : .none,
+                              railDown: inPlace && i + 1 < model.entries.count ? PhoneRail.between(e, model.entries[i + 1], ahead: nowIdx.map { i + 1 > $0 } ?? false) : .none)
                         .equatable()
                         .modifier(Rise(rank: ranks[e.id], on: tl.reveal, reduce: reduce))
                         .transition(reduce ? .opacity : TLGrow.transition)          // what is new grows in, and what he says is not his collapses out the same way
                 }
                 if let n = model.missing {
-                    Text(n).font(.system(size: 12.5)).foregroundStyle(faint).frame(maxWidth: .infinity, minHeight: TLMetrics.note, alignment: .leading)
+                    Text(n).font(.system(size: Look.note)).foregroundStyle(Look.ink3).frame(maxWidth: .infinity, minHeight: TLMetrics.note, alignment: .leading)
+                        .padding(.leading, inPlace ? TLLayout.Today.side : 0)
                 }
             }
-            .padding(.horizontal, 30)
+            .padding(.horizontal, inPlace ? 0 : 30)
             .animation(TLMotion.listChange(reduce: reduce), value: model.entries.map(\.id))
         }
         // room under the last row, so the line for now can be brought up to 60% of the way down on any day
@@ -663,7 +680,7 @@ struct TLList: View {
         .scrollPosition($pos)
         .onScrollGeometryChange(for: Bool.self) { g in
             guard let ny = nowTop else { return true }
-            return ny < g.visibleRect.maxY && ny + TLMetrics.now > g.visibleRect.minY
+            return ny < g.visibleRect.maxY && ny + max(nowHeight, 1) > g.visibleRect.minY
         } action: { _, v in nowInView = v }
         .onScrollGeometryChange(for: Double.self) { Double($0.contentOffset.y) } action: { _, y in
             at.y = y
@@ -743,14 +760,14 @@ private struct TLWaitingRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .top, spacing: 0) {
-                Text("等你").font(tlFigures(12, weight: .semibold)).foregroundStyle(amber).frame(width: 40, height: 18, alignment: .leading)
+                Text("等你").font(tlFigures(12, weight: .semibold)).foregroundStyle(Look.waits).frame(width: 40, height: 18, alignment: .leading)
                 MarkShape(kd: .wait).frame(width: 16, height: 16).frame(width: 22, height: 18)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(card.title).font(.system(size: 15)).foregroundStyle(amber).lineLimit(1).frame(height: 18, alignment: .leading)
-                    if !card.meta.isEmpty { Text(card.meta).font(.system(size: 12.5)).foregroundStyle(muted).lineLimit(1).frame(height: 15, alignment: .leading) }
+                    Text(card.title).font(.system(size: 15)).foregroundStyle(Look.waits).lineLimit(1).frame(height: 18, alignment: .leading)
+                    if !card.meta.isEmpty { Text(card.meta).font(.system(size: 12.5)).foregroundStyle(Look.ink2).lineLimit(1).frame(height: 15, alignment: .leading) }
                 }.padding(.leading, 10)
                 Spacer(minLength: 8)
-                Image(systemName: "chevron.right").font(.system(size: 11, weight: .semibold)).foregroundStyle(muted)
+                Image(systemName: "chevron.right").font(.system(size: 11, weight: .semibold)).foregroundStyle(Look.ink2)
                     .rotationEffect(.degrees(open ? 90 : 0)).frame(height: 18)
             }
             .padding(.top, 9).frame(height: card.meta.isEmpty ? TLMetrics.row : TLMetrics.rowDetail, alignment: .top)

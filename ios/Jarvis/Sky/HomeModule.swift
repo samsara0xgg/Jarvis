@@ -1,26 +1,22 @@
 import Foundation
 import Observation
 
-/// What the middle of the home screen shows: the star dial, or the whole day as a timeline (Sky/DayTimeline.swift). He picks it in Settings, 首页 › 中间显示.
-/// Everything that depends on it reads `kind` where it draws, so a change applies at once, with the motion between the two.
+/// What the middle of the home screen shows: the whole day as a timeline (Sky/DayTimeline.swift), or the star dial. The phone always shows the timeline; the dial is kept in code, and a
+/// debug run asks for it with the launch argument `-homeModule stars`. Everything that depends on it reads `kind` where it draws, so a change applies at once, with the motion between the two.
 @Observable
 final class HomeModule {
     enum Kind: String { case stars, timeline }
 
-    static let shared = HomeModule(.standard)
-    /// the key in UserDefaults (also the launch argument `-homeModule stars` in a debug run)
-    static let key = "homeModule"
+    static let shared = HomeModule()
 
-    @ObservationIgnored private let defaults: UserDefaults
+    var kind: Kind
 
-    /// 时间线 until he chooses 星盘; an unknown stored word is the default as well
-    var kind: Kind {
-        didSet { if kind != oldValue { defaults.set(kind.rawValue, forKey: Self.key) } }
-    }
-
-    init(_ defaults: UserDefaults) {
-        self.defaults = defaults
-        kind = defaults.string(forKey: Self.key).flatMap(Kind.init(rawValue:)) ?? .timeline
+    init() {
+        kind = .timeline
+        #if DEBUG
+        let a = ProcessInfo.processInfo.arguments
+        if let i = a.firstIndex(of: "-homeModule"), i + 1 < a.count, a[i + 1] == Kind.stars.rawValue { kind = .stars }
+        #endif
     }
 
     var isTimeline: Bool { kind == .timeline }

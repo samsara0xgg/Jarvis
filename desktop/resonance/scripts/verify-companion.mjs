@@ -423,6 +423,12 @@ try {
   // Phone & devices, demo data: the QR appears in place with its countdown, and Disconnect asks before it acts.
   await page.locator('.ad [data-cat="devices"]').click(); await page.waitForTimeout(500);
   check('11 Phone & devices lists a paired phone and offers a QR code', await title() === 'Phone & devices' && await page.locator('.ad [data-item="dev-iphone"]').count() === 1 && await page.locator('.ad [data-item="phone"] svg').count() === 0);
+  const row = id => page.locator(`.ad [data-item="${id}"]`).textContent();
+  check('11 …each named for what it is: the iPad that paired as iphone-2 is iPad, and the watch shows under the iPhone it reaches her through',
+    (await row('dev-iphone')).startsWith('iPhone · connected') && (await row('dev-iphone-2')).startsWith('iPad · connected')
+    && (await row('watch-iphone')).includes('Apple Watch') && (await row('watch-iphone')).includes('Through iPhone')
+    && (await page.locator('.ad [data-item^="dev-"], .ad [data-item^="watch-"]').evaluateAll(rows => rows.map(r => r.dataset.item))).join() === 'dev-iphone,watch-iphone,dev-iphone-2');
+  await shot('11-devices', { x: 120, y: 0, width: 400, height: 280 });
   await page.locator('.ad [data-item="phone"] button').click(); await page.waitForTimeout(500);
   check('11 …Show QR code expands it in place with a countdown and New code', await page.locator('.ad [data-item="phone"] svg path').count() === 1 && /^\d+:\d\d$/.test(await page.locator('.ad [data-item="phone"] .st-val').textContent()) && await page.locator('.ad [data-item="phone"] .st-qr button').count() === 1);
   await page.locator('.ad [data-item="dev-iphone"] button').click(); await page.waitForTimeout(250);

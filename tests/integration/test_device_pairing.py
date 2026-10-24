@@ -13,7 +13,8 @@ brain (device tokens for remote peers, the local key on loopback, a Host allowli
 - a remote peer with no token still gets 401 on every route but the liveness probe and the
   claim, and the claim is closed to every other method and path, to an oversized body and to a
   wrong Host;
-- the URLs a mint lists are exactly the ones the Host check accepts, addresses first.
+- the URLs a mint lists are exactly the ones the Host check accepts, addresses first;
+- the list says what each device turned out to be and the watch a phone carries (ADR 0401).
 """
 
 from __future__ import annotations
@@ -24,13 +25,16 @@ from typing import TYPE_CHECKING, Any
 import pytest
 from fastapi.testclient import TestClient
 
+from jarvis.state import terminal_tools
 from jarvis.state.device_tokens import (
     PAIRING_CODE_TTL_S,
     PairingCodes,
     device_token_matches,
     pair_device,
 )
+from jarvis.state.event_log import emit_event, open_event_log
 from jarvis.state.plugin_settings import local_key, local_key_matches
+from jarvis.state.push_tokens import register_body
 from jarvis.surface.device_pairing import DevicePairing, brain_urls
 from jarvis.surface.inherent_output import InherentBroadcaster
 from jarvis.surface.inherent_server.app import create_app
@@ -64,6 +68,7 @@ class _Brain:
 
     def __init__(
         self, root: Path, *, listens: bool = True, hosts: tuple[str, ...] = ("jarvis", REMOTE),
+        event_log: Path | None = None,
     ) -> None:
         self.root = root
         self.clock = _Clock()
@@ -77,6 +82,7 @@ class _Brain:
                 conversation_read=lambda _after, _limit, _before: {"since": None, "rows": []},
                 pairing=DevicePairing(
                     root=root, codes=self.codes, listens=listens, brain_urls=self.urls,
+                    event_log=event_log,
                 ),
             ),
         )
@@ -278,7 +284,7 @@ def test_a_paired_device_can_mint_list_and_unpair_and_the_unpair_is_immediate(
     assert listed.status_code == 200
     rows = listed.json()["devices"]
     assert [row["name"] for row in rows] == ["phone", "tablet"]
-    assert all(set(row) == {"name", "created_at"} for row in rows)
+    assert all(set(row) == {"name", "created_at", "kind", "watch"} for row in rows)
     for secret in (token, second["token"], second_code):
         assert secret not in listed.text
     assert brain.peer("127.0.0.1").get("/inherent/devices", headers=brain.owner()).json() == {
@@ -401,3 +407,39 @@ def test_brain_urls_list_what_the_host_check_accepts_addresses_first(
     assert brain_urls(addresses, hosts, 8006) == tuple(
         f"http://{host}:8006" for host in expected
     )
+
+
+def test_the_list_says_what_each_device_turned_out_to_be_and_the_watch_it_carries(
+    tmp_path: Path,
+) -> None:
+    """Named iphone-2 before an iPad scanned it: the list says iPad, and the phone's watch."""
+    log = tmp_path / "events.db"
+    conn = open_event_log(log)
+    brain = _Brain(tmp_path, event_log=log)
+    for name in ("macbook", "iphone", "iphone-2", "iphone-3"):
+        pair_device(tmp_path, name)
+    terminal_tools.remember(tmp_path, "macbook", ["open_url"])
+    register_body(tmp_path, "iphone", {"device_token": "a1" * 32, "environment": "sandbox"})
+    register_body(tmp_path, "iphone-2", {
+        "device_token": "b2" * 32, "environment": "sandbox", "idiom": "pad",
+    })
+    # The watch's charge comes through the phone, under the phone's name (ADR 0377).
+    emit_event(
+        conn, type="phone.state_observed", ingestion_node="iphone",
+        payload={"signal": "watch_battery", "value": "80", "detail": "unplugged"},
+    )
+    # So do his words to it (ADR 0401).
+    emit_event(
+        conn, type="surface.user_intent", ingestion_node="iphone-3",
+        payload={"transcript": "hi", "turn_id": "T1", "channel": "cli_stdin", "via": "watch"},
+        correlation={"turn_id": "T1"},
+    )
+    conn.close()
+
+    rows = brain.peer("127.0.0.1").get("/inherent/devices", headers=brain.owner()).json()
+    assert [(r["name"], r["kind"], r["watch"]) for r in rows["devices"]] == [
+        ("iphone", "phone", True),
+        ("iphone-2", "pad", False),
+        ("iphone-3", None, True),  # never registered for pushes: no kind is claimed
+        ("macbook", "computer", False),
+    ]

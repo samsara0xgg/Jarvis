@@ -233,7 +233,7 @@ final class WatchRelay: NSObject, WCSessionDelegate {
         #if DEBUG
         if Self.stub { return [.reply(talk: id, spoken: "Made-up answer to: " + said, written: "", card: nil)] }
         #endif
-        guard let body = AskReply.body(said) else { return [.failed(talk: id, reason: Words.Relay.tooLong)] }
+        guard let body = AskReply.body(said, via: "watch") else { return [.failed(talk: id, reason: Words.Relay.tooLong)] }
         let before = Set(Waiting.shared.cards.map(\.id))
         do {
             switch try await BrainLink.shared.call({ try await BrainClient.ask(body, bases: $0, token: $1) }) {

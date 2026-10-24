@@ -58,7 +58,7 @@ final class FootprintTripArt {
     }
 
     /// the words' type under the bar, and a stop's ring
-    static let font = UIFont(name: "IBMPlexMono-Medium", size: 10) ?? .monospacedSystemFont(ofSize: 10, weight: .medium), ring = 13.0
+    static let font = Look.figuresUI(10, weight: .medium), ring = 13.0
     static func measure(_ s: String) -> Double { ceil((s as NSString).size(withAttributes: [.font: font]).width) }
 
     /// the colour of the ramp along a run of the line, a stop every few points of the bar; where no fix says how fast (a gap, the join to a stay) the gap's colour

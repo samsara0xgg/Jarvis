@@ -5,15 +5,41 @@ import SwiftUI
 // tab bar does: the light follows the finger with a tick at each tab it reaches, and the page is the one it lets go on; a tap on the day while it is on show goes back to now. The bar
 // floats over the page, which runs on under it. On the conversation it stays, with the field he types in over it, and gives way only to the keyboard and what he picks to send;
 // on the other pages it gives way while the field is out. It goes too while a place is being named or the near view tuned. Under the dial there is no bar: settings is a sheet from
-// its button there. Design points, as the chrome (Sky/StarChartScreen.swift).
+// its button there. Design points, as the chrome (Sky/StarChartScreen.swift). On iOS 26 the bar is the system's own (`HomeStockTabs`; allen 2026-10-23: the lens of the
+// Muse video he sent is the stock one), and `HomeTabBar` is the one drawn before iOS 26.
 
 /// the home's pages, in the bar's order
 enum HomePage: CaseIterable {
     case day, talk, map, settings
+
+    /// the outline symbol, chosen or not (the footprint build's bar: no .fill)
+    var symbol: String {
+        switch self {
+        case .day: "calendar.day.timeline.left"
+        case .talk: "text.bubble"
+        case .map: "map"
+        case .settings: "gearshape"
+        }
+    }
+
+    @MainActor var title: String {
+        switch self {
+        case .day: Words.Home.pageDay
+        case .talk: Words.Home.pageTalk
+        case .map: Words.Home.pageMap
+        case .settings: Words.Home.pageSettings
+        }
+    }
 }
 
 enum HomeBar {
-    static let h = 62.0, side = 30.0, foot = 21.0          // how tall it is, in from each side, and up from the foot of the screen
+    static let side = 30.0                                   // in from each side
+    /// how tall it is, and how far up from the foot of the screen: the drawn bar's 62 and 21 design points; on iOS 26 where a UITabBarController puts the system's own glass (62 pt
+    /// tall, 21 pt over the screen's foot and in from its sides: measured on iPhone 17 Pro, iOS 26.4), in design points
+    static var h: Double { stock ? 62 / scale : 62 }
+    static var foot: Double { stock ? 21 / scale : 21 }
+    private static var stock: Bool { if #available(iOS 26.0, *) { true } else { false } }
+    private static var scale: Double { StarChartScreen.fit(UIScreen.main.bounds.size).k }
     static let inset = 4.0                                   // the light round the tab it is on, inside the bar
     static var top: Double { H - foot - h }
     /// how far the field rests over its place on the conversation's page: 8 pt over the bar
@@ -43,6 +69,20 @@ extension StarEngine {
         ui.footprintOpen = p == .map
         ui.settingsOpen = p == .settings
     }
+
+    /// A tab chosen: its page, and the day's tab on the day goes back to now, as a tab bar goes back to the top.
+    func goPage(_ p: HomePage) {
+        if p == .day && ui.page == .day { ui.tl.goToday(); return }
+        showPage(p)
+    }
+}
+
+extension StarUI {
+    /// The bar at the foot is out: on the timeline only, not while a place is being named or the near view tuned; on the conversation not under the keyboard or what he picks to send.
+    var barShows: Bool {
+        guard HomeModule.shared.isTimeline, tl.renaming == nil, !tuning else { return false }
+        return panelOpen ? !typing && !attach.isOpen : !composerOut
+    }
 }
 
 struct HomeTabBar: View {
@@ -53,11 +93,7 @@ struct HomeTabBar: View {
 
     private var ui: StarUI { engine.ui }
 
-    /// On the timeline only, not while a place is being named or the near view tuned; on the conversation not under the keyboard or what he picks to send, elsewhere not while the field is out.
-    private var shows: Bool {
-        guard HomeModule.shared.isTimeline, ui.tl.renaming == nil, !ui.tuning else { return false }
-        return ui.panelOpen ? !ui.typing && !ui.attach.isOpen : !ui.composerOut
-    }
+    private var shows: Bool { ui.barShows }
 
     var body: some View {
         let lit = finger.map { HomeBar.page(at: $0) } ?? ui.page
@@ -93,38 +129,20 @@ struct HomeTabBar: View {
     private func tab(_ p: HomePage, lit: Bool) -> some View {
         let recording = p == .settings && LifelogRecorder.shared.recording          // the day is being recorded; its switch is in settings
         return VStack(spacing: 3) {
-            Image(systemName: symbol(p)).font(.system(size: 19, weight: .medium)).symbolVariant(lit ? .fill : .none)
+            Image(systemName: p.symbol).font(.system(size: 19, weight: .medium))
                 .frame(height: 24)
                 .overlay(alignment: .topTrailing) {
                     if recording { Circle().fill(Color(red: 1, green: 92 / 255, blue: 92 / 255)).frame(width: 6, height: 6).offset(x: 4, y: 1) }
                 }
-            Text(title(p)).font(.system(size: 10.5, weight: .semibold)).lineLimit(1)
+            Text(p.title).font(.system(size: 10.5, weight: .semibold)).lineLimit(1)
         }
         .foregroundStyle(lit ? SetColor.ink : SetColor.muted)
         .animation(.easeOut(duration: 0.15), value: lit)
         .frame(width: HomeBar.slot, height: HomeBar.h - 2 * HomeBar.inset)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(recording ? Words.Home.pageSettingsRecording : title(p))
+        .accessibilityLabel(recording ? Words.Home.pageSettingsRecording : p.title)
         .accessibilityAddTraits(p == ui.page ? [.isButton, .isSelected] : [.isButton])
         .accessibilityAction { go(p) }
-    }
-
-    private func symbol(_ p: HomePage) -> String {
-        switch p {
-        case .day: "calendar.day.timeline.left"
-        case .talk: "text.bubble"
-        case .map: "map"
-        case .settings: "gearshape"
-        }
-    }
-
-    private func title(_ p: HomePage) -> String {
-        switch p {
-        case .day: Words.Home.pageDay
-        case .talk: Words.Home.pageTalk
-        case .map: Words.Home.pageMap
-        case .settings: Words.Home.pageSettings
-        }
     }
 
     /// down on the bar the light comes to the finger and follows it; let go, the page is the tab it is on
@@ -143,10 +161,7 @@ struct HomeTabBar: View {
             }
     }
 
-    private func go(_ p: HomePage) {
-        if p == .day && ui.page == .day { ui.tl.goToday(); return }          // the day's tab on the day: back to now, as a tab bar goes back to the top
-        engine.showPage(p)
-    }
+    private func go(_ p: HomePage) { engine.goPage(p) }
 }
 
 /// the bar's glass: the system's Liquid Glass where there is one (iOS 26), else a frosted material with a hairline
@@ -159,4 +174,44 @@ private struct BarGlass: ViewModifier {
                 .overlay(Capsule().strokeBorder(Color.white.opacity(0.12), lineWidth: 0.5))
         }
     }
+}
+
+/// The system's own tab bar (iOS 26 Liquid Glass: press and drag lifts the chosen cell, it follows the finger and magnifies what is under it, and springs into the nearest tab), as the same four
+/// pages: a bare UITabBar, not a tab controller, so nothing of it lies over the page but the bar itself. The pages stay the engine's flags (`StarEngine.goPage`).
+struct HomeStockTabs: UIViewRepresentable {
+    let engine: StarEngine
+
+    func makeCoordinator() -> Coordinator { Coordinator(engine: engine) }
+
+    func makeUIView(context: Context) -> UITabBar {
+        let bar = UITabBar()
+        bar.items = HomePage.allCases.enumerated().map { i, p in
+            let img = UIImage(systemName: p.symbol)          // the outline symbol, chosen or not (no .fill: the footprint build's bar)
+            return UITabBarItem(title: p.title, image: img, selectedImage: img).with { $0.tag = i }
+        }
+        bar.tintColor = .white
+        bar.unselectedItemTintColor = UIColor.white.withAlphaComponent(0.6)
+        bar.delegate = context.coordinator
+        return bar
+    }
+
+    func updateUIView(_ bar: UITabBar, context: Context) {
+        let i = HomePage.allCases.firstIndex(of: engine.ui.page) ?? 0
+        if bar.selectedItem?.tag != i { bar.selectedItem = bar.items?[i] }
+        let recording = LifelogRecorder.shared.recording          // the day is being recorded: a small red dot on settings
+        bar.items?.last?.badgeValue = recording ? "" : nil
+        bar.items?.last?.badgeColor = UIColor(Look.red)
+    }
+
+    final class Coordinator: NSObject, UITabBarDelegate {
+        let engine: StarEngine
+        init(engine: StarEngine) { self.engine = engine }
+        func tabBar(_ tabBar: UITabBar, didSelect item: UITabBarItem) {
+            MainActor.assumeIsolated { engine.goPage(HomePage.allCases[item.tag]) }
+        }
+    }
+}
+
+private extension UITabBarItem {
+    func with(_ f: (UITabBarItem) -> Void) -> UITabBarItem { f(self); return self }
 }
