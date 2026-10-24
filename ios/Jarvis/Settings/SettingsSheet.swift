@@ -8,14 +8,16 @@ import SwiftUI
 struct SettingsSheet: View {
     private let asPage: Bool
     private let tuneNear: () -> Void
+    private let cardUp: Bool                    // her card is up under her (Sky/DayTimelineTalk.swift): the line under her gives way to it
     @Bindable private var model = SettingsModel.shared
     @State private var page = SettingsPage.main
     @State private var scrolled: [SettingsPage: Bool] = [:]
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    init(asPage: Bool = false, tuneNear: @escaping () -> Void = {}) {
+    init(asPage: Bool = false, cardUp: Bool = false, tuneNear: @escaping () -> Void = {}) {
         self.asPage = asPage
+        self.cardUp = cardUp
         self.tuneNear = tuneNear
         #if DEBUG
         // `-settingsPage pair` opens on the pairing page, for screenshots
@@ -100,7 +102,7 @@ struct SettingsSheet: View {
             if page != .main { TopGlassButton(symbol: "chevron.left", label: Words.PhoneFrame.backToSettings) { go(.main) } }
         } middle: {
             ZStack {
-                BrainStatusLine().opacity(page == .main ? 1 : 0)
+                BrainStatusLine().opacity(page == .main && !cardUp ? 1 : 0).animation(.easeOut(duration: 0.2), value: cardUp)
                 Text(page.title).font(.system(size: Look.note, weight: .semibold)).foregroundStyle(Look.ink2).lineLimit(1)
                     .opacity(page == .main ? 0 : 1).accessibilityAddTraits(.isHeader).accessibilityHidden(page == .main)
             }

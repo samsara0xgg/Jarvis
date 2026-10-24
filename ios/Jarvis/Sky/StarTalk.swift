@@ -278,7 +278,7 @@ extension StarEngine {
     /// 全文 ›, or a tap on her answer in the timeline's place for the talk: the history, at that answer. The talk's rows are listed live while it is on show, as `l<id>`, and the stream is
     /// asked to go there once the panel has come up (as `showTalk` does).
     func showAnswer(_ turn: Int?) {
-        openPanel()
+        if HomeModule.shared.isTimeline { showPage(.talk) } else { openPanel() }
         guard let turn else { return }
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 400_000_000)

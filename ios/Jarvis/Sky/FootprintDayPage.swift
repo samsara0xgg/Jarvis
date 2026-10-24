@@ -117,6 +117,7 @@ struct FootprintDayPage: View {
                 Group {
                     if phone {
                         FootprintDayStrip(ui: ui, summary: content.summary, bar: built?.model, model: model).offset(x: HomeTop.side, y: HomeTop.lineY)
+                            .opacity(ui.herCardOn ? 0 : 1).animation(.easeOut(duration: 0.2), value: ui.herCardOn)          // her card stands in its place
                     } else {
                         FootprintDayLine(ui: ui, summary: content.summary, bar: built?.model, model: model).offset(x: 30, y: Y.line)
                     }

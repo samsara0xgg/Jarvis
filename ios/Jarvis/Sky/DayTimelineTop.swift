@@ -4,8 +4,8 @@ import SwiftUI
 // The pinned top of the phone's 今天 page (跨端UI标准 §2–4), under her: the strip (日历, the date, ✦ 润色), the hours, the day's bar with the stars on it, the place line and the day's numbers. It is a
 // view of its own because the minute under a finger changes on every frame and whatever reads that minute is drawn again on every frame: kept here, that is this and nothing else of the screen,
 // not the model of the day and not the list. A tap on the bar is not a finger held on it: it opens the row of the block tapped, or frames the block for a moment (`TimelineState.tapBar`).
-// Under the date her words stand while she talks (Sky/DayTimelineTalk.swift) and, while the brain tidies today, what is said of it (and for a while after it answers with nothing new or fails); the
-// bar, the place line and the numbers stand lower by their room (`TLCaption`). A finger on the bar says its minute in the date's place instead, and nothing moves under it.
+// Her card stands over the date while she talks or tidies (Sky/DayTimelineTalk.swift): the date gives way to it, and what it covers of the hours, the bar, the place line and the numbers slides
+// out; nothing moves down. A finger on the bar says its minute in the date's place instead, and the card is down while it does.
 
 private let ink = SetColor.ink
 private let muted = SetColor.muted
@@ -20,7 +20,6 @@ struct TLTopView: View {
     @State private var lastScrub = 0.0                                               // where his finger was last: what the readout shows while it fades out
     @State private var lastStretch: String?
     @State private var lastLens = TLLens.trip                                        // the lens that was on last: what fades out when it goes
-    @State private var lastTidy = ""                                                 // what was said of the tidying last: what fades out when it goes
     @State private var nowSide: Bool?                                                // which side of now a finger on the bar is: crossing it is a firm tap
     @State private var ghost: TLBarScene?                                            // the bar as it was when the brain wrote a tidied day, which fades off the new one (`tl.tidied`)
     @State private var ghostGone = false
@@ -30,29 +29,19 @@ struct TLTopView: View {
     private typealias T = TLLayout.Today
 
     var body: some View {
-        let holding = tl.scrub != nil, talk = ui.tlTalk
-        let tidying = tl.tidy != .idle && tl.day == tl.today ? tl.tidy.words : nil          // what is said of the brain tidying today, under the date
+        let holding = tl.scrub != nil, foot = ui.herCardFoot
         let said = model.map { $0.readout(at: tl.scrub ?? lastScrub) }          // once for the readout and for VoiceOver's value, on every frame of a finger
-        let shift = TLCaption.shared.shift
         return ZStack(alignment: .topLeading) {
             TopStrip {
                 FootprintDayPicker(ui: ui)
             } middle: {
-                date.fadeThrough(on: !holding, reduce: reduce).accessibilityHidden(holding).allowsHitTesting(false)          // she may drift behind it: a touch on her there is still on her
+                date.fadeThrough(on: !holding && !ui.herCardOn, reduce: reduce).accessibilityHidden(holding).allowsHitTesting(false)          // she may drift behind it: a touch on her there is still on her
             } right: {
                 if tl.tidyShown {
                     TopGlassButton(symbol: "sparkles", label: Words.PhoneToday.polish, on: tl.tidy != .running) { tl.tidyDay() }
                         .allowsHitTesting(tl.tidy != .running)
                 }
             }
-            // what is said of the tidying, under the date; her words while she talks are TLTalkArea's
-            Text(tidying ?? lastTidy).font(.system(size: Look.body, weight: .medium)).foregroundStyle(ink).lineLimit(1)
-                .frame(width: W - 88, height: TLCaption.tidyLine)
-                .id(tidying ?? lastTidy).transition(TLMotion.swapWords(reduce: reduce)).animation(.easeOut(duration: 0.2), value: tidying)
-                .fadeThrough(on: tidying != nil && !holding && !talk, reduce: reduce)
-                .accessibilityHidden(tidying == nil || talk)
-                .allowsHitTesting(false)
-                .offset(x: 44, y: T.captionY)
             // the minute under a finger on the bar, in the date's place
             if let said {
                 TLReadoutLines(r: said, second: said.second, centered: true).environment(\.tlBarWidth, W - 80)
@@ -84,10 +73,12 @@ struct TLTopView: View {
                     .accessibilityAdjustableAction { nudge($0, m) }
                     .id(tl.day).transition(barTransition)
                     .offset(x: T.side, y: T.barY)
+                    .modifier(CardCovers(out: foot > T.hoursY, reduce: reduce))
                     if !m.places.isEmpty {
                         TLPlaceLine(places: m.places, axis: axis).id(tl.day).transition(barTransition)
                             .opacity(tl.reveal ? 1 : 0).animation(TLMotion.arrival(after: 0.4, reveal: tl.reveal, reduce: reduce), value: tl.reveal)
                             .offset(x: T.side, y: T.placeY)
+                            .modifier(CardCovers(out: foot > T.placeY, reduce: reduce))
                     }
                     if !m.chips.isEmpty || !m.body.isEmpty {
                         TLPhoneChips(chips: m.chips, health: m.body, active: lens) { l in
@@ -99,11 +90,10 @@ struct TLTopView: View {
                         .equatable()
                         .id(tl.day).transition(barTransition)
                         .offset(y: T.chipsY - 2)
+                        .modifier(CardCovers(out: foot > T.chipsY, reduce: reduce))
                     }
                 }
             }
-            .offset(y: shift)
-            .animation(reduce ? .easeOut(duration: TLMotion.reducedFade) : .easeOut(duration: 0.3), value: shift)          // the words under the date come and the rest stands lower, no bounce
         }
         .environment(\.tlBarWidth, T.barW).environment(\.tlBarHeight, T.barH).environment(\.tlBarRadius, T.barRadius)
         .onDisappear { lastStretch = nil; tl.follow(nil, in: nil) }          // a finger that was on the bar when this went away is not on it when it comes back
@@ -111,9 +101,6 @@ struct TLTopView: View {
         .onChange(of: tl.tidied) { _, s in if s != nil { holdGhost() } }
         .onChange(of: tl.reply?.serial) { _, _ in releaseGhost() }
         .onChange(of: tl.scrub) { _, t in if let t { lastScrub = t } }
-        .onChange(of: shift, initial: true) { _, v in tl.captionLift = v }          // the list stands lower by the same (Sky/DayTimeline.swift)
-        .onChange(of: tidying != nil, initial: true) { _, on in TLCaption.shared.tidyH = on ? TLCaption.tidyLine : 0 }
-        .onChange(of: tidying, initial: true) { _, w in if let w { lastTidy = w } }
         // only once she is in her corner, and gone as soon as she leaves it: she glides across where they stand
         .opacity(ui.tlHome ? 1 : 0).allowsHitTesting(ui.tlHome)
         .animation(.easeOut(duration: ui.tlHome ? (reduce ? TLMotion.reducedFade : 0.3) : 0.06), value: ui.tlHome)
@@ -411,5 +398,15 @@ extension View {
     func fadeThrough(on: Bool, reduce: Bool) -> some View {
         opacity(on ? 1 : 0).blur(radius: on || reduce ? 0 : 4)
             .animation(reduce ? .easeOut(duration: TLMotion.reducedFade) : .smooth(duration: 0.3), value: on)
+    }
+}
+
+/// a piece of the day's top her card stands over: it slides up and out, and comes back when the card goes
+private struct CardCovers: ViewModifier {
+    let out: Bool
+    let reduce: Bool
+    func body(content: Content) -> some View {
+        content.opacity(out ? 0 : 1).offset(y: out && !reduce ? -8 : 0).allowsHitTesting(!out)
+            .animation(reduce ? .easeOut(duration: TLMotion.reducedFade) : .easeOut(duration: 0.25), value: out)
     }
 }

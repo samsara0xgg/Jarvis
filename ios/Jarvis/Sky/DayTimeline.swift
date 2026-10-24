@@ -72,7 +72,6 @@ final class TimelineState {
     var chosen: [String: String] = [:]              // his answer, by the stretch, while its row is open: the brain's next reading says it as it stands
     var choosing: String?                           // the stretch whose answer is on its way to the brain
     var waitH = 0.0                     // how tall the pinned cards over the list are
-    var captionLift = 0.0               // how far her words under the pinned top push the list down (set by the top, Sky/DayTimelineTop.swift): the list follows in 0.3 s
     var waitingCount = 0                // what waits on him (the day's rows that wait, and the pinned cards): the amber number on her
     var waitingTap = 0                  // bumped by a tap on that number: the 今天 page goes to the first of them
     // what a row does when it is opened (Sky/DayTimelineActions.swift)
@@ -396,11 +395,8 @@ struct DayTimelineView: View {
             let model = built?.model
             let waits = away ? 0 : (model?.waiting.count ?? 0) + Waiting.shared.cards.count
             ZStack(alignment: .topLeading) {
-                ZStack(alignment: .topLeading) {
-                    TLTopView(ui: ui, model: model, scene: built?.scene ?? .empty, loading: !isReady(shown), room: room)
-                    TLTalkArea(engine: engine, ui: ui, model: model)            // a talk takes the place of her sentence, the bar and the chips
-                }
-                .modifier(HistoryOver(ui: ui, pull: $pull)).allowsHitTesting(!ui.panelOpen)
+                TLTopView(ui: ui, model: model, scene: built?.scene ?? .empty, loading: !isReady(shown), room: room)
+                    .modifier(HistoryOver(ui: ui, pull: $pull)).allowsHitTesting(!ui.panelOpen)
                 listArea(shown, away: away)
                 undoToast(away: away)
                 TLNowPill(tl: tl, nowInView: $nowInView, away: away)
@@ -466,7 +462,7 @@ struct DayTimelineView: View {
 
     // MARK: the list, and what waits above it
 
-    /// The list under the pinned top: from `TLLayout.Today.listTop` (and `tl.captionLift` lower while her words are up) to the foot, where it runs on under the glass bar. Its top has a soft
+    /// The list under the pinned top: from `TLLayout.Today.listTop` to the foot (her card stands over it and never moves it), where it runs on under the glass bar. Its top has a soft
     /// edge of 18 pt under the pinned cards, and nothing else is laid over it. The foot's fade stays where the bar is while the list moves.
     private func listArea(_ shown: Shown, away: Bool) -> some View {
         let h = TLLayout.viewport + TLLayout.fade
@@ -486,8 +482,6 @@ struct DayTimelineView: View {
             }
             .frame(width: W, height: h, alignment: .top)
             .modifier(TopFade(head: Waiting.shared.cards.isEmpty ? 0 : pinnedHeight + 4))
-            .offset(y: tl.captionLift)
-            .animation(TLMotion.captionLift(reduce: reduce), value: tl.captionLift)
         }
         .frame(width: W, height: h, alignment: .top)
         .clipped()

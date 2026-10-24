@@ -47,8 +47,6 @@ enum TLMotion {
     }
     /// what is new in the list, and the rows that make room for it
     static func listChange(reduce: Bool) -> Animation { reduce ? .easeOut(duration: reducedFade) : .smooth(duration: grow) }
-    /// the list going down with the top as her words come up under it (and back as they go): 0.3 s, ease-out, no bounce
-    static func captionLift(reduce: Bool) -> Animation { reduce ? .easeOut(duration: reducedFade) : .easeOut(duration: 0.3) }
     /// the list sent to a place (the way back to now, a row the waiting cards name): longer for a longer way, so that a short one is not slow and a long one is not a blur
     static func scrollTo(distance: Double) -> Animation { .smooth(duration: min(0.8, 0.3 + distance / 4000)) }
     /// A page over the screen (the footprint's day, its outing) comes in from the right and goes back the same way: a spring of 0.3 s that does not bounce, so that a tap or a swipe in the middle

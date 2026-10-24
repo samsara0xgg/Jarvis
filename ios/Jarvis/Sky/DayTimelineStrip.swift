@@ -1,26 +1,9 @@
 import SwiftUI
 import Observation
 
-// The pinned top of the phone's 今天 page under the date (跨端UI标准 §3): the place line under the bar, the sideways row of the day's numbers, and what the words under the date make of the
-// room below them. Sky/DayTimelineTop.swift lays them out; the bar and its stars are Sky/DayTimelineBar.swift's.
+// The pinned top of the phone's 今天 page under the date (跨端UI标准 §3): the place line under the bar, the sideways row of the day's numbers. Sky/DayTimelineTop.swift lays them out; the bar and its stars are Sky/DayTimelineBar.swift's.
 
 private let ink = Look.ink
-
-// MARK: - the words under the date
-
-/// How far the words under the date push what is below them (the bar, the place line, the chips, and with them the list): her words while she talks, and what is said of the tidying. The
-/// talk's own height is measured by its view (Sky/DayTimelineTalk.swift) and the tidy's is one line; nothing is pushed while a finger is on the bar (the readout stands in the date's
-/// place), so the bar never moves under a finger.
-@MainActor @Observable
-final class TLCaption {
-    static let shared = TLCaption()
-    var talkH = 0.0                 // how tall her place for a talk is now (his heard words, hers, what waits): 0 when there is none
-    var tidyH = 0.0                 // and that of the line that says the tidying: one line of 15 pt while it is said
-    static let tidyLine = 21.0, gap = 8.0
-
-    /// how far down everything under the date stands, in design points: the room the words take and 8 pt of air; 0 with none
-    var shift: Double { talkH > 0 ? talkH + Self.gap : tidyH > 0 ? tidyH + Self.gap : 0 }
-}
 
 // MARK: - the place line
 

@@ -139,6 +139,7 @@ final class StarUI {
     /// the history is up on the phone's timeline: the conversation's page, the whole screen under her (Sky/StarPanel.swift's `TalkPage`); under the dial it is a panel over it, and on
     /// the iPad's own home a sheet over it (Pad/PadHome.swift)
     var talkPage: Bool { panelOpen && HomeModule.shared.isTimeline && !padHome }
+    var herCardFoot = 0.0               // how far down her card under her reaches, in design points; 0 while it is down (Sky/DayTimelineTalk.swift): what it covers of the day's top slides out
     var tlTalk = false                  // the timeline's place for a talk is on show: her sentence, the bar and the chips have given way to the latest round (Sky/DayTimelineTalk.swift)
 
     /// The composer is out: always under the dial. On the timeline the field is on 聊天 only (a hold on her, or 问她 on a row, goes there); the other pages run to the foot of the screen.

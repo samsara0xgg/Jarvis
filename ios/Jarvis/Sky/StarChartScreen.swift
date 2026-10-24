@@ -39,7 +39,7 @@ struct StarChartScreen: View {
         // that picks the page (Sky/HomeBar.swift)
         .overlay {
             ZStack {
-                if settings { SettingsSheet(asPage: true, tuneNear: { engine.showPage(.day); engine.setLevel(-1); engine.ui.tuning = true }).ignoresSafeArea().transition(.opacity) }
+                if settings { SettingsSheet(asPage: true, cardUp: engine.ui.herCardOn, tuneNear: { engine.showPage(.day); engine.setLevel(-1); engine.ui.tuning = true }).ignoresSafeArea().transition(.opacity) }
             }
             .animation(.easeOut(duration: 0.2), value: settings)
         }
@@ -90,7 +90,6 @@ struct StarChrome: View {
     @Environment(\.scenePhase) private var phase
     @Environment(\.accessibilityReduceMotion) private var reduce
     @State private var leftAt: Date?                   // when the app went to the background
-    @State private var captionText = ""                // the voice's line under her, kept while it fades out
 
     var body: some View {
         ZStack(alignment: .topLeading) {
@@ -108,7 +107,7 @@ struct StarChrome: View {
             FootprintDayLayer(engine: engine, ui: ui)
             TalkPanel(engine: engine, ui: ui, pull: $pull, page: HomeModule.shared.isTimeline)
             voiceNote
-            voiceCaption
+            HerWordsCard(engine: engine, ui: ui)                    // over every page, under her
             HerBadge(engine: engine, ui: ui)
             AttachDim(model: ui.attach)
             if ui.tuning && ui.level == -1 { NearTune(engine: engine, done: { ui.tuning = false }) }
@@ -326,17 +325,6 @@ struct StarChrome: View {
             .offset(x: 30, y: 846 - ui.attach.rise - ui.kbLift)
     }
 
-    /// the same line on every page of the timeline: centred under her, between the date's line and the page (13 pt), fading in and out in 0.3 s
-    private var voiceCaption: some View {
-        let on = ui.voiceNote != nil && HomeModule.shared.isTimeline
-        return Text(captionText).font(.system(size: Look.note)).foregroundStyle(Look.ink2).lineLimit(1).minimumScaleFactor(0.8)
-            .frame(width: W - 2 * HomeTop.side)
-            .opacity(on ? 1 : 0)
-            .animation(.easeOut(duration: 0.3), value: on)
-            .onChange(of: ui.voiceNote, initial: true) { _, n in if let n { captionText = n } }          // the words stay while the line fades out
-            .allowsHitTesting(false).accessibilityHidden(!on)
-            .offset(x: HomeTop.side, y: TLLayout.Today.captionY)
-    }
     // MARK: the composer: type to her, or tap the mic. A + at the left, what is attached above the words, a field that grows to five lines.
 
     /// words and attachments go together; with no words, the attachments are named
