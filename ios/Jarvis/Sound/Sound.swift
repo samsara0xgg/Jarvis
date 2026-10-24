@@ -26,7 +26,10 @@ final class Sound {
         }
     }
 
-    private let format = AVAudioFormat(standardFormatWithSampleRate: SoundSynth.sampleRate, channels: 2)!
+    /// The cues' format, also the one a node elsewhere that plays them (`route`) is connected with.
+    static let cueFormat = AVAudioFormat(standardFormatWithSampleRate: SoundSynth.sampleRate, channels: 2)!
+
+    private let format = Sound.cueFormat
     // Rendered buffers are immutable once stored, so the pre-render thread and the audio queue can share them.
     private let buffers = OSAllocatedUnfairLock(initialState: [SoundCue: AVAudioPCMBuffer]())
     private let warmUp = DispatchQueue(label: "jarvis.sound.render", qos: .utility)
@@ -40,6 +43,7 @@ final class Sound {
     private var idleStop: DispatchWorkItem?
     private var configObserver: NSObjectProtocol?
     private var suspended = false
+    private var routed: AVAudioPlayerNode?
 
     private init() {
         // An interruption or media-services reset invalidates the engine; dropping it is enough,
@@ -57,7 +61,7 @@ final class Sound {
     /// Plays a cue. `gain` is a linear volume, clamped to 0...1.
     func play(_ cue: SoundCue, gain: Float = 1) {
         guard isOn else { return }
-        queue.async { if !self.suspended { self.start(cue, gain: gain) } }
+        queue.async { if let node = self.routed { self.start(cue, gain: gain, on: node) } else if !self.suspended { self.start(cue, gain: gain) } }
     }
 
     /// The voice owns the audio session while it listens or speaks: no cue may start a second engine or touch the
@@ -65,6 +69,18 @@ final class Sound {
     /// Blocks until this engine is gone. `resume` when the voice has let the session go.
     func suspend() { queue.sync { suspended = true; teardown() } }
     func resume() { queue.async { self.suspended = false } }
+
+    /// While the voice's engine runs (VoiceAudio), cues play through its node, connected with `cueFormat`: its echo canceller hears them
+    /// and no second engine starts. Nil gives them back to this engine. Blocks, so no cue is scheduled on a node being let go.
+    func route(through node: AVAudioPlayerNode?) { queue.sync { routed = node } }
+
+    /// a cue through the voice's node; dropped when that engine is not running (a node plays only in a running engine)
+    private func start(_ cue: SoundCue, gain: Float, on node: AVAudioPlayerNode) {
+        guard node.engine?.isRunning == true else { return }
+        node.volume = min(max(gain, 0), 1)
+        node.scheduleBuffer(buffer(for: cue), at: nil, options: .interrupts)
+        if !node.isPlaying { node.play() }
+    }
 
     private func start(_ cue: SoundCue, gain: Float) {
         let buffer = self.buffer(for: cue)
