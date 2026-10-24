@@ -29,10 +29,10 @@ export type Quiet = 'off' | 'quiet' | 'no-pop' | 'dnd';
 export const asQuiet = (v: unknown): Quiet => v === 'quiet' || v === 'no-pop' || v === 'dnd' ? v : 'off';
 // ADR 0176: what she asked the Dashboard to turn to; `key` is new for every ask, so the same page twice still moves it.
 export type Present = { page: string | null; itemId: string | null; kind: string | null; key: number };
-export interface State { mode: Mode; phase: Phase; micMuted: boolean; soundMuted: boolean; conversation: boolean; quiet: Quiet; heard: string; partial: string; settled: string | null; tool: { turnId: string; label: string } | null; inbox: boolean; detail: string | null; results: Result[]; reply: string; draft: string; attachment: boolean; turnId: string | null; responseId: string | null; failed: boolean; waiting: string | null; askedAt: number | null; thoughtS: number; faded: boolean; played: boolean; inFlight: boolean; live: Live; subtitles: Subtitle[]; rows: Row[]; openSeq: number; talk: Line[]; talkN: number; replyAt: number; apart: string; present: Present | null; dismissals: number }
-export const initialState: State = { mode: 'voice', phase: 'listening', micMuted: false, soundMuted: false, conversation: false, quiet: 'off', heard: '', partial: '', settled: null, tool: null, inbox: false, detail: null, results: [], reply: '', draft: '', attachment: false, turnId: null, responseId: null, failed: false, waiting: null, askedAt: null, thoughtS: 0, faded: false, played: false, inFlight: false, live: idleLive, subtitles: [], rows: [], openSeq: 0, talk: [], talkN: 0, replyAt: 0, apart: '', present: null, dismissals: 0 };
-export type Action = { type: 'mode'; mode: Mode } | { type: 'phase'; phase: Phase } | { type: 'mic' | 'sound' | 'inbox' | 'interrupt' | 'end' | 'attachment' } | { type: 'draft'; value: string } | { type: 'send' } | { type: 'answer'; reply: string } | { type: 'detail'; id: string | null } | { type: 'dismiss'; id: string }
-  | { type: 'open'; turnId: string; responseId: string | null; at: number } | { type: 'append'; turnId: string; token: string; at: number } | { type: 'written'; turnId: string; text: string } | { type: 'whole'; turnId: string; text: string; at: number } | { type: 'settle'; turnId: string } | { type: 'pending'; turnId: string; at: number } | { type: 'failed'; turnId: string; cancelled: boolean; message: string; at: number } | { type: 'controls'; micMuted: boolean; soundMuted: boolean; conversation: boolean; quiet: Quiet; dismissed?: boolean } | { type: 'heard'; text: string; at: number } | { type: 'partial'; text: string; settled?: string } | { type: 'spoken'; turnId: string; at: number; outcome?: string } | { type: 'playing'; turnId: string; played: number; ahead: number; held: boolean; at: number }
+export interface State { mode: Mode; phase: Phase; micMuted: boolean; soundMuted: boolean; conversation: boolean; quiet: Quiet; heard: string; partial: string; settled: string | null; tool: { turnId: string; label: string } | null; inbox: boolean; detail: string | null; results: Result[]; reply: string; draft: string; attachment: boolean; turnId: string | null; responseId: string | null; failed: boolean; waiting: string | null; askedAt: number | null; thoughtS: number; faded: boolean; played: boolean; inFlight: boolean; hearing: string; live: Live; subtitles: Subtitle[]; rows: Row[]; openSeq: number; talk: Line[]; talkN: number; replyAt: number; apart: string; present: Present | null; dismissals: number }
+export const initialState: State = { mode: 'voice', phase: 'listening', micMuted: false, soundMuted: false, conversation: false, quiet: 'off', heard: '', partial: '', settled: null, tool: null, inbox: false, detail: null, results: [], reply: '', draft: '', attachment: false, turnId: null, responseId: null, failed: false, waiting: null, askedAt: null, thoughtS: 0, faded: false, played: false, inFlight: false, hearing: '', live: idleLive, subtitles: [], rows: [], openSeq: 0, talk: [], talkN: 0, replyAt: 0, apart: '', present: null, dismissals: 0 };
+export type Action = { type: 'mode'; mode: Mode } | { type: 'phase'; phase: Phase; turnId?: string } | { type: 'mic' | 'sound' | 'inbox' | 'interrupt' | 'end' | 'attachment' } | { type: 'draft'; value: string } | { type: 'send' } | { type: 'answer'; reply: string } | { type: 'detail'; id: string | null } | { type: 'dismiss'; id: string }
+  | { type: 'open'; turnId: string; responseId: string | null; at: number } | { type: 'append'; turnId: string; token: string; at: number } | { type: 'written'; turnId: string; text: string } | { type: 'whole'; turnId: string; text: string; at: number } | { type: 'settle'; turnId: string } | { type: 'pending'; turnId: string; at: number } | { type: 'failed'; turnId: string; cancelled: boolean; message: string; at: number } | { type: 'controls'; micMuted: boolean; soundMuted: boolean; conversation: boolean; quiet: Quiet; dismissed?: boolean } | { type: 'heard'; text: string; at: number; turnId?: string } | { type: 'partial'; text: string; settled?: string } | { type: 'spoken'; turnId: string; at: number; outcome?: string } | { type: 'playing'; turnId: string; played: number; ahead: number; held: boolean; at: number }
   | { type: 'tool'; turnId: string; label: string }
   | { type: 'present'; page: string | null; itemId: string | null; kind: string | null }
   | { type: 'live'; live: Live } | { type: 'subtitle'; sessionId: string; role: 'user' | 'assistant'; delta: string; startMs: number; endMs: number } | { type: 'live_dismiss' }
@@ -48,6 +48,8 @@ const hers = (lines: Line[], turn: string | null, text: string, at: number, extr
   if (i < 0) return keep([...lines, { id, who: 'her', text, turn, at, ...(lines.some(l => l.who === 'her' && !l.said) ? { queued: true } : {}), ...extra }]);
   return lines[i].text === text && !Object.keys(extra).length ? lines : lines.map((l, j) => j === i ? { ...l, text, ...extra } : l);
 };
+// A voice phase of a turn other than the one whose words are coming in now.
+const earlier = (s: State, turnId: string | undefined) => !!turnId && s.inFlight && !!s.hearing && turnId !== s.hearing;
 const yours = (s: State, text: string, at: number): Pick<State, 'talk' | 'talkN'> => ({ talk: keep([...s.talk, { id: `you:${s.talkN}`, who: 'you', text, at }]), talkN: s.talkN + 1 });
 // Her words on screen stay as they were while yours are coming in; once they are in, what was written meanwhile shows (until it is dropped).
 const unheld = (s: State, reply: string, late = false): Line[] => s.turnId && !s.played ? hers(s.talk, s.turnId, reply, s.replyAt, { ...(s.apart ? { written: s.apart } : {}), ...(late && !s.talk.some(l => l.id === `her:${s.turnId}`) ? { late } : {}) }) : s.talk;
@@ -71,12 +73,14 @@ const marked = (lines: Line[], a: { turnId: string; played: number; ahead: numbe
 export function reducer(s: State, a: Action): State {
   switch (a.type) {
     case 'mode': return { ...s, mode: a.mode };
-    // `inFlight`: Allen's words are coming in, from speech onset until they are accepted or come to nothing.
+    // `inFlight`: Allen's words are coming in, from speech onset until they are accepted or come to nothing; `hearing` is their turn.
+    // An earlier utterance ending (accepted, nothing, an error) after his next words began leaves those coming in.
     // A lost link also ends the answer on screen: no `spoken` will come for it.
-    case 'phase': { const inFlight = a.phase === 'hearing' || (s.inFlight && a.phase === 'processing');
+    case 'phase': { if (a.phase !== 'hearing' && earlier(s, a.turnId)) return s;
+      const inFlight = a.phase === 'hearing' || (s.inFlight && a.phase === 'processing'), hearing = a.phase === 'hearing' ? a.turnId ?? '' : inFlight ? s.hearing : '';
       const talk = a.phase === 'error' ? ended(s.talk, s.replyAt) : s.inFlight && !inFlight ? unheld(s, s.reply) : s.talk;
       return { ...s, phase: a.phase, reply: a.phase === 'error' ? '' : s.reply, heard: a.phase === 'hearing' ? '' : s.heard, partial: a.phase === 'processing' && s.inFlight ? s.partial : '', askedAt: a.phase === 'error' ? null : s.askedAt,
-        played: s.played || a.phase === 'error', inFlight, talk, tool: a.phase === 'error' ? null : s.tool }; }
+        played: s.played || a.phase === 'error', inFlight, hearing, talk, tool: a.phase === 'error' ? null : s.tool }; }
     case 'mic': return { ...s, micMuted: !s.micMuted };
     case 'sound': return { ...s, soundMuted: !s.soundMuted };
     case 'interrupt': return { ...s, phase: 'listening' };
@@ -139,7 +143,9 @@ export function reducer(s: State, a: Action): State {
     case 'tool': return { ...s, tool: a.label ? { turnId: a.turnId, label: a.label } : s.tool?.turnId === a.turnId ? null : s.tool };
     case 'partial': return s.inFlight ? { ...s, partial: a.text, settled: a.settled ?? null } : s;
     // What was written while your words came in answers the words before them: it goes above yours, and shows with them (talk.ts shownOf).
-    case 'heard': { const before = a.text.trim() ? ended(s.talk, a.at) : s.talk, talk = s.inFlight ? unheld({ ...s, talk: before }, s.reply, !!a.text.trim()) : before;
+    // His earlier words, accepted after his next ones began: they join the talk, and the next ones keep coming in.
+    case 'heard': { if (earlier(s, a.turnId)) return a.text.trim() ? { ...s, ...yours({ ...s, talk: ended(s.talk, a.at) }, a.text, a.at) } : s;
+      const before = a.text.trim() ? ended(s.talk, a.at) : s.talk, talk = s.inFlight ? unheld({ ...s, talk: before }, s.reply, !!a.text.trim()) : before;
       return { ...s, heard: a.text, partial: '', inFlight: false, ...(a.text.trim() ? yours({ ...s, talk }, a.text, a.at) : { talk }) }; }
     // A new session id starts a fresh transcript; a closed session keeps its lines on screen until dismissed.
     case 'present': return { ...s, present: { page: a.page, itemId: a.itemId, kind: a.kind, key: (s.present?.key ?? 0) + 1 } };
