@@ -37,8 +37,16 @@ extension Words {
         static func moreRuns(_ n: Int) -> String { pick(zh: "还有 \(n) 段", en: "\(n) more") }
         /// the Claude Code sessions that ran by themselves, he typed nothing in them, in one line
         static func backgroundSessions(_ n: Int) -> String { pick(zh: "另有 \(n) 个后台会话", en: "\(n) more running on their own") }
-        /// the Claude Code sessions a Remote Control bridge on the Mac ran for his claude.ai threads, in one line
-        static func remoteSessions(_ n: Int) -> String { pick(zh: "云端线程在 Mac 上跑 · \(n) 个", en: "Cloud threads running on the Mac · \(n)") }
+        /// a claude.ai thread a Remote Control bridge on the Mac ran, when its name is not known yet
+        static var cloudThread: String { pick(zh: "云端线程", en: "Cloud thread") }
+        /// a session of the Mac's own that nobody named
+        static var untitledSession: String { pick(zh: "没起名的会话", en: "Untitled session") }
+        /// a session's line, tapped: where it ran, and how many times he wrote in it
+        static func sessionDetail(cloud: Bool, prompts: Int?) -> String? {
+            let said = prompts.map { n in pick(zh: "发了 \(n) 句", en: n == 1 ? "1 prompt" : "\(n) prompts") }
+            let parts = [cloud ? pick(zh: "云端线程 · 在 Mac 上跑", en: "Cloud thread · running on the Mac") : nil, said].compactMap { $0 }
+            return parts.isEmpty ? nil : parts.joined(separator: " · ")
+        }
         /// messages that only came in, of one app at about the same time, in one line
         static func received(_ app: String, people: Int, count: Int) -> String { pick(zh: "\(app) · \(people) 人 · 收到 \(count) 条", en: "\(app) · \(people) people · \(count) received") }
         /// how she knows what he was doing: shown when he asks

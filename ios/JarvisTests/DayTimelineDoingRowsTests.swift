@@ -198,7 +198,7 @@ final class DayTimelineDoingRowsTests: XCTestCase {
         XCTAssertEqual(d2.lines[0].detail, "Jarvis · Xcode", "as its row says it")
         XCTAssertEqual(d2.lines[0].right, "活跃 1 小时 40 分", "it began and ended inside the stretch: what its row says")
         XCTAssertEqual(d2.lines.map(\.time), ["09:20", "10:00", "10:50"], "each line has the time it began")
-        XCTAssertEqual(d2.lines.map(\.mark), [.icon("laptopcomputer"), .icon("photo.fill"), .icon("terminal.fill")], "and its row's icon")
+        XCTAssertEqual(d2.lines.map(\.mark), [.icon("laptopcomputer"), .icon("photo.fill"), .claude(cloud: false)], "and its row's icon; a session the Claude mark")
         XCTAssertEqual(d2.lines[1].right, "", "a moment has nothing at the right")
         XCTAssertEqual(d2.lines[1].attachment, "pic-1", "and the picture its thumbnail")
         XCTAssertEqual(d2.lines.map(\.span), [560...700, 600...600, 650...720], "what a tap on it frames on the bar: its time inside the stretch")
@@ -239,19 +239,27 @@ final class DayTimelineDoingRowsTests: XCTestCase {
             item("c5", "code", 620, 625, #""project": "Jarvis", "prompts": 0"#),
         ]
         let d = try entry(DayTimelineModel.build(try reply(items, spans: [span("d", 540, 720, "Jarvis", "work", items: ["c1", "c2", "c3", "c4", "c5"])]), now: 900), "d")
-        XCTAssertEqual(d.lines.map { $0.said == nil ? $0.title : "said" }, ["接上天气", "said", "Claude Code", "第三章"], "each session he typed in is a line by its own title (Claude Code where it has none); the two that ran by themselves are one line, at the first of them")
-        XCTAssertEqual(d.lines.map(\.detail), [nil, nil, nil, nil], "no repo, no worktree")
+        XCTAssertEqual(d.lines.map(\.title), ["接上天气", "", "", "第三章"], "each session he typed in is a line by its own title (none: the view says it is unnamed); never `Claude Code`, never the repo")
+        XCTAssertEqual(d.lines.map(\.said), [.session(cloud: false, prompts: 6), .background(2), .session(cloud: false, prompts: 2), .session(cloud: false, prompts: 1)],
+                       "the two that ran by themselves are one line, at the first of them")
+        XCTAssertEqual(d.lines.map(\.mark), Array(repeating: .claude(cloud: false), count: 4), "the Claude mark, no cloud on the Mac's own")
+        XCTAssertEqual(d.lines.map(\.detail), [nil, nil, nil, nil], "what it ran as is said only when the line is tapped")
         XCTAssertEqual(d.lines.map(\.right), ["40 分钟", "", "1 小时 10 分", "20 分钟"])
-        XCTAssertEqual(d.lines[1].said, .background(2))
-        XCTAssertEqual(d.lines[0].mark, .icon("terminal.fill"))
         let bridged = [item("r1", "code", 590, 650, #""title": "", "project": "bridge-cse_a", "prompts": 4, "remote_session": "cse_a""#),
-                       item("r2", "code", 640, 700, #""title": "", "project": "bridge-cse_b", "prompts": 0, "remote_session": "cse_b""#)]
-        let withBridges = try entry(DayTimelineModel.build(try reply(items + bridged, spans: [span("d", 540, 720, "Jarvis", "work", items: ["c1", "c2", "c3", "c4", "c5", "r1", "r2"])]), now: 900), "d")
-        XCTAssertEqual(withBridges.lines.map(\.said), [.remote(2), nil, .background(2), nil, nil],
-                       "the sessions a Remote Control bridge ran for claude.ai threads are one line, typed in or not, at the first of them; the others as before")
+                       item("r2", "code", 640, 700, #""title": "", "project": "bridge-cse_b", "prompts": 0, "remote_session": "cse_b""#),
+                       item("r3", "code", 660, 680, #""title": "", "thread_title": "部署", "project": "bridge-cse_a", "prompts": 2, "remote_session": "cse_a""#)]
+        let withBridges = try entry(DayTimelineModel.build(try reply(items + bridged, spans: [span("d", 540, 720, "Jarvis", "work", items: ["c1", "c2", "c3", "c4", "c5", "r1", "r2", "r3"])]), now: 900), "d")
+        XCTAssertEqual(withBridges.lines.map(\.id), ["d-thread-cse_a", "c1", "d-code-alone", "c2", "d-thread-cse_b", "c3"], "one line for each claude.ai thread a bridge ran, typed in or not")
+        let a = withBridges.lines[0], b = withBridges.lines[4]
+        XCTAssertEqual([a.title, b.title], ["部署", ""], "the thread's own name where the brain has it; the older one has none")
+        XCTAssertEqual([a.said, b.said], [.session(cloud: true, prompts: 6), .session(cloud: true, prompts: 0)])
+        XCTAssertEqual(a.mark, .claude(cloud: true), "with the cloud on its mark")
+        XCTAssertEqual([a.right, a.time], ["1 小时 20 分", "09:50"], "its sessions' time once, from the first of them")
+        XCTAssertEqual(withBridges.lines[2].said, .background(2), "a bridge's session that ran by itself is its thread's, not one of the Mac's own")
         XCTAssertFalse(withBridges.lines.contains { $0.title.contains("bridge-cse") || ($0.detail ?? "").contains("bridge-cse") }, "no worktree's name anywhere")
         let old = try entry(DayTimelineModel.build(try reply([item("c1", "code", 600, 640, #""title": "接上天气", "project": "bridge-cse_01""#)], spans: [span("d", 540, 720, "Jarvis", "work", items: ["c1"])]), now: 900), "d")
-        XCTAssertEqual(old.lines.map { [$0.title, $0.detail] }, [["接上天气", nil]], "a brain that does not say `prompts`: each session its own line, as before, without the worktree's name")
+        XCTAssertEqual(old.lines.map { [$0.title, $0.detail] }, [["接上天气", nil]], "a brain that does not say `prompts`: each session its own line, without the worktree's name")
+        XCTAssertEqual(old.lines.map(\.said), [.session(cloud: false, prompts: nil)])
     }
 
     func testMessagesThatOnlyCameInOfOneAppAtAboutTheSameTimeAreOneLine() throws {

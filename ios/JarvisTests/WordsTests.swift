@@ -43,6 +43,19 @@ final class WordsTests: XCTestCase {
         XCTAssertEqual(Words.PhoneMap.title(date: Words.date(d, in: cal)), "Fri, Oct 23 · Footprint")
     }
 
+    func testASessionTappedSaysWhereItRanAndHowOftenHeWrote() {
+        let saved = Words.shared.language
+        defer { Words.shared.set(saved) }
+        Words.shared.set(.zh)
+        XCTAssertEqual(Words.Timeline.sessionDetail(cloud: true, prompts: 6), "云端线程 · 在 Mac 上跑 · 发了 6 句")
+        XCTAssertEqual(Words.Timeline.sessionDetail(cloud: false, prompts: 2), "发了 2 句")
+        XCTAssertNil(Words.Timeline.sessionDetail(cloud: false, prompts: nil))
+        XCTAssertEqual(Words.Timeline.cloudThread, "云端线程")
+        Words.shared.set(.en)
+        XCTAssertEqual(Words.Timeline.sessionDetail(cloud: true, prompts: 1), "Cloud thread · running on the Mac · 1 prompt")
+        XCTAssertEqual(Words.Timeline.cloudThread, "Cloud thread")
+    }
+
     func testEntriesFollowTheLanguage() {
         let saved = Words.shared.language
         defer { Words.shared.set(saved) }

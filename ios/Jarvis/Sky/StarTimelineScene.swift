@@ -68,8 +68,8 @@ enum TimelineFixture {
                                                                                                       ["name": "小红书", "bundle": "com.xingin.discover", "minutes": 8, "category": "social"], ["name": "Safari", "bundle": "com.apple.mobilesafari", "minutes": 3, "category": "browser"]]])
             b.add("media", 860, 890, ["id": "media-demo-1", "device": "iPhone", "app": "Music", "active_s": 1620, "titles": [["title": "Sunday Morning", "artist": "Maroon 5"]], "route": "AirPods"])
             // two Claude Code sessions a Remote Control bridge ran for threads on claude.ai: no title the Mac can read
-            b.add("code", 600, 660, ["id": "code-r1", "title": "", "project": "bridge-cse_demo1", "account": "b", "session_id": "r1", "prompts": 3, "remote_session": "cse_demo1"])
-            b.add("code", 625, 670, ["id": "code-r2", "title": "", "project": "bridge-cse_demo2", "account": "b", "session_id": "r2", "prompts": 1, "remote_session": "cse_demo2"])
+            b.add("code", 576, 600, ["id": "code-r1", "title": "", "project": "bridge-cse_demo1", "account": "b", "session_id": "r1", "prompts": 3, "remote_session": "cse_demo1"])
+            b.add("code", 590, 610, ["id": "code-r2", "title": "", "project": "bridge-cse_demo2", "account": "b", "session_id": "r2", "prompts": 1, "remote_session": "cse_demo2"])
             b.add("messages", 855, 872, ["id": "messages-demo-1", "device": "iPhone", "app": "WeChat", "conversation": "Mia", "is_group": false, "sent": 4, "received": 6])
             b.add("messages", 858, 860, ["id": "messages-demo-3", "device": "iPhone", "app": "小红书", "conversation": "穿搭", "is_group": true, "sent": 0, "received": 7])          // two bursts that only came in: one line
             b.add("messages", 864, 865, ["id": "messages-demo-4", "device": "iPhone", "app": "小红书", "conversation": "旅行", "is_group": true, "sent": 0, "received": 5])

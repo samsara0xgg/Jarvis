@@ -192,7 +192,8 @@ struct TLOpenView: View {
     private func lineRow(_ l: TLLine) -> some View {
         let lit = tl.litLine == l.id, quiet = l.mark == .drift
         let title = Text(said(l)).font(.system(size: quiet ? 12.5 : 13.5)).foregroundStyle(quiet ? Look.ink2 : Look.ink)
-        let rest = l.detail.map { Text(" · " + $0).font(.system(size: 12.5)).foregroundStyle(Look.ink2) } ?? Text("")
+        let detail: String? = if case .session(let cloud, let prompts) = l.said { lit ? Words.Timeline.sessionDetail(cloud: cloud, prompts: prompts) : nil } else { l.detail }          // a session says where it ran and what he typed when tapped
+        let rest = detail.map { Text(" · " + $0).font(.system(size: 12.5)).foregroundStyle(Look.ink2) } ?? Text("")
         return HStack(spacing: 0) {
             Text(l.time ?? "").font(Look.figures(11)).foregroundStyle(Look.ink2).lineLimit(1).frame(width: 46, alignment: .leading)
             mark(l.mark).frame(width: 28, height: 28)
@@ -224,7 +225,7 @@ struct TLOpenView: View {
         case .onDevice(let device, let name): Words.Timeline.onDevice(device, name)
         case .more(let n): Words.Timeline.moreRuns(n)
         case .background(let n): Words.Timeline.backgroundSessions(n)
-        case .remote(let n): Words.Timeline.remoteSessions(n)
+        case .session(let cloud, _): l.title.isEmpty ? (cloud ? Words.Timeline.cloudThread : Words.Timeline.untitledSession) : l.title
         case .received(let app, let people, let count): Words.Timeline.received(app, people: people, count: count)
         case nil: l.title
         }
@@ -242,6 +243,13 @@ struct TLOpenView: View {
         case .drift:
             Circle().strokeBorder(RGB(196, 204, 238).color(0.55), lineWidth: 1.5).background(Circle().fill(ground)).frame(width: 8, height: 8)
                 .background(Circle().fill(ground).frame(width: 14, height: 14))
+        case .claude(let cloud):
+            ClaudeMark().stroke(iconColor, style: StrokeStyle(lineWidth: 1.2, lineCap: .round)).frame(width: 10.5, height: 10.5)
+                .frame(width: 20, height: 20).background(Circle().fill(beadFill))
+                .overlay(alignment: .bottomTrailing) {
+                    if cloud { Image(systemName: "cloud.fill").font(.system(size: 6.5)).foregroundStyle(iconColor).padding(1.5).background(Circle().fill(ground)).offset(x: 3, y: 2) }
+                }
+                .background(Circle().fill(ground).frame(width: 26, height: 26))
         }
     }
 
@@ -669,5 +677,19 @@ struct TLUndoToast: View {
         .background(Color(red: 28 / 255, green: 31 / 255, blue: 58 / 255).opacity(0.96), in: Capsule())
         .overlay(Capsule().stroke(Color.white.opacity(0.14), lineWidth: 0.5))
         .shadow(color: .black.opacity(0.4), radius: 12, y: 4)
+    }
+}
+
+/// Claude's mark as the timeline draws it: a thin starburst of eight rays round an open centre, stroked like the other line icons
+struct ClaudeMark: Shape {
+    func path(in r: CGRect) -> Path {
+        var p = Path()
+        let c = CGPoint(x: r.midX, y: r.midY), outer = min(r.width, r.height) / 2, inner = outer * 0.3
+        for k in 0..<8 {
+            let a = Double(k) * .pi / 4 + .pi / 8
+            p.move(to: CGPoint(x: c.x + inner * cos(a), y: c.y + inner * sin(a)))
+            p.addLine(to: CGPoint(x: c.x + outer * cos(a), y: c.y + outer * sin(a)))
+        }
+        return p
     }
 }

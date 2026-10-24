@@ -34,6 +34,7 @@ struct TLCategory: Equatable {
 struct TLLine: Equatable, Identifiable {
     enum Mark: Equatable {
         case dot(RGB?)              // a run of his attention, in its category's colour (none: one with no category)
+        case claude(cloud: Bool)    // a Claude Code session: the Claude mark, with a cloud on its corner for one a bridge ran for a claude.ai thread
         case icon(String)           // anything else, by its symbol
         case drift                  // what took him off it: an empty ring
     }
@@ -43,7 +44,7 @@ struct TLLine: Equatable, Identifiable {
         case onDevice(String, String)           // the device it was on, and what
         case more(Int)                          // the runs past the first few
         case background(Int)                    // Claude Code sessions that ran by themselves
-        case remote(Int)                        // Claude Code sessions a Remote Control bridge ran for claude.ai threads
+        case session(cloud: Bool, prompts: Int?)          // a Claude Code session by its title (`title`; empty: it has none), a bridge's for a claude.ai thread or one of the Mac's own
         case received(String, people: Int, count: Int)          // messages that only came in, of one app at about the same time
     }
     let id: String
@@ -209,28 +210,33 @@ extension DayTimelineModel {
         return out
     }
 
-    /// What a stretch says in fewer lines than its items: the sessions a Remote Control bridge ran for his claude.ai threads (`remote_session`; their names are on claude.ai, not here)
-    /// one line; the other Claude Code sessions he typed in a line each, by its own title, never the repo it ran in; the ones that ran by themselves (the brain's `prompts` 0) one line; and
-    /// messages that only came in, of one app within 10 minutes of each other, one line. A session the brain says nothing of `prompts` about is a line of its own, as before.
+    /// What a stretch says in fewer lines than its items. Claude Code, never by the repo it ran in: the sessions a Remote Control bridge ran for one claude.ai thread
+    /// (`remote_session`) are one line, by the thread's name (`thread_title`, else a session's `title`); each other session he typed in (or the brain does not say) is a line by its
+    /// title; the ones that ran by themselves (`prompts` 0) one line. Messages that only came in, of one app within 10 minutes of each other, one line.
     private static func folds(_ s: DaySpan, _ st: TLStretch, inside: [(item: DayItem, row: TLEntry)]) -> (ids: Set<String>, lines: [(t: Double, line: TLLine)]) {
         func clamp(_ r: TLEntry) -> (Double, Double) { let a = max(r.t0, st.t0); return (a, max(a, min(r.t1 ?? a, st.t1))) }
         var ids: Set<String> = [], out: [(t: Double, line: TLLine)] = []
-        let remote = inside.filter { $0.row.kind == .code && tlText($0.item.remote_session) != nil }
-        if let first = remote.map({ clamp($0.row).0 }).min() {
-            out.append((first, TLLine(id: "\(s.id)-code-remote", mark: .icon("cloud"), said: .remote(remote.count))))
+        let codes = inside.filter { $0.row.kind == .code }
+        ids.formUnion(codes.map(\.item.id))
+        func named(_ xs: [(item: DayItem, row: TLEntry)]) -> String { xs.lazy.compactMap { tlText($0.item.thread_title) }.first ?? xs.lazy.compactMap { tlText($0.item.title) }.first ?? "" }
+        for (thread, xs) in Dictionary(grouping: codes.filter { tlText($0.item.remote_session) != nil }, by: { tlText($0.item.remote_session) ?? "" }) {
+            let spans = xs.map { clamp($0.row) }.sorted { $0.0 < $1.0 }
+            var union = 0.0, edge = -Double.infinity
+            for (a, b) in spans { union += max(0, b - max(a, edge)); edge = max(edge, b) }
+            let t0 = spans[0].0, told = xs.compactMap(\.item.prompts)
+            out.append((t0, TLLine(id: "\(s.id)-thread-\(thread)", time: clock(t0), mark: .claude(cloud: true), title: named(xs), said: .session(cloud: true, prompts: told.isEmpty ? nil : told.reduce(0, +)),
+                                   right: union >= 1 ? tlDur(tlInt(union)) : "", span: t0...edge)))
         }
-        ids.formUnion(remote.map(\.item.id))
-        let codes = inside.filter { $0.row.kind == .code && $0.item.prompts != nil && tlText($0.item.remote_session) == nil }
-        for x in codes where (x.item.prompts ?? 0) > 0 {
+        let own = codes.filter { tlText($0.item.remote_session) == nil }
+        for x in own where x.item.prompts.map({ $0 > 0 }) ?? true {
             var l = line(x.row, in: st)
-            l.detail = nil
+            l.mark = .claude(cloud: false); l.title = named([x]); l.said = .session(cloud: false, prompts: x.item.prompts); l.detail = nil
             out.append((clamp(x.row).0, l))
         }
-        let alone = codes.filter { ($0.item.prompts ?? 0) <= 0 }
+        let alone = own.filter { ($0.item.prompts ?? 1) <= 0 }
         if let first = alone.map({ clamp($0.row).0 }).min() {
-            out.append((first, TLLine(id: "\(s.id)-code-alone", mark: .icon("terminal"), said: .background(alone.count))))
+            out.append((first, TLLine(id: "\(s.id)-code-alone", mark: .claude(cloud: false), said: .background(alone.count))))
         }
-        ids.formUnion(codes.map(\.item.id))
         // bursts that only came in: by app, in time order, each within 10 minutes of the one before
         let heard = inside.filter { $0.row.kind == .messages && ($0.item.sent ?? 0) <= 0 && ($0.item.received ?? 0) > 0 }.sorted { $0.row.t0 < $1.row.t0 }
         for (app, xs) in Dictionary(grouping: heard, by: { tlText($0.item.app) ?? "" }) where !app.isEmpty {
