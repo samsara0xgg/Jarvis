@@ -3,7 +3,7 @@ import SwiftUI
 
 // Her card (跨端UI标准 §2): one small glass card under her on 今天, 地图 and 设置, over the page and under her. The page under it never moves; what it covers of the day's pinned top slides
 // out (`StarUI.herCardFoot`), and the line under her on each page gives way to it (`StarUI.herCardOn`). It holds a talk (his heard words in grey, when he spoke them and he may want to see
-// whether she understood; hers, as she says them, in ink, two lines at most; the earlier rounds of the same talk above them, and past 180 pt it scrolls), else her voice's line or what she says
+// whether she understood; hers, as she says them, in ink, the card growing with them to `HerWordsCard.most` and scrolling past it; the earlier rounds of the same talk above them, in the same room), else her voice's line or what she says
 // of tidying today. On 聊天 the conversation is the page: there it holds only her voice's line. This file says what it holds (`TLTalk`, which needs no screen to be checked, and how long it stays
 // after her last word) and draws it (`HerWordsCard`). The engine keeps the time (`StarEngine.tlUntil`, Sky/StarTalk.swift).
 
@@ -28,6 +28,17 @@ struct TLTalk: Equatable {
     /// How long the place stays after her last word, in ms, spoken or written: until he does something else (scrolls the day, opens a row, goes to another day or a page, leaves the app:
     /// `StarEngine.releaseTalk`), and if he does nothing, ten minutes. Her sentence of the day comes back in its place.
     static let stay = 600_000.0
+    /// A round that ended with no words of hers (he sent her away, or nothing came back) goes after this, in ms: there is nothing in it to read.
+    static let unanswered = 4000.0
+
+    /// she said something in it, or something in it waits on him: it stays as long as an answer does
+    var answered: Bool { hers.contains { !$0.text.isEmpty || $0.failed } || cards > 0 || unsent != nil }
+
+    /// His words were only sending her away (退下, 退下吧, 停, 晚安, said once or more): the round closes at once.
+    static func dismissal(_ words: String) -> Bool {
+        let parts = words.split { $0.isPunctuation || $0.isWhitespace }
+        return !parts.isEmpty && parts.allSatisfy { [.stop, .goodnight].contains(shortCommand(String($0))) }
+    }
 
     /// the round of the live rows of a talk
     static func of(_ turns: [LiveTurn]) -> TLTalk {
@@ -74,12 +85,15 @@ struct HerWordsCard: View {
     let engine: StarEngine
     let ui: StarUI
     @Environment(\.accessibilityReduceMotion) private var reduce
-    @State private var tall = 0.0           // how high her words are laid out: taller than two lines, and the last line fades out with 去聊天接着说 under it
+    @State private var tall = 0.0           // how high her words are laid out whole: past `wordsRoom` they scroll, with 去聊天接着说 under them
     @State private var height = 0.0         // how tall the whole card is
-    @State private var dialogH = 0.0        // how tall its rounds are, laid out whole: past `dialogRoom` they scroll
+    @State private var dialogH = 0.0        // how tall its rounds are, laid out whole: past `wordsRoom` they scroll
     @State private var kept = ""            // her line, kept while the card fades out
-    private let wordsRoom = 44.0, width = 376.0, dialogRoom = 180.0
+    private let width = 376.0
     static let top = 110.0                  // just under her (her foot is at 109)
+    /// the most the card grows to, 45% of the screen; her words get it less what stands around them (his line, the padding, 去聊天接着说)
+    static let most = 0.45 * H
+    private let wordsRoom = most - 64
 
     var body: some View {
         let on = ui.herCardOn, talk = !ui.panelOpen && ui.tlTalk
@@ -111,13 +125,13 @@ struct HerWordsCard: View {
     }
 
     /// the latest round: his heard words, hers, the chips of her links, what waits
-    private func round(_ talk: TLTalk) -> some View {
+    private func round(_ talk: TLTalk, scrolls: Bool = true) -> some View {
         VStack(spacing: 0) {
             if let heard = talk.heard {
                 Text(heard).font(.system(size: Look.note)).foregroundStyle(muted).lineLimit(1).truncationMode(.middle).contentTransition(.identity)
                     .frame(maxWidth: .infinity, minHeight: 16).padding(.bottom, 3)
             }
-            words(talk)
+            words(talk, scrolls: scrolls)
             if let links = talk.hers.last(where: { !$0.leadIn && $0.status == nil && !$0.failed })?.links, !links.isEmpty {
                 AnswerLinkChips(links: links, open: engine.openLink).padding(.top, 8).transition(.opacity)
             }
@@ -138,42 +152,50 @@ struct HerWordsCard: View {
                     .contentShape(Rectangle())
                     .onTapGesture { engine.showAnswer(r.id) }
                 }
-                round(now)
+                round(now, scrolls: false)
             }
             .onGeometryChange(for: Double.self) { Double($0.size.height) } action: { dialogH = $0 }
         }
         .defaultScrollAnchor(.bottom)
         .scrollBounceBehavior(.basedOnSize)
         .scrollIndicators(.hidden)
-        .frame(height: min(max(dialogH, 1), dialogRoom))
+        .frame(height: min(max(dialogH, 1), wordsRoom))
     }
 
     // MARK: her words
 
-    /// Her rows, in two lines: when they are taller the last line fades out and 去聊天接着说 stands under them
-    @ViewBuilder private func words(_ talk: TLTalk) -> some View {
+    /// Her rows, as tall as they are: past `wordsRoom` they scroll in the card, staying on her latest words as they come, the foot fading, with 去聊天接着说 under them. In the dialog its own
+    /// scroll holds them (`scrolls` false).
+    @ViewBuilder private func words(_ talk: TLTalk, scrolls: Bool) -> some View {
         if !talk.hers.isEmpty || talk.unsent != nil {
-            let over = tall > wordsRoom + 1
-            VStack(spacing: 0) {
-            VStack(spacing: 6) {
+            let over = scrolls && tall > wordsRoom + 1
+            let rows = VStack(spacing: 6) {
                 ForEach(talk.hers) { r in row(r) }
                 if let u = talk.unsent { notSent(u) }
             }
             .frame(maxWidth: .infinity)
-            .fixedSize(horizontal: false, vertical: true)
-            .onGeometryChange(for: Double.self) { Double($0.size.height) } action: { tall = $0 }
-            .frame(maxWidth: .infinity)
-            .animation(reduce ? nil : .smooth(duration: 0.2)) { $0.frame(height: tall > 0 ? min(tall, wordsRoom) : wordsRoom, alignment: .top) }          // as high as they are, and no higher than two lines
-            .clipped()
-            .mask(alignment: .top) {
-                VStack(spacing: 0) {
-                    Color.black
-                    LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom).frame(height: over ? 22 : 0)
+            VStack(spacing: 0) {
+                if scrolls {
+                    ScrollView {
+                        rows.onGeometryChange(for: Double.self) { Double($0.size.height) } action: { tall = $0 }
+                    }
+                    .defaultScrollAnchor(.top, for: .initialOffset)
+                    .defaultScrollAnchor(.bottom, for: .sizeChanges)
+                    .scrollBounceBehavior(.basedOnSize)
+                    .scrollIndicators(.hidden)
+                    .animation(reduce ? nil : .smooth(duration: 0.2)) { $0.frame(height: min(max(tall, 1), wordsRoom)) }          // it grows with her words as they come
+                    .mask(alignment: .top) {
+                        VStack(spacing: 0) {
+                            Color.black
+                            LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom).frame(height: over ? 22 : 0)
+                        }
+                    }
+                } else {
+                    rows
                 }
-            }
-            if over {
-                Text(Words.PhoneCard.goOn).font(.system(size: Look.note, weight: .medium)).foregroundStyle(ink.opacity(0.72)).frame(maxWidth: .infinity, minHeight: 22).transition(.opacity)
-            }
+                if over {
+                    Text(Words.PhoneCard.goOn).font(.system(size: Look.note, weight: .medium)).foregroundStyle(ink.opacity(0.72)).frame(maxWidth: .infinity, minHeight: 22).transition(.opacity)
+                }
             }
             .animation(.easeOut(duration: 0.2), value: over)
             .contentShape(Rectangle())

@@ -64,6 +64,7 @@ extension StarEngine {
             else if v.state == .idle {
                 voiceRows(v, now); closeHers()
                 talk = nil; endTalk()                           // no `end` cue: the microphone may still be open
+                if let his = ui.liveTurns.last(where: \.his), TLTalk.dismissal(his.text), !TLTalk.of(ui.liveTurns).answered { dismissTalk() }          // 退下: nothing to wait for
                 adoptWritten()
                 return nil
             }
@@ -82,7 +83,7 @@ extension StarEngine {
 
 #if DEBUG
 extension StarEngine {
-    /// launch with `-voiceScene listening|thinking|speaking|speakingLong|error|download`: the sky shows that voice state with made-up words and levels
+    /// launch with `-voiceScene listening|thinking|speaking|speakingLong|dismiss|error|download` (`dismiss`: he says 退下 twice, and six seconds on the session is idle with no answer): the sky shows that voice state with made-up words and levels
     func runVoiceScene(_ name: String) {
         let t0 = nowMs()
         let ask = "明天下午三点有什么安排，顺便提醒我晚上给 Mia 回电话"
@@ -97,6 +98,7 @@ extension StarEngine {
             case "waiting": v.state = .speaking; v.transcript = "有消息吗"; v.reply = "有一件事要问你。"; v.output = voiceLevel(now / 1000)
             case "speaking": v.state = .speaking; v.transcript = ask; v.reply = String(short.prefix(Int((now - t0) / 120))); v.full = short; v.output = voiceLevel(now / 1000)
             case "speakingLong": v.state = .speaking; v.transcript = ask; v.reply = String(answer.prefix(Int((now - t0) / 90))); v.full = answer; v.output = voiceLevel(now / 1000)
+            case "dismiss": if now - t0 < 6000 { v.state = .listening; v.partial = "退下，退下。" }
             case "error": v.error = "没有麦克风权限"
             case "download": v.progress = 0.43
             default: break

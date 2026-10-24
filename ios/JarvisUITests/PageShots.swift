@@ -7,9 +7,9 @@ final class PageShots: XCTestCase {
     private func shot(_ name: String) {
         try? XCUIScreen.main.screenshot().pngRepresentation.write(to: URL(fileURLWithPath: dir).appendingPathComponent(name + ".png"))
     }
-    private func open(_ scene: String) -> XCUIApplication {
+    private func open(_ scene: String, voice: String? = nil) -> XCUIApplication {
         let app = XCUIApplication()
-        app.launchArguments = ["-scene", scene, "-words.language", "zh"]
+        app.launchArguments = ["-scene", scene, "-words.language", "zh"] + (voice.map { ["-voiceScene", $0] } ?? [])
         app.launch()
         sleep(5)
         return app
@@ -134,6 +134,21 @@ final class PageShots: XCTestCase {
         _ = open("时间线:链接:点")
         sleep(4)
         shot("21-answer-link-row")
+    }
+
+    func testHerCardLong() {
+        _ = open("时间线", voice: "speakingLong")
+        sleep(6)
+        shot("22-her-card-growing")
+        sleep(26)
+        shot("23-her-card-long")
+    }
+
+    func testHerCardDismissed() {
+        _ = open("时间线", voice: "dismiss")
+        shot("24-her-card-dismiss-said")
+        sleep(5)
+        shot("25-her-card-dismissed")
     }
 
     func testRowStay() {

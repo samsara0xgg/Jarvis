@@ -73,11 +73,18 @@ extension StarEngine {
         lingerUntil = nowMs() + Self.linger
         if tlUntil != .infinity { tlLinger(nowMs()) }       // a finger lifted off a place that was waiting to go: it stays as for a new answer (a round still coming keeps its place)
     }
-    /// The round is all there: the timeline's place for it stays until he does something else (`TLTalk.stay`), and the talk as long as the place.
+    /// The round is all there: the timeline's place for it stays until he does something else (`TLTalk.stay`), and the talk as long as the place. A round with nothing of hers in it
+    /// goes in a moment (`TLTalk.unanswered`).
     func tlLinger(_ now: Double) {
         guard HomeModule.shared.isTimeline else { return }
-        tlUntil = now + TLTalk.stay
+        tlUntil = now + (TLTalk.of(ui.liveTurns).answered ? TLTalk.stay : TLTalk.unanswered)
         lingerUntil = max(lingerUntil, tlUntil)
+    }
+
+    /// He sent her away: the card closes now and she goes back to rest.
+    func dismissTalk() {
+        let now = nowMs()
+        tlUntil = now; lingerUntil = now
     }
     /// He did something else (scrolled the list, opened a row, went to another day or a page, left the app): the place for the talk goes at once, when her answer is all there (a round still
     /// coming keeps it), and the talk's rows after it as they do under the dial.

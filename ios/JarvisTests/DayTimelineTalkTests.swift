@@ -1,4 +1,5 @@
 import XCTest
+import SwiftUI
 @testable import Jarvis
 
 /// What the timeline's place for a talk holds (Sky/DayTimelineTalk.swift): the latest round and no earlier one, his words only when he spoke them, a card counted and not drawn, a message or a turn
@@ -148,6 +149,84 @@ final class DayTimelineTalkTests: XCTestCase {
             XCTAssertEqual(TLTalk.of(e.ui.liveTurns).heard, "还有呢")
             XCTAssertTrue(TLTalk.of(e.ui.liveTurns).hers.isEmpty)
         }
+    }
+
+    /// a spoken round: his words heard, then the session idle, with her words or none
+    @MainActor private func spoken(_ e: StarEngine, _ words: String, answer: String = "") {
+        var v = VoiceShot()
+        e.voiceFake = { _ in v }
+        let t = nowMs()
+        func at(_ ms: Double) { _ = e.syncVoice(t + ms); e.stepTalk(t + ms) }
+        v.state = .listening; v.partial = words; at(0); at(500)
+        v.state = .thinking; v.partial = ""; v.transcript = words; at(1000)
+        if !answer.isEmpty { v.state = .speaking; v.reply = answer; v.full = answer; at(1500) }
+        v.state = .idle; at(2000)
+    }
+
+    @MainActor func testSendingHerAwayClosesHerCardAtOnce() {
+        withTimeline { e in
+            spoken(e, "退下，退下。")
+            XCTAssertEqual(TLTalk.of(e.ui.liveTurns).heard, "退下，退下。", "his words were on the card")
+            e.stepTalk(nowMs() + 50)
+            XCTAssertFalse(e.ui.tlTalk, "the card closes")
+            XCTAssertFalse(e.ui.talking, "and the talk is over: she is back at rest")
+        }
+    }
+
+    @MainActor func testARoundThatEndsWithNothingOfHersGoesInAMoment() {
+        withTimeline { e in
+            spoken(e, "明天呢")
+            let t = nowMs()
+            XCTAssertEqual(e.tlUntil - t, TLTalk.unanswered, accuracy: 500, "not the ten minutes of an answer")
+            e.stepTalk(t + 2000)
+            XCTAssertTrue(e.ui.tlTalk, "his words stay a moment")
+            e.stepTalk(t + TLTalk.unanswered + 500)
+            XCTAssertFalse(e.ui.tlTalk, "then the card fades on its own")
+        }
+    }
+
+    @MainActor func testAnAnswerAfterWordsLikeADismissalStillStays() {
+        withTimeline { e in
+            spoken(e, "停", answer: "好的，我停下了。")
+            XCTAssertEqual(e.tlUntil - nowMs(), TLTalk.stay, accuracy: 500, "she said something: it stays as any answer does")
+        }
+    }
+
+    func testWhatSendsHerAway() {
+        for w in ["退下，退下。", "退下吧", "退下 退下", "晚安。", "Stop."] { XCTAssertTrue(TLTalk.dismissal(w), w) }
+        for w in ["你先退下吧我跟他说", "退下，明天再说", "", "。"] { XCTAssertFalse(TLTalk.dismissal(w), w) }
+    }
+
+    // MARK: how tall her card is
+
+    /// how tall the card is with this answer, laid out on the phone's design screen
+    @MainActor private func cardHeight(_ answer: String) async throws -> Double {
+        let e = StarEngine()
+        let kept = HomeModule.shared.kind
+        HomeModule.shared.kind = .timeline
+        defer { HomeModule.shared.kind = kept }
+        e.beginTalk()
+        e.addTurn(his: true, "你怎么知道", heard: true)
+        e.addTurn(his: false, answer)
+        e.stepTalk(nowMs())
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: W, height: H))
+        window.rootViewController = UIHostingController(rootView: HerWordsCard(engine: e, ui: e.ui))
+        window.isHidden = false
+        for _ in 0..<100 where e.ui.herCardFoot == 0 { try await Task.sleep(nanoseconds: 20_000_000) }
+        try await Task.sleep(nanoseconds: 300_000_000)
+        window.isHidden = true
+        return try XCTUnwrap(Optional(e.ui.herCardFoot).flatMap { $0 > 0 ? $0 - HerWordsCard.top : nil })
+    }
+
+    @MainActor func testHerCardGrowsWithHerAnswerUpToNearHalfTheScreen() async throws {
+        let one = try await cardHeight("能听见。")
+        let three = try await cardHeight("我是从你上一句「上床喽」听出来的，不是看到的。我这边没有任何能看到你在不在床上的东西。你要是又起来了，说一声就行。")
+        let long = try await cardHeight(String(repeating: "知道一部分。我运行在家里的那台树莓派上，你现在是用 iPad 跟我说话。", count: 12))
+        XCTAssertLessThan(one, 100, "one line: a small card")
+        XCTAssertGreaterThan(three, one + 40, "three lines are all there, not cut to one")
+        XCTAssertGreaterThan(long, three)
+        XCTAssertLessThanOrEqual(long, HerWordsCard.most + 1, "no taller than 45% of the screen: past it her words scroll")
+        XCTAssertGreaterThan(long, HerWordsCard.most - 30)
     }
 
     @MainActor func testAFingerOnThePlaceHoldsItAndLiftingGivesItsTimeAgain() {
