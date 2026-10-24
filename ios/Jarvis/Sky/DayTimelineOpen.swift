@@ -7,13 +7,10 @@ import SwiftUI
 // place's map and words, the picture, how a stretch of Mac work was spent, a night's stages, the sessions of Claude Code, with what can be done with it as chips under it (only what the
 // row offers: `TLEntry.actions`; 问她 is the long press's, on every row with something to put to her). The row's own title and line are not said again.
 
-private let ink = SetColor.ink
-private let muted = SetColor.muted
-private let faint = SetColor.faint
 private let warm = RGB(255, 240, 220)
 private let prose = Color(red: 226 / 255, green: 230 / 255, blue: 250 / 255).opacity(0.86)
 private let iconColor = Color(red: 214 / 255, green: 220 / 255, blue: 246 / 255).opacity(0.82)
-private let ground = Color(red: 2 / 255, green: 1 / 255, blue: 6 / 255)            // the black the list sits on: the ring that cuts a rail round a line's dot
+private let ground = Look.sky            // what the list sits on: the ring that cuts a rail round a line's dot
 private let beadFill = Color(red: 17 / 255, green: 16 / 255, blue: 22 / 255)
 
 extension TLEntry {
@@ -98,18 +95,18 @@ struct TLOpenView: View {
         case .said(let s):
             column(HStack(spacing: 6) {
                 Image(systemName: "checkmark").font(.system(size: 11, weight: .semibold)).foregroundStyle(RGB(76, 195, 138).color)
-                Text(Words.Timeline.noted(s)).font(.system(size: 13)).foregroundStyle(ink).lineLimit(1)
+                Text(Words.Timeline.noted(s)).font(.system(size: 13)).foregroundStyle(Look.ink).lineLimit(1)
             }
             .frame(height: 30))
         case .line(let l): lineRow(l)
         case .links:
             column(Button { withAnimation(TLMotion.unfold(open: !why, reduce: reduce)) { why.toggle() } } label: {
-                Text(Words.Timeline.why).font(.system(size: 12, weight: .medium)).foregroundStyle(why ? ink : muted)
+                Text(Words.Timeline.why).font(.system(size: 12, weight: .medium)).foregroundStyle(why ? Look.ink : Look.ink2)
                     .frame(minWidth: 44, minHeight: 30, alignment: .leading).contentShape(Rectangle())
             }
             .buttonStyle(.plain))
         case .why(let k):
-            column(Text(k).font(.system(size: 12)).lineSpacing(3).foregroundStyle(muted).fixedSize(horizontal: false, vertical: true).padding(.bottom, 6)).transition(.opacity)
+            column(Text(k).font(.system(size: 12)).lineSpacing(3).foregroundStyle(Look.ink2).fixedSize(horizontal: false, vertical: true).padding(.bottom, 6)).transition(.opacity)
         case .note(let n):
             column(Text(n).font(.system(size: 12.5)).foregroundStyle(SetColor.red.opacity(0.92)).fixedSize(horizontal: false, vertical: true).padding(.vertical, 4)).transition(.opacity)
         }
@@ -121,7 +118,7 @@ struct TLOpenView: View {
         if let a = e.ask {
             let busy = tl.choosing == e.id
             TLFlow(spacing: 6) {
-                Text(a.text ?? (a.hole ? Words.Timeline.fillIn : Words.Timeline.isIt(a.yes ?? e.title))).font(.system(size: 13.5)).foregroundStyle(ink)
+                Text(a.text ?? (a.hole ? Words.Timeline.fillIn : Words.Timeline.isIt(a.yes ?? e.title))).font(.system(size: 13.5)).foregroundStyle(Look.ink)
                     .fixedSize(horizontal: false, vertical: true).frame(minHeight: 26).padding(.trailing, 2)
                 ForEach(a.options, id: \.self) { o in chip(o) { tl.choose(e, choice: o, text: nil) } }
                 if let y = a.yes { chip(Words.Timeline.yes) { tl.choose(e, choice: nil, text: y) } }
@@ -135,10 +132,10 @@ struct TLOpenView: View {
 
     private func chip(_ text: String, quiet: Bool = false, _ action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Text(text).font(.system(size: 12.5, weight: .medium)).foregroundStyle(quiet ? muted : ink).lineLimit(1).fixedSize()
+            Text(text).font(.system(size: 12.5, weight: .medium)).foregroundStyle(quiet ? Look.ink2 : Look.ink).lineLimit(1).fixedSize()
                 .padding(.horizontal, 11).frame(height: 26)
                 .background(Color.white.opacity(0.07), in: Capsule())
-                .overlay(Capsule().strokeBorder(ink.opacity(0.14), lineWidth: 1))
+                .overlay(Capsule().strokeBorder(Look.ink.opacity(0.14), lineWidth: 1))
                 .contentShape(Capsule().inset(by: -8))
         }
         .buttonStyle(PressScale())
@@ -146,11 +143,11 @@ struct TLOpenView: View {
 
     /// his own line for the stretch, in the place of 写一句…: done sends it
     private var field: some View {
-        TextField("", text: $words, prompt: Text(Words.Timeline.writeLine).foregroundStyle(faint))
+        TextField("", text: $words, prompt: Text(Words.Timeline.writeLine).foregroundStyle(Look.ink3))
             .focused($writingFocus).submitLabel(.done)
             .onSubmit { if let t = TLSayWhat.words(words) { tl.choose(e, choice: nil, text: t) } }
             .onChange(of: words) { _, now in let kept = TLSayWhat.capped(now); if kept != now { words = kept } }
-            .font(.system(size: 13.5)).foregroundStyle(ink).tint(ink)
+            .font(.system(size: 13.5)).foregroundStyle(Look.ink).tint(Look.ink)
             .padding(.horizontal, 11).frame(width: 190, height: 30)
             .background(warm.color(0.14), in: Capsule())
             .overlay(Capsule().strokeBorder(warm.color(0.35), lineWidth: 1))
@@ -161,14 +158,14 @@ struct TLOpenView: View {
     /// it is; a picture's opens the picture.
     private func lineRow(_ l: TLLine) -> some View {
         let lit = tl.litLine == l.id, quiet = l.mark == .drift
-        let title = Text(said(l)).font(.system(size: quiet ? 12.5 : 13.5)).foregroundStyle(quiet ? muted : ink)
-        let rest = l.detail.map { Text(" · " + $0).font(.system(size: 12.5)).foregroundStyle(muted) } ?? Text("")
+        let title = Text(said(l)).font(.system(size: quiet ? 12.5 : 13.5)).foregroundStyle(quiet ? Look.ink2 : Look.ink)
+        let rest = l.detail.map { Text(" · " + $0).font(.system(size: 12.5)).foregroundStyle(Look.ink2) } ?? Text("")
         return HStack(spacing: 0) {
-            Text(l.time ?? "").font(AT.mono(11)).foregroundStyle(muted).lineLimit(1).frame(width: 46, alignment: .leading)
+            Text(l.time ?? "").font(Look.figures(11)).foregroundStyle(Look.ink2).lineLimit(1).frame(width: 46, alignment: .leading)
             mark(l.mark).frame(width: 28, height: 28)
             (title + rest).lineLimit(1).padding(.leading, 10).frame(maxWidth: .infinity, alignment: .leading)
             if !l.right.isEmpty {
-                Text(l.right).font(tlFigures(11.5)).foregroundStyle(l.strong ? ink : muted).lineLimit(1).fixedSize().padding(.leading, 10).padding(.trailing, inPlace ? TLColumns.arrow : 0)
+                Text(l.right).font(tlFigures(11.5)).foregroundStyle(l.strong ? Look.ink : Look.ink2).lineLimit(1).fixedSize().padding(.leading, 10).padding(.trailing, inPlace ? TLColumns.arrow : 0)
             }
         }
         .frame(height: 28)
@@ -282,13 +279,13 @@ struct TLOpenView: View {
     /// up to five of what the time went to, the longest the whole width
     private func bars(_ title: String, _ list: [TLTop]) -> some View {
         VStack(alignment: .leading, spacing: 7) {
-            Text(title).font(.system(size: 11)).foregroundStyle(faint)
+            Text(title).font(.system(size: 11)).foregroundStyle(Look.ink3)
             ForEach(Array(list.enumerated()), id: \.offset) { _, t in
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 8) {
-                        Text(t.name).font(.system(size: 13)).foregroundStyle(ink.opacity(0.88)).lineLimit(1)
+                        Text(t.name).font(.system(size: 13)).foregroundStyle(Look.ink.opacity(0.88)).lineLimit(1)
                         Spacer(minLength: 6)
-                        Text(tlDur(t.minutes)).font(tlFigures(11.5)).foregroundStyle(muted).lineLimit(1).fixedSize()
+                        Text(tlDur(t.minutes)).font(tlFigures(11.5)).foregroundStyle(Look.ink2).lineLimit(1).fixedSize()
                     }
                     GeometryReader { g in
                         ZStack(alignment: .leading) {
@@ -309,7 +306,7 @@ struct TLOpenView: View {
             facts(e.more)
             if let s = e.sleep {
                 TLHypnogram(stages: s.stages, t0: e.t0, t1: e.t1 ?? e.t0)
-                if let t = s.summary { Text(t).font(.system(size: 12.5)).foregroundStyle(muted).fixedSize(horizontal: false, vertical: true) }
+                if let t = s.summary { Text(t).font(.system(size: 12.5)).foregroundStyle(Look.ink2).fixedSize(horizontal: false, vertical: true) }
             }
         }
     }
@@ -331,16 +328,16 @@ struct TLOpenView: View {
         let shown = session == s.id && s.recap != nil
         return VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .center, spacing: 10) {
-                Text(s.time).font(AT.mono(11.5)).foregroundStyle(muted).frame(width: 40, alignment: .leading)
+                Text(s.time).font(Look.figures(11.5)).foregroundStyle(Look.ink2).frame(width: 40, alignment: .leading)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(s.name).font(.system(size: 14)).foregroundStyle(ink).lineLimit(1)
+                    Text(s.name).font(.system(size: 14)).foregroundStyle(Look.ink).lineLimit(1)
                     let meta = [s.project, s.account].compactMap { $0 }.joined(separator: " · ")
-                    if !meta.isEmpty { Text(meta).font(.system(size: 11.5)).foregroundStyle(muted).lineLimit(1) }
+                    if !meta.isEmpty { Text(meta).font(.system(size: 11.5)).foregroundStyle(Look.ink2).lineLimit(1) }
                 }
                 Spacer(minLength: 6)
-                Text(s.right).font(tlFigures(11.5)).foregroundStyle(muted).lineLimit(1).fixedSize()
+                Text(s.right).font(tlFigures(11.5)).foregroundStyle(Look.ink2).lineLimit(1).fixedSize()
                 if s.recap != nil {
-                    Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold)).foregroundStyle(faint).rotationEffect(.degrees(shown ? 90 : 0))
+                    Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold)).foregroundStyle(Look.ink3).rotationEffect(.degrees(shown ? 90 : 0))
                 }
             }
             .frame(minHeight: 44)
@@ -367,10 +364,10 @@ struct TLOpenView: View {
                 ForEach(doing, id: \.self) { a in
                     Button { tl.perform(a, on: e, engine: engine) } label: {
                         Text(a.title).font(.system(size: 12.5, weight: .medium)).lineLimit(1).fixedSize()
-                            .foregroundStyle(strong(a) ? AT.navy : ink)
+                            .foregroundStyle(strong(a) ? AT.navy : Look.ink)
                             .padding(.horizontal, 11).frame(height: 26)
                             .background(strong(a) ? AT.pale : Color.white.opacity(0.07), in: Capsule())
-                            .overlay(Capsule().strokeBorder(ink.opacity(strong(a) ? 0 : 0.14), lineWidth: 1))
+                            .overlay(Capsule().strokeBorder(Look.ink.opacity(strong(a) ? 0 : 0.14), lineWidth: 1))
                             .contentShape(Capsule().inset(by: -8))
                     }
                     .buttonStyle(PressScale())
@@ -390,10 +387,10 @@ struct TLOpenView: View {
             HStack(spacing: 8) {
                 TextField("这个地方叫什么", text: $draft)
                     .focused($typing).submitLabel(.done).onSubmit { tl.rename(e, to: draft) }
-                    .font(.system(size: 15)).foregroundStyle(ink).tint(ink)
+                    .font(.system(size: 15)).foregroundStyle(Look.ink).tint(Look.ink)
                     .padding(.horizontal, 14).frame(height: 42)
                     .background(Color.white.opacity(0.08), in: Capsule())
-                    .overlay(Capsule().stroke(ink.opacity(typing ? 0.45 : 0.12), lineWidth: 1))
+                    .overlay(Capsule().stroke(Look.ink.opacity(typing ? 0.45 : 0.12), lineWidth: 1))
                 Button { tl.rename(e, to: draft) } label: {
                     Text("完成").font(.system(size: 14, weight: .semibold)).foregroundStyle(AT.navy).padding(.horizontal, 16).frame(height: 42)
                         .background(AT.pale.opacity(tl.renameBusy ? 0.5 : 1), in: Capsule()).contentShape(Capsule())
@@ -402,7 +399,7 @@ struct TLOpenView: View {
             }
             if e.place?.canName == true { roleChips }
             HStack(spacing: 12) {
-                Button { tl.cancelRename() } label: { Text("取消").font(.system(size: 13)).foregroundStyle(muted).frame(minWidth: 44, minHeight: 32, alignment: .leading).contentShape(Rectangle()) }
+                Button { tl.cancelRename() } label: { Text("取消").font(.system(size: 13)).foregroundStyle(Look.ink2).frame(minWidth: 44, minHeight: 32, alignment: .leading).contentShape(Rectangle()) }
                     .buttonStyle(.plain)
                 if let n = tl.renameNote { Text(n).font(.system(size: 12.5)).foregroundStyle(SetColor.red.opacity(0.92)).fixedSize(horizontal: false, vertical: true) }
             }
@@ -417,7 +414,7 @@ struct TLOpenView: View {
                 let on = tl.nameRole == r
                 Button { tl.nameRole = r; Haptic.selection() } label: {
                     Text(r.word).font(.system(size: 13.5, weight: .semibold)).lineLimit(1).fixedSize()
-                        .foregroundStyle(on ? AT.navy : ink)
+                        .foregroundStyle(on ? AT.navy : Look.ink)
                         .padding(.horizontal, 15).frame(height: 32)
                         .background(on ? AT.pale : Color.white.opacity(0.1), in: Capsule())
                         .contentShape(Capsule().inset(by: -6))
@@ -494,7 +491,7 @@ struct TLPicture: View {
     var body: some View {
         Group {
             if swept {
-                Text("图片已过期").font(.system(size: 13)).foregroundStyle(muted)
+                Text("图片已过期").font(.system(size: 13)).foregroundStyle(Look.ink2)
             } else {
                 PictureCell(item: SentItem(id: attachment, attachment: attachment, isImage: true, title: ""), size: nil, tall: tall) {
                     PictureViewer.present([ViewerPicture(id: attachment, gone: false, small: PictureStore.shared.peek(id: attachment, maxPixel: 0))], index: 0)
@@ -542,7 +539,7 @@ struct TLHypnogram: View {
         VStack(alignment: .leading, spacing: 4) {
             ZStack(alignment: .topLeading) {
                 ForEach(Array(Self.lanes.enumerated()), id: \.offset) { i, name in
-                    Text(name).font(.system(size: 9.5)).foregroundStyle(faint).frame(width: Self.labelW, height: Self.laneH, alignment: .leading).offset(y: Double(i) * Self.laneH)
+                    Text(name).font(.system(size: 9.5)).foregroundStyle(Look.ink3).frame(width: Self.labelW, height: Self.laneH, alignment: .leading).offset(y: Double(i) * Self.laneH)
                 }
                 Canvas { ctx, size in
                     let w = size.width - Self.labelW, span = max(t1 - t0, 1)
@@ -563,9 +560,9 @@ struct TLHypnogram: View {
             }
             .frame(height: Self.laneH * 4)
             HStack {
-                Text(clock(t0)).font(AT.mono(10)).foregroundStyle(faint)
+                Text(clock(t0)).font(Look.figures(10)).foregroundStyle(Look.ink3)
                 Spacer()
-                Text(tlEnd(t1)).font(AT.mono(10)).foregroundStyle(faint)
+                Text(tlEnd(t1)).font(Look.figures(10)).foregroundStyle(Look.ink3)
             }
             .padding(.leading, Self.labelW)
         }
@@ -582,12 +579,12 @@ struct TLUndoToast: View {
     var body: some View {
         HStack(spacing: 0) {
             if let note = undo.note {
-                Text(note).font(.system(size: 13.5)).foregroundStyle(ink.opacity(0.9)).lineLimit(1).padding(.horizontal, 16)
+                Text(note).font(.system(size: 13.5)).foregroundStyle(Look.ink.opacity(0.9)).lineLimit(1).padding(.horizontal, 16)
             } else {
-                Text("改好了").font(.system(size: 13.5)).foregroundStyle(ink.opacity(0.9)).padding(.leading, 16)
-                Text(" · ").font(.system(size: 13.5)).foregroundStyle(muted)
+                Text("改好了").font(.system(size: 13.5)).foregroundStyle(Look.ink.opacity(0.9)).padding(.leading, 16)
+                Text(" · ").font(.system(size: 13.5)).foregroundStyle(Look.ink2)
                 Button(action: take) {
-                    Text("撤销").font(.system(size: 13.5, weight: .semibold)).foregroundStyle(ink).padding(.trailing, 16).frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
+                    Text("撤销").font(.system(size: 13.5, weight: .semibold)).foregroundStyle(Look.ink).padding(.trailing, 16).frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
             }

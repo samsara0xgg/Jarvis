@@ -52,13 +52,13 @@ struct TLClock {
 
 /// the heights of the list's rows, in design points: fixed, so where a row stands is known without asking the view. A row someone can touch is at least 44 high.
 enum TLMetrics {
-    static let row = 46.0, rowDetail = 60.0, stay = 44.0, now = 30.0, note = 44.0
+    static let row = 46.0, rowDetail = 60.0, stay = 44.0, now = 0.0, note = 44.0
     /// the place over a group of stretches: its dot, its name, its hours (only a long press is on it)
     static let header = 40.0
     /// a stop on the footprint page's outing, or the stretch with no fixes: a line inside the outing, not a row to touch
     static let sub = 34.0
     /// between one group (a place, a run of trips) and the next, and above the line for now on a day of stretches
-    static let gap = 12.0, nowGap = 10.0
+    static let gap = 12.0, nowGap = 0.0
 }
 
 /// 1 小时 40 分, 2 小时, and under an hour 18 分钟: the length of a span, never with a clock's colon
@@ -367,6 +367,7 @@ enum TLLens: CaseIterable, Equatable {
 struct TLChip: Equatable, Identifiable {
     let lens: TLLens
     let value: String
+    var minutes: Int?               // a chip that is a length (the phone writes it `2 小时 15 分`; `value` is the iPad's and the footprint's `2小时15分`)
     var symbol: String?             // a page's own icon for it, in the place of the lens's (the footprint's trip chip wears the day's main way of moving)
     var id: String { word }
     var word: String { lens.word }
@@ -388,6 +389,22 @@ struct TLWeather: Equatable {
 /// when the sun rose and set, in minutes from the day's midnight (a tap on the weather shows it: TLSunLine)
 struct TLSun: Equatable {
     var rise: Double?, set: Double?
+}
+
+/// An item he marked or she picked as what mattered (`highlights` of `GET /inherent/day`), at the minute its item or stretch begins; one whose id joins nothing is not here.
+struct TLStar: Equatable, Identifiable {
+    let id: String
+    var t: Double
+    var label: String
+    var hers: Bool                  // she picked it (`by` her); his marks are the rest
+}
+
+/// A stretch of the place line under the bar: a place he keeps (its colour and name), or a trip (dashed). Where he was somewhere he does not keep, or nowhere is known, there is none.
+struct TLPlaceBit: Equatable, Identifiable {
+    enum Kind: Equatable { case place(RGB, name: String), trip }
+    let id: String
+    var t0: Double, t1: Double
+    var kind: Kind
 }
 
 /// something that was going on, for the readout to say of the minute under a finger
@@ -441,6 +458,8 @@ struct DayTimelineModel: Equatable {
     var waiting: [String] = []      // the rows that wait on him, in the order of the day
     var told: [TLTold] = []         // what the readout can say of a minute: what each thing of the day was doing, a Claude Code session each
     var lensMarks: [TLLens: [TLMark]] = [:]     // where the things of each kind are on the bar
+    var stars: [TLStar] = []        // the items he marked and she picked, where they are on the bar
+    var places: [TLPlaceBit] = []   // the place line under the bar: the places he keeps, and the trips between them
 
     /// the hours the bar is ticked at: every third hour inside its span (06 09 12 15 18 21 24)
     var ticks: [Int] { stride(from: Int((span.lowerBound / 180).rounded(.up)) * 3, through: 24, by: 3).map { $0 } }
@@ -594,6 +613,7 @@ struct DayTimelineModel: Equatable {
         // what the bar is made of, and what the day's numbers add up
         var segs: [TLSeg] = []
         var minutes: [TLLens: Double] = [:], counts: [TLLens: Int] = [:]
+        var talkMinutes = 0.0, talkOpen = false
         var spent: [String: (cents: Int, n: Int)] = [:]                              // money out, by currency
         func seg(_ id: String, _ a: Double, _ b: Double, _ kind: TLSeg.Kind) {
             let lo = max(0, a), hi = min(DAY, b)
@@ -618,7 +638,9 @@ struct DayTimelineModel: Equatable {
             case .code: rows[k].lens = .work                                                                                // lit with the Mac's work, not added to it
             case .call: rows[k].lens = .call; minutes[.call, default: 0] += length(span)
             case .workout: rows[k].lens = .workout; minutes[.workout, default: 0] += length(span)
-            case .talk: rows[k].lens = .talk; counts[.talk, default: 0] += 1
+            case .talk:
+                rows[k].lens = .talk; counts[.talk, default: 0] += 1
+                if rows[k].t1 != nil { talkMinutes += span } else { talkOpen = true }          // a talk with no end is only counted
             case .picture: rows[k].lens = .picture; counts[.picture, default: 0] += 1
             case .payment where i.direction == "out":
                 rows[k].lens = .payment
@@ -652,7 +674,11 @@ struct DayTimelineModel: Equatable {
         for l in TLLens.allCases {
             switch l {
             case .talk, .picture:
-                if let n = counts[l], n > 0 { chips.append(TLChip(lens: l, value: l == .talk ? "\(n) 次" : "\(n)")) }
+                if let n = counts[l], n > 0 {
+                    // the phone says how long he talked when every talk has its start and end (and some length); the count stays as the iPad's and the fallback's
+                    let timed = l == .talk && !talkOpen && talkMinutes >= 1
+                    chips.append(TLChip(lens: l, value: l == .talk ? "\(n) 次" : "\(n)", minutes: timed ? tlInt(talkMinutes) : nil))
+                }
             case .payment:
                 // the currency he paid in most often (the larger sum when it is a tie); money in another one adds an ellipsis
                 if let main = spent.max(by: { ($0.value.n, $0.value.cents, $1.key) < ($1.value.n, $1.value.cents, $0.key) }) {
@@ -660,7 +686,7 @@ struct DayTimelineModel: Equatable {
                 }
             default:
                 let n = tlInt(minutes[l] ?? 0)
-                if n > 0 { chips.append(TLChip(lens: l, value: tlHM(n))) }
+                if n > 0 { chips.append(TLChip(lens: l, value: tlHM(n), minutes: n)) }
             }
         }
         // what each thing of the day was doing, for the readout: each item as its own row says it (a talk too, which is no row of the list, and each session of Claude Code)
@@ -673,7 +699,48 @@ struct DayTimelineModel: Equatable {
         model.waiting = entries.filter(\.waiting).map(\.id)
         model.told = told
         model.lensMarks = lensMarks(rows)
+        model.stars = starsOf(r.highlights, rows: rows, stretches: doings, span: model.span)
+        model.places = placesOf(rows, now: now)
         return model
+    }
+
+    // MARK: the stars and the place line
+
+    /// Where each highlight is on the bar: the start of the item it names, or of the stretch of that id (an id that joins neither is left out, and so is one off the bar). An item both
+    /// marked and picked is one star, his.
+    static func starsOf(_ highlights: [Highlight], rows: [TLEntry], stretches: [TLStretch], span: ClosedRange<Double>) -> [TLStar] {
+        var at: [String: Double] = [:]
+        for e in rows { at[e.id] = e.t0 }
+        for s in stretches { at[s.span.id] = at[s.span.id] ?? s.t0 }
+        var out: [TLStar] = []
+        for h in highlights {
+            guard let t = at[h.id], span.contains(t) else { continue }
+            let hers = h.by == "her"
+            if let k = out.firstIndex(where: { $0.id == h.id }) { if !hers { out[k].hers = false }; continue }
+            out.append(TLStar(id: h.id, t: t, label: h.label, hers: hers))
+        }
+        return out.sorted { $0.t < $1.t }
+    }
+
+    /// The place line: each stay in a place he keeps with the place's colour and name, each trip, in time order and clipped to what has happened; a stay that goes on to now, or (another day) to
+    /// midnight, ends there. Where two overlap the later begins where the earlier ends.
+    static func placesOf(_ rows: [TLEntry], now: Double?) -> [TLPlaceBit] {
+        var out: [TLPlaceBit] = []
+        var from = 0.0
+        for e in rows.sorted(by: { $0.t0 < $1.t0 }) where !e.later {
+            let kind: TLPlaceBit.Kind
+            switch e.kind {
+            case .stay where e.kept: kind = .place(e.color ?? PlaceTint.lineNeutral, name: e.title)
+            case .trip: kind = .trip
+            default: continue
+            }
+            guard let end = e.t1 ?? (e.kind == .stay && now == nil ? DAY : nil) else { continue }          // a trip on another day with no end has no length
+            let t0 = max(e.t0, from), t1 = min(end, now ?? DAY)
+            guard t1 > t0 else { continue }
+            if let last = out.last, last.kind == kind, last.t1 >= t0 - 0.5 { out[out.count - 1].t1 = t1 } else { out.append(TLPlaceBit(id: e.id, t0: t0, t1: t1, kind: kind)) }
+            from = t1
+        }
+        return out
     }
 
     // MARK: grouping

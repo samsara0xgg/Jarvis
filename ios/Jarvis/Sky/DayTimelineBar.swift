@@ -248,13 +248,21 @@ enum TLBarLabel {
         var name: String?, icon: String?
         var dark: Bool                  // dark ink on a light fill
         var quiet = false               // a stretch nothing speaks to: its question mark at half ink
+        var iconSize = TLBarLabel.icon  // the phone's icons grow with the piece they are on (up to 17 pt)
         var id: String { "\(item)@\(Int(x))" }       // one place on the bar: the same item may stand there twice, never at the same x
     }
 
     /// what each piece (and each box of an event) wears where the axis draws it
-    static func placed(_ scene: TLBarScene, axis: TLAxis, measure: (String) -> Double = TLBarLabel.measure) -> [Placed] {
+    /// `iconsOnly` (the phone's 今天 bar): an icon centred in each piece where it fits, 13 to 17 pt by the room, and none on a blank (hatching says nothing was recorded)
+    static func placed(_ scene: TLBarScene, axis: TLAxis, iconsOnly: Bool = false, measure: (String) -> Double = TLBarLabel.measure) -> [Placed] {
         var out: [Placed] = []
         for (p, r) in zip(scene.pieces, TLGeo.rects(scene.pieces, axis: axis, height: 1)) {
+            if iconsOnly {
+                guard p.icon != nil, p.fill != .blank, r.width - 3 >= 10 else { continue }
+                let size = min(17, r.width - 3)
+                out.append(Placed(item: p.id, x: r.midX - size / 2, fit: .icon, name: nil, icon: p.icon, dark: TLPaint.textIsDark(p.fill), iconSize: size))
+                continue
+            }
             let f = fit(name: p.name, icon: p.icon != nil, width: r.width, measure: measure)
             if f != .none {
                 out.append(Placed(item: p.id, x: r.midX - labelWidth(f, name: p.name, measure: measure) / 2, fit: f, name: p.name, icon: p.icon, dark: TLPaint.textIsDark(p.fill),
@@ -263,8 +271,11 @@ enum TLBarLabel {
         }
         for a in scene.ahead where a.shape == .box {
             let x0 = axis.x(a.t0), x1 = axis.x(a.t1)
-            let f = fit(name: a.name, icon: a.icon != nil, width: x1 - x0, measure: measure)
-            if f != .none { out.append(Placed(item: a.id, x: (x0 + x1) / 2 - labelWidth(f, name: a.name, measure: measure) / 2, fit: f, name: a.name, icon: a.icon, dark: false)) }
+            let f = fit(name: iconsOnly ? nil : a.name, icon: a.icon != nil, width: x1 - x0, measure: measure)
+            if f != .none {
+                let size = iconsOnly ? min(17, x1 - x0 - 3) : icon
+                out.append(Placed(item: a.id, x: (x0 + x1) / 2 - (iconsOnly ? size : labelWidth(f, name: a.name, measure: measure)) / 2, fit: f, name: iconsOnly ? nil : a.name, icon: a.icon, dark: false, iconSize: size))
+            }
         }
         return out
     }
@@ -285,6 +296,8 @@ enum TLGeo {
 /// How wide the day's bar is drawn: the phone's list width, or the iPad's whole top band (Pad/PadHome.swift sets it).
 extension EnvironmentValues {
     @Entry var tlBarWidth: Double = TLLayout.barW
+    @Entry var tlBarHeight: Double = TLLayout.barH          // the phone's 今天 page draws a bar of 44 pt (`TLLayout.Today`); the iPad's and the footprint's stay as they are
+    @Entry var tlBarRadius: Double = TLLayout.barRadius
 }
 
 // MARK: - the track
@@ -294,11 +307,13 @@ struct TLTrack: View {
     var loading = false
     var reduce = false
     @Environment(\.tlBarWidth) private var bw
+    @Environment(\.tlBarHeight) private var bh
+    @Environment(\.tlBarRadius) private var radius
     @State private var sweeping = false
     private let band = 96.0, period = 1.8, sweep = 1.4          // a pass takes 1.4 s, easing in and out, and the track rests for 0.4 s before the next: the band goes on past the end for the rest
 
     var body: some View {
-        RoundedRectangle(cornerRadius: TLLayout.barRadius).fill(Color.white.opacity(0.035))
+        RoundedRectangle(cornerRadius: radius).fill(Color.white.opacity(0.035))
             .overlay(alignment: .leading) {
                 if loading && !reduce {
                     LinearGradient(colors: [.clear, Color.white.opacity(0.07), .clear], startPoint: .leading, endPoint: .trailing)
@@ -307,8 +322,8 @@ struct TLTrack: View {
                         .onAppear { withAnimation(.easeInOut(duration: period).repeatForever(autoreverses: false)) { sweeping = true } }
                 }
             }
-            .clipShape(RoundedRectangle(cornerRadius: TLLayout.barRadius))
-            .frame(width: bw, height: TLLayout.barH)
+            .clipShape(RoundedRectangle(cornerRadius: radius))
+            .frame(width: bw, height: bh)
             .allowsHitTesting(false)
     }
 }
@@ -330,9 +345,12 @@ struct TLBarView: View {
     var ghostGone = false
     var fair = false                        // every stretch is given room for its icon (`TLAxis.fair`): the phone's timeline
     var blink: TLBlink?                     // a time framed for a moment
+    var phone = false                       // the phone's 今天 bar (跨端UI标准 §3): hours over the bar, icons alone in the pieces, the planned as a dashed box and a pin, stars over it
+    var stars: [TLStar] = []                // what he marked and she picked, over the bar at their minute (the phone's)
 
     @Environment(\.tlBarWidth) private var bw
-    private let bh = TLLayout.barH
+    @Environment(\.tlBarHeight) private var bh
+    @Environment(\.tlBarRadius) private var radius
 
     var body: some View {
         let axis = self.axis(for: scene)
@@ -340,10 +358,10 @@ struct TLBarView: View {
         ZStack(alignment: .topLeading) {
             ZStack(alignment: .topLeading) {
                 TLTrack()
-                BarCanvas(scene: scene, rects: rects).equatable()
+                BarCanvas(scene: scene, rects: rects, radius: radius).equatable()
                 if sweeping { TLTidySweep(scene: scene, rects: rects).transition(.opacity) }
                 planned(axis)
-                TLBarLabels(scene: scene, axis: axis, reduce: reduce).equatable()
+                TLBarLabels(scene: scene, axis: axis, reduce: reduce, iconsOnly: phone, height: bh).equatable()
                 if let g = ghost { ghostLayer(g) }
             }
             .animation(.easeOut(duration: 0.25), value: sweeping)
@@ -354,6 +372,7 @@ struct TLBarView: View {
             .opacity(lens ? 0.25 : 1).animation(.easeOut(duration: 0.15), value: lens)
             lensLayer(axis)
             hours(axis).opacity(reveal ? 1 : 0).animation(TLMotion.arrival(after: 0.25, reveal: reveal, reduce: reduce), value: reveal)
+            if phone { starLayer(axis).opacity(reveal ? 1 : 0).animation(TLMotion.arrival(after: 0.5, reveal: reveal, reduce: reduce), value: reveal) }
             if let n = scene.now { nowMarker(axis.x(n)).opacity(reveal ? 1 : 0).animation(TLMotion.arrival(after: 0.7, reveal: reveal, reduce: reduce), value: reveal) }      // when the growth reaches it
             ZStack(alignment: .topLeading) {
                 if let b = bracket { TLBarFrame(x0: axis.x(b.lowerBound), x1: axis.x(b.upperBound), color: TLPaint.warm.color(0.9)).transition(.opacity) }
@@ -372,8 +391,8 @@ struct TLBarView: View {
     private func ghostLayer(_ g: TLBarScene) -> some View {
         let axis = self.axis(for: g)
         return ZStack(alignment: .topLeading) {
-            BarCanvas(scene: g, rects: TLGeo.rects(g.pieces, axis: axis, height: bh)).equatable()
-            TLBarLabels(scene: g, axis: axis, reduce: reduce).equatable()
+            BarCanvas(scene: g, rects: TLGeo.rects(g.pieces, axis: axis, height: bh), radius: radius).equatable()
+            TLBarLabels(scene: g, axis: axis, reduce: reduce, iconsOnly: phone, height: bh).equatable()
         }
         .frame(width: bw, height: bh, alignment: .topLeading)
         .opacity(ghostGone ? 0 : 1)
@@ -387,11 +406,11 @@ struct TLBarView: View {
     private func planned(_ axis: TLAxis) -> some View {
         ZStack(alignment: .topLeading) {
             ForEach(scene.ahead) { a in
-                TLAheadMark(a: a, x0: axis.x(a.t0), x1: axis.x(a.t1), height: bh).transition(.opacity)
+                TLAheadMark(a: a, x0: axis.x(a.t0), x1: axis.x(a.t1), height: bh, phone: phone).transition(.opacity)
             }
         }
         .frame(width: bw, height: bh, alignment: .topLeading)
-        .clipShape(RoundedRectangle(cornerRadius: TLLayout.barRadius))
+        .clipShape(RoundedRectangle(cornerRadius: radius))
         .animation(TLMotion.fade(reduce: reduce), value: scene.ahead.map(\.id))
         .allowsHitTesting(false)
     }
@@ -411,9 +430,26 @@ struct TLBarView: View {
             return (h, x)
         }
         return ForEach(shown, id: \.h) { t in
-            Text(String(format: "%02d", t.h)).font(AT.mono(10)).foregroundStyle(RGB(196, 204, 238).color(0.38)).frame(width: 12)
-                .offset(x: t.x, y: bh + 4)
+            if phone {
+                Text(String(format: "%02d", t.h)).font(Look.figures(Look.small)).foregroundStyle(Look.ink3).frame(width: 14, height: 14)
+                    .offset(x: t.x - (t.h == 24 ? 2 : 1), y: -18)          // over the bar, centred on its hour
+            } else {
+                Text(String(format: "%02d", t.h)).font(AT.mono(10)).foregroundStyle(RGB(196, 204, 238).color(0.38)).frame(width: 12)
+                    .offset(x: t.x, y: bh + 4)
+            }
         }
+        .allowsHitTesting(false)
+    }
+
+    /// his marks and her picks: a small warm star just over the bar at their minute (hers a little cooler), dimmed with the rest of the bar under a lens
+    private func starLayer(_ axis: TLAxis) -> some View {
+        ZStack(alignment: .topLeading) {
+            ForEach(stars) { s in
+                TLStarMark(hers: s.hers).frame(width: 13, height: 13).offset(x: axis.x(s.t) - 6.5, y: -13)
+            }
+        }
+        .frame(width: bw, height: bh, alignment: .topLeading)
+        .opacity(lens ? 0.25 : 1).animation(.easeOut(duration: 0.3), value: lens)
         .allowsHitTesting(false)
     }
 
@@ -426,7 +462,7 @@ struct TLBarView: View {
             }
         }
         .frame(width: bw, height: bh, alignment: .topLeading)
-        .clipShape(RoundedRectangle(cornerRadius: TLLayout.barRadius))
+        .clipShape(RoundedRectangle(cornerRadius: radius))
         .opacity(lens ? 1 : 0).animation(.easeOut(duration: 0.15), value: lens)
         .allowsHitTesting(false)
     }
@@ -444,10 +480,10 @@ struct TLBarView: View {
     private func scrubMark(_ x: Double, _ t: Double) -> some View {
         ZStack(alignment: .topLeading) {
             Rectangle().fill(TLPaint.ink.color(0.7)).frame(width: 1, height: bh + 8).offset(x: x - 0.5, y: -4)
-            Text(clock(t)).font(AT.mono(11)).foregroundStyle(TLPaint.ink.color).padding(.horizontal, 8).frame(height: 19)
+            if !phone { Text(clock(t)).font(AT.mono(11)).foregroundStyle(TLPaint.ink.color).padding(.horizontal, 8).frame(height: 19)
                 .background(Capsule().fill(Color(red: 28 / 255, green: 31 / 255, blue: 58 / 255)))
                 .overlay(Capsule().stroke(Color.white.opacity(0.14), lineWidth: 0.5))
-                .fixedSize().offset(x: clamp(x - 22, 0, bw - 44), y: -27)
+                .fixedSize().offset(x: clamp(x - 22, 0, bw - 44), y: -27) }          // on the phone the minute is in the line under her (the readout)
         }
         .allowsHitTesting(false)
     }
@@ -462,11 +498,12 @@ struct TLBarFrame: View {
     var glow = false
     var pad = 2.0
     var least = 6.0
+    @Environment(\.tlBarHeight) private var bh
 
     var body: some View {
         let w = max(least, x1 - x0) + 2 * pad
         RoundedRectangle(cornerRadius: 8).strokeBorder(color, lineWidth: 1.5)
-            .frame(width: w, height: TLLayout.barH + 8)
+            .frame(width: w, height: bh + 8)
             .shadow(color: TLPaint.warm.color(glow ? 0.25 : 0), radius: glow ? 7 : 0)
             .offset(x: (x0 + x1) / 2 - w / 2, y: -4)
             .allowsHitTesting(false)
@@ -504,6 +541,7 @@ private struct TLBlinkFrames: View {
 struct TLViewportFrame: View {
     let tl: TimelineState
     let axis: TLAxis
+    @Environment(\.tlBarHeight) private var bh
 
     var body: some View {
         let on = tl.viewportOn && tl.openRow == nil
@@ -512,7 +550,7 @@ struct TLViewportFrame: View {
                 TLBarFrame(x0: axis.x(v.lowerBound), x1: axis.x(v.upperBound), color: TLPaint.ink.color(0.5), pad: 3, least: 4)
             }
         }
-        .frame(width: axis.width, height: TLLayout.barH, alignment: .topLeading)
+        .frame(width: axis.width, height: bh, alignment: .topLeading)
         .opacity(on ? 1 : 0)
         .animation(.easeOut(duration: on ? 0.15 : 0.45), value: on)
         .allowsHitTesting(false)
@@ -526,15 +564,17 @@ private struct TLBarLabels: View, Equatable {
     let scene: TLBarScene
     let axis: TLAxis
     let reduce: Bool
+    var iconsOnly = false               // the phone's bar: an icon alone, as big as its piece lets it be
+    var height = TLLayout.barH
 
     var body: some View {
-        let bh = TLLayout.barH, bw = axis.width
-        let placed = TLBarLabel.placed(scene, axis: axis)
+        let bh = height, bw = axis.width
+        let placed = TLBarLabel.placed(scene, axis: axis, iconsOnly: iconsOnly)
         return ZStack(alignment: .topLeading) {
             ForEach(placed) { l in
                 HStack(spacing: TLBarLabel.gap) {
                     if l.fit != .name, let icon = l.icon {
-                        Image(systemName: icon).font(.system(size: 10.5, weight: .semibold)).frame(width: TLBarLabel.icon)
+                        Image(systemName: icon).font(.system(size: iconsOnly ? l.iconSize * 0.86 : 10.5, weight: .semibold)).frame(width: l.iconSize)
                     }
                     if l.fit != .icon, let name = l.name { Text(name).lineLimit(1) }
                 }
@@ -600,12 +640,13 @@ private struct TLNowGlow: UIViewRepresentable {
 private struct GrowMask: View {
     let shown: Bool
     @Environment(\.tlBarWidth) private var w
+    @Environment(\.tlBarHeight) private var bh
     private let edge = 28.0
 
     var body: some View {
         LinearGradient(stops: [.init(color: .black, location: 0), .init(color: .black, location: w / (w + edge)), .init(color: .clear, location: 1)],
                        startPoint: .leading, endPoint: .trailing)
-            .frame(width: w + edge, height: TLLayout.barH + 40)          // taller than the bar, so its edge is a line down the whole of it
+            .frame(width: w + edge, height: bh + 40)          // taller than the bar, so its edge is a line down the whole of it
             .offset(x: shown ? 0 : -(w + edge))
     }
 }
@@ -614,9 +655,18 @@ private struct GrowMask: View {
 private struct TLAheadMark: View {
     let a: TLAhead
     let x0: Double, x1: Double, height: Double
+    var phone = false
 
     var body: some View {
         switch a.shape {
+        case .box where phone:          // a dashed box 8 pt in from the bar's top and foot
+            RoundedRectangle(cornerRadius: 5).stroke(TLPaint.ink.color(0.45), style: StrokeStyle(lineWidth: 1.2, dash: [3.5, 3]))
+                .frame(width: max(x1 - x0 - 2, 4), height: height - 16).offset(x: x0 + 1, y: 8)
+        case .tick where phone:         // a pin: 1.6 pt wide, 22 tall, a 6 pt dot on its head
+            ZStack(alignment: .topLeading) {
+                RoundedRectangle(cornerRadius: 1).fill(TLPaint.ink.color(0.8)).frame(width: 1.6, height: height - 22).offset(x: x0 - 0.8, y: 12)
+                Circle().fill(TLPaint.ink.color(0.95)).frame(width: 6, height: 6).offset(x: x0 - 3, y: 9)
+            }
         case .box:
             RoundedRectangle(cornerRadius: 3).stroke(TLPaint.ink.color(0.45), style: StrokeStyle(lineWidth: 1, dash: [3, 2.5]))
                 .frame(width: max(x1 - x0, 4) - 1, height: height - 1).offset(x: x0 + 0.5, y: 0.5)
@@ -633,10 +683,11 @@ private struct TLAheadMark: View {
 private struct BarCanvas: View, Equatable {
     let scene: TLBarScene
     let rects: [CGRect]
+    var radius = TLLayout.barRadius
 
     var body: some View {
         Canvas { ctx, size in
-            ctx.clip(to: Path(roundedRect: CGRect(origin: .zero, size: size), cornerRadius: TLLayout.barRadius))
+            ctx.clip(to: Path(roundedRect: CGRect(origin: .zero, size: size), cornerRadius: radius))
             for (p, r) in zip(scene.pieces, rects) {
                 // the night is one plain piece like every other (yilun 10-20, as on the Mac): its stages are in the readout and drawn when its row opens
                 if let l = TLPaint.look(p.fill) {
@@ -662,6 +713,30 @@ private struct BarCanvas: View, Equatable {
             line.move(to: CGPoint(x: x, y: r.maxY)); line.addLine(to: CGPoint(x: x + r.height, y: r.minY))
             c.stroke(line, with: .color(color), lineWidth: 2)
             x += step
+        }
+    }
+}
+
+/// A star over the bar: four points, 13 pt, warm with a glow (his marks); hers a little cooler.
+private struct TLStarMark: View {
+    let hers: Bool
+
+    var body: some View {
+        StarPoints().fill(hers ? RGB(214, 224, 255).color : TLPaint.warm.color)
+            .shadow(color: (hers ? RGB(157, 180, 255) : TLPaint.warm).color(0.6), radius: 4)
+    }
+
+    /// the prototype's star on a 24-unit square
+    private struct StarPoints: Shape {
+        func path(in r: CGRect) -> Path {
+            let pts: [(Double, Double)] = [(12, 1.5), (14.6, 9.4), (22.5, 12), (14.6, 14.6), (12, 22.5), (9.4, 14.6), (1.5, 12), (9.4, 9.4)]
+            var p = Path()
+            for (i, q) in pts.enumerated() {
+                let pt = CGPoint(x: r.minX + q.0 / 24 * r.width, y: r.minY + q.1 / 24 * r.height)
+                if i == 0 { p.move(to: pt) } else { p.addLine(to: pt) }
+            }
+            p.closeSubpath()
+            return p
         }
     }
 }

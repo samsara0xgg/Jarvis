@@ -61,6 +61,7 @@ enum TimelineFixture {
         b.extra["missing"] = ["calendar"]
         b.extra["weather"] = ["condition": "mostly cloudy", "high": 14, "low": 8, "sunrise_ms": b.ms(454), "sunset_ms": b.ms(1091)]
         b.extra["summary"] = ["steps": 8240, "resting_hr": 58, "hrv": 42]
+        b.extra["highlights"] = [["id": "work-demo-2", "label": "做 Jarvis", "by": "him"], ["id": "picture-pic-demo-1", "label": "黑板上的积分", "by": "her"]]          // a star of his and one of hers on the bar
         if doing {
             // what his phone and the Mac brought that the rest of the day does not have: phone use, music, messages (one in the evening too) and a call on the phone
             b.add("screen", 850, 885, ["id": "screen-demo-1", "device": "iPhone", "active_s": 1500, "apps": [["name": "微信", "bundle": "com.tencent.xin", "minutes": 14, "category": "social"],

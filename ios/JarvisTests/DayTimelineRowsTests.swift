@@ -102,7 +102,7 @@ final class DayTimelineRowsTests: XCTestCase {
 
     func testAPlaceIsAGroupWithARailInItsHueThatRunsThroughWhatHappenedThere() throws {
         let m = build(TimelineFixture.today(cal))
-        let hue = RGB(255, 168, 150)
+        let hue = Look.home
         let stay = try entry(m, "stay-1"), first = try entry(m, "reminder-demo-3"), last = try entry(m, "work-demo-1")
         XCTAssertEqual([stay.rail, first.rail, last.rail], [.place(hue), .place(hue), .place(hue)])
         XCTAssertEqual([stay.railIn, stay.railOut], [false, true], "from its dot down")

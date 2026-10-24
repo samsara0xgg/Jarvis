@@ -114,9 +114,6 @@ extension TimelineState {
 
 // MARK: - the sheet
 
-private let ink = SetColor.ink
-private let muted = SetColor.muted
-private let faint = SetColor.faint
 
 /// the sheet: the stretch's start and end as two pickers of hours and minutes, his words in one field with the keyboard up, and 记下
 struct TLSayWhatSheet: View {
@@ -138,20 +135,20 @@ struct TLSayWhatSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text("这段在干嘛").font(.system(size: 17, weight: .semibold)).foregroundStyle(ink)
+            Text("这段在干嘛").font(.system(size: 17, weight: .semibold)).foregroundStyle(Look.ink)
             HStack(spacing: 10) {
-                Text("从").font(.system(size: 14)).foregroundStyle(muted)
+                Text("从").font(.system(size: 14)).foregroundStyle(Look.ink2)
                 picker($from, s.starts(before: b))
-                Text("到").font(.system(size: 14)).foregroundStyle(muted)
+                Text("到").font(.system(size: 14)).foregroundStyle(Look.ink2)
                 picker($to, s.ends(after: a))
                 Spacer(minLength: 0)
             }
-            TextField("", text: $text, prompt: Text("比如：躺着休息").foregroundStyle(faint))
+            TextField("", text: $text, prompt: Text("比如：躺着休息").foregroundStyle(Look.ink3))
                 .focused($typing).submitLabel(.done).onSubmit(save)
-                .font(.system(size: 15)).foregroundStyle(ink).tint(ink)
+                .font(.system(size: 15)).foregroundStyle(Look.ink).tint(Look.ink)
                 .padding(.horizontal, 14).frame(height: 44)
                 .background(Color.white.opacity(0.08), in: Capsule())
-                .overlay(Capsule().stroke(ink.opacity(typing ? 0.45 : 0.12), lineWidth: 1))
+                .overlay(Capsule().stroke(Look.ink.opacity(typing ? 0.45 : 0.12), lineWidth: 1))
                 .onChange(of: text) { _, now in let kept = TLSayWhat.capped(now); if kept != now { text = kept } }
             if let n = tl.sayNote { Text(n).font(.system(size: 12.5)).foregroundStyle(SetColor.red.opacity(0.92)).transition(.opacity) }
             Button(action: save) {
