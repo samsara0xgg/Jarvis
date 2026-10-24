@@ -789,6 +789,7 @@ def _code_items(
         rows = imports.newest(
             conn, "claude-code", end_ms=window_end, kinds=("session",), by_prefix=True,
         )
+    names = _thread_names(sources.shipped / THREAD_NAMES) if sources.shipped else {}
     items: list[dict[str, Any]] = []
     for row in rows:
         f = row.fields
@@ -799,6 +800,7 @@ def _code_items(
         if not _overlaps(first, last, window_start, window_end):
             continue
         start, end = max(first, window_start), min(last, window_end)
+        remote = _remote_session(f)
         item: dict[str, Any] = {
             "id": f"code-{f['session_id']}",
             "lane": "you",
@@ -808,11 +810,11 @@ def _code_items(
             "state": _state(start, end, now_ms),
             "title": _newest(
                 f.get("custom_title"), f.get("desktop_title"), f.get("thread_title"),
-                f.get("ai_title"), f.get("agent_name"),
+                names.get(remote or ""), f.get("ai_title"), f.get("agent_name"),
             ),
             "project": PurePosixPath(f.get("git_toplevel") or f.get("cwd") or "").name,
             "prompts": int(f.get("user_prompts") or 0),
-            "remote_session": _remote_session(f),
+            "remote_session": remote,
             "account": f["account"],
             "session_id": f["session_id"],
         }
@@ -823,6 +825,25 @@ def _code_items(
 
 
 _BRIDGE: Final = re.compile(r"/bridge-(cse_[0-9A-Za-z]+)")
+THREAD_NAMES: Final = "thread-names.json"
+
+
+def _thread_names(path: Path) -> dict[str, str]:
+    """The names of claude.ai threads by session id, as written once by hand (ADR 0403).
+
+    A missing file is no names; one that cannot be read is logged and also no names.
+    """
+    try:
+        found = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError):
+        LOGGER.warning("day line: the thread names could not be read")
+        return {}
+    if not isinstance(found, dict):
+        LOGGER.warning("day line: the thread names are not a table")
+        return {}
+    return {str(k): v for k, v in found.items() if isinstance(v, str) and v}
 
 
 def _remote_session(fields: dict[str, Any]) -> str | None:

@@ -27,6 +27,11 @@ rest of it, at most 200 characters, is the field `thread_title`; nothing else of
 nothing from any later entry, is copied. The day line names a `code` item by it after
 `custom_title` and `desktop_title` and before `ai_title` and `agent_name`.
 
+Threads started before the line existed are named once by hand: `imports/thread-names.json` on
+the brain maps `cse_<id>` to the thread's name, copied from the project's thread list on
+2026-10-24 at his request, and the day line reads it after `thread_title`. A missing or unreadable
+table names nothing.
+
 ## Alternatives rejected
 
 - **Read the name from claude.ai with Claude Code's login.** The only route is an undocumented
@@ -39,8 +44,8 @@ nothing from any later entry, is copied. The day line names a `code` item by it 
 
 ## Consequences
 
-- Threads started before the convention, and any session whose brief does not open with the line,
-  stay unnamed. A session already read past its first entry is not read again from the start.
-- A thread renamed later keeps the name it was started with.
+- A session whose brief does not open with the line, and that is not in the table, stays
+  unnamed. A session already read past its first entry is not read again from the start.
+- A thread renamed later keeps the name it was started with; the table is not refreshed.
 - The convention lives with whoever writes the brief; if it stops writing the line, sessions go
   back to blank, with no error.
