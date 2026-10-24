@@ -449,6 +449,36 @@ def test_a_session_is_one_code_item_titled_projected_and_clipped_to_the_day(
     assert "code" not in line.missing
 
 
+def test_a_bridge_session_with_no_name_of_its_own_takes_the_thread_names_table(
+    tmp_path: Path,
+) -> None:
+    """``thread-names.json`` names a bridge by its ``cse_`` id; its own brief line wins."""
+    bridge = "/Users/me/Projects/jarvis-b/.claude/worktrees/bridge-cse_{}"
+    directory = _ship_sessions(tmp_path / "imports", [
+        _session("s-old", "2026-10-10T17:00:00Z", "2026-10-10T17:10:00Z",
+                 top=bridge.format("01OLD"), ai=("ai guess",)),
+        {**(named := _session(
+            "s-new", "2026-10-10T18:00:00Z", "2026-10-10T18:10:00Z", top=bridge.format("01NEW"),
+        )), "fields": {**named["fields"], "thread_title": "brief"}},
+        _session("s-gone", "2026-10-10T19:00:00Z", "2026-10-10T19:10:00Z",
+                 top=bridge.format("01GONE")),
+    ])
+    (directory / "thread-names.json").write_text(json.dumps(
+        {"cse_01OLD": "部署", "cse_01NEW": "renamed", "cse_01GONE": ""},
+    ), encoding="utf-8")
+    start_ms, _ = day_window(parse_day("2026-10-10"), ZONE)
+    sources = DaySources(ZONE, shipped=directory)
+
+    titles = {
+        i["id"]: i["title"]
+        for i in _code_items(_fold(sources, tmp_path, "2026-10-10", start_ms + 24 * 60 * MINUTE))
+    }
+    assert titles == {"code-s-old": "部署", "code-s-new": "brief", "code-s-gone": ""}
+    (directory / "thread-names.json").write_text("not json", encoding="utf-8")
+    again = _code_items(_fold(sources, tmp_path, "2026-10-10", start_ms + 24 * 60 * MINUTE))
+    assert {i["id"]: i["title"] for i in again}["code-s-old"] == "ai guess"
+
+
 def test_a_session_across_midnight_shows_on_both_days_clipped_with_one_id(tmp_path: Path) -> None:
     """Clipped to each day's window; the id is the session's on both."""
     directory = _ship_sessions(
