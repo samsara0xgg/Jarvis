@@ -9,14 +9,17 @@ final class RemoteSession {
     enum State: Equatable { case connecting, live(locked: Bool), refused, closed }
 
     private enum Wire {
-        static let hello: UInt8 = 0x01, input: UInt8 = 0x02, keyframe: UInt8 = 0x03, got: UInt8 = 0x04
-        static let info: UInt8 = 0x10, params: UInt8 = 0x11, frame: UInt8 = 0x12, refused: UInt8 = 0x13
+        static let hello: UInt8 = 0x01, input: UInt8 = 0x02, keyframe: UInt8 = 0x03, got: UInt8 = 0x04, settings: UInt8 = 0x05
+        static let info: UInt8 = 0x10, params: UInt8 = 0x11, frame: UInt8 = 0x12, refused: UInt8 = 0x13, stats: UInt8 = 0x14
     }
 
     let layer = AVSampleBufferDisplayLayer()
     /// Main queue: the state, and the stream's pixel size once known.
     var onState: (State) -> Void = { _ in }
     var onSize: (CGSize) -> Void = { _ in }
+    /// Main queue, once a second: what the stream is really doing, for the 画面 panel.
+    var onStats: (StreamStats) -> Void = { _ in }
+    private var history: [Int] = []
 
     private let q = DispatchQueue(label: "jarvis.remote")
     private var conn: NWConnection?
@@ -29,7 +32,8 @@ final class RemoteSession {
         layer.backgroundColor = UIColor.black.cgColor
     }
 
-    func start(host: String, port: UInt16, token: String, curtain: Bool) {
+    /// `width` pins the stream's width, 0 lets the Mac choose; `prefer` ("fps" | "quality") says what gives when the link is short.
+    func start(host: String, port: UInt16, token: String, curtain: Bool, width: Int, prefer: String) {
         guard let p = NWEndpoint.Port(rawValue: port) else { return }
         let tcp = NWProtocolTCP.Options()
         tcp.noDelay = true
@@ -40,7 +44,8 @@ final class RemoteSession {
             guard let self else { return }
             switch s {
             case .ready:
-                self.send(Wire.hello, try! JSONSerialization.data(withJSONObject: ["token": token, "curtain": curtain, "acks": true]))
+                let hello: [String: Any] = ["token": token, "curtain": curtain, "acks": true, "width": width, "prefer": prefer]
+                self.send(Wire.hello, try! JSONSerialization.data(withJSONObject: hello))
                 self.receive()
             case .failed, .waiting: self.close()
             default: break
@@ -57,6 +62,12 @@ final class RemoteSession {
     func input(_ event: [String: Any]) {
         guard let d = try? JSONSerialization.data(withJSONObject: event) else { return }
         q.async { self.send(Wire.input, d) }
+    }
+
+    /// The same two choices as in `start`, applied live.
+    func settings(width: Int, prefer: String) {
+        let d = try! JSONSerialization.data(withJSONObject: ["width": width, "prefer": prefer])
+        q.async { self.send(Wire.settings, d) }
     }
 
     private func send(_ type: UInt8, _ payload: Data) {
@@ -107,6 +118,14 @@ final class RemoteSession {
             send(Wire.got, Data())   // every frame, shown or not: the Mac paces itself by these
             guard let format, body.count > 1 else { return }
             enqueue(body.subdata(in: body.startIndex + 1 ..< body.endIndex), format)
+        case Wire.stats:
+            guard let j = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any] else { return }
+            let fps = j["fps"] as? Int ?? 0
+            history = Array((history + [fps]).suffix(10))
+            let est = (j["est"] as? [String: Int] ?? [:]).reduce(into: [Int: Int]()) { if let w = Int($1.key) { $0[w] = $1.value } }
+            let s = StreamStats(fps: fps, latencyMs: j["ms"] as? Int ?? 0, mbps: j["mbps"] as? Int ?? 0, width: j["w"] as? Int ?? 0,
+                                estimates: est, history: history)
+            DispatchQueue.main.async { self.onStats(s) }
         case Wire.refused:
             gone = true
             state(.refused)
@@ -163,4 +182,12 @@ final class RemoteSession {
     private func state(_ s: State) {
         DispatchQueue.main.async { self.onState(s) }
     }
+}
+
+/// One second of the stream, as the Mac measured it: frames a second, how long a frame took to arrive and be acked, the bitrate,
+/// the width it streams at, the fps the Mac's encoder would reach at each width it offers, and the last ten seconds of fps.
+struct StreamStats: Equatable {
+    var fps = 0, latencyMs = 0, mbps = 0, width = 0
+    var estimates: [Int: Int] = [:]
+    var history: [Int] = []
 }

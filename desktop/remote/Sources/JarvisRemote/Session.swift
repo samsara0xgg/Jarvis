@@ -7,15 +7,17 @@ import IOKit.pwr_mgt
 // The wire, both ways: [type: UInt8][length: UInt32 big-endian][payload]. The iPad's RemoteWire.swift mirrors it.
 enum Wire {
     // iPad → Mac
-    static let hello: UInt8 = 0x01      // JSON {"token", "curtain": Bool, "acks": Bool}
+    static let hello: UInt8 = 0x01      // JSON {"token", "curtain": Bool, "acks": Bool, "width": Int, "prefer": String}, the last two as in `settings`
     static let input: UInt8 = 0x02      // JSON, see Input.handle
     static let keyframe: UInt8 = 0x03   // empty: the decoder lost its place
     static let got: UInt8 = 0x04        // empty: one frame arrived (sent only by an iPad whose hello says "acks")
+    static let settings: UInt8 = 0x05   // JSON {"width": 0 = auto | pixels, "prefer": "fps" | "quality"}: the resolution, live
     // Mac → iPad
     static let info: UInt8 = 0x10       // JSON {"w", "h", "locked"}: the stream's pixel size
     static let params: UInt8 = 0x11     // HEVC parameter sets (VPS, SPS, PPS), each [UInt16 big-endian length][bytes]
     static let frame: UInt8 = 0x12      // [1 = keyframe][AVCC NAL units]
     static let refused: UInt8 = 0x13    // JSON {"error"}
+    static let stats: UInt8 = 0x14      // JSON {"fps", "w", "mbps", "ms", "est": {"<width>": fps}}: once a second, see adapt
 
     static func pack(_ type: UInt8, _ payload: Data) -> Data {
         var d = Data([type])
@@ -54,6 +56,17 @@ final class Session: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
     // longer than `lag` the link is behind, so what he sees is never much older than that, whatever the buffers in between hold.
     // (A byte budget scaled by the bitrate starved itself: a low rate gave a small budget, which stalled, which cut the rate.)
     private var acks = false
+    // The resolution, from the iPad's panel: a pinned width, or 0 = auto. `prefer` says what gives when the link is short: "fps" lets
+    // sharpness go (the bitrate falls, and in auto the stream narrows), "quality" lets frames go (a bitrate floor keeps text sharp,
+    // and the hold below drops what the link can't carry).
+    private var pinned = 0
+    private var prefer = "fps"
+    private static let widths = [1920, 2160, 2420]   // the panel's choices; 2420 is his iPad Pro 11"'s own width
+    // Fewer pixels encode faster, but not in proportion: what one frame costs the hardware encoder at each width, measured while he
+    // streams at it, gives the panel's fps estimates. Seeded from 10-24's measurements.
+    private static var encodeNs: [Int: Double] = [1920: 5_000_000, 2160: 7_000_000, 2420: 9_000_000]
+    private var full = (0, 0)           // the display's own pixels
+    private var cfg: SCStreamConfiguration?
     private var unacked: [(bytes: Int, sent: UInt64)] = []
     private var unackedBytes = 0
     private var delivered = 0           // bytes the iPad acked this second
@@ -131,6 +144,7 @@ final class Session: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
             let wantCurtain = json["curtain"] as? Bool ?? true
             curtained = wantCurtain
             acks = json["acks"] as? Bool ?? false
+            take(json)
             DispatchQueue.main.async { [self] in
                 if let old = Session.live { old.q.async { old.end() } }
                 Session.live = self
@@ -141,6 +155,10 @@ final class Session: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
         switch type {
         case Wire.input: input.handle(json)
         case Wire.keyframe: needKey = true; reencodeLast()
+        case Wire.settings:
+            take(json)
+            if rate < lowest { rate = lowest; if let encoder { apply(rate, to: encoder) } }
+            resize(pick())
         case Wire.got:
             guard !unacked.isEmpty else { return }
             let f = unacked.removeFirst()
@@ -151,6 +169,39 @@ final class Session: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
             if behind && !held { behind = false; reencodeLast() }
         default: break
         }
+    }
+
+    private func take(_ json: [String: Any]) {
+        pinned = json["width"] as? Int ?? 0
+        prefer = json["prefer"] as? String ?? "fps"
+    }
+
+    private var lowest: Int { prefer == "quality" ? 20_000_000 : Session.floorRate }
+
+    /// The pinned width, or in auto the widest the encoder keeps near 120 fps ("fps") or simply the widest ("quality").
+    private func pick() -> Int {
+        let fit = Session.widths.filter { $0 <= full.0 }
+        if pinned > 0 || fit.isEmpty { return min(pinned > 0 ? pinned : full.0, full.0) / 2 * 2 }
+        return prefer == "quality" ? fit.last! : fit.last { estimate($0) >= 115 } ?? fit[0]
+    }
+
+    private func height(_ w: Int) -> Int { full.1 * w / full.0 / 2 * 2 }
+    private func estimate(_ w: Int) -> Int { min(120, Int(1e9 / (Session.encodeNs[w] ?? 9_000_000))) }
+
+    /// On `q`, live: the capture and the encoder change width together, the iPad hears the new size, and the keyframe after carries
+    /// the new parameter sets. Frames of the old size still on their way are dropped in encode.
+    private func resize(_ w: Int) {
+        guard let stream, let cfg, w != size.0 else { return }
+        let h = height(w)
+        cfg.width = w; cfg.height = h
+        stream.updateConfiguration(cfg) { if let e = $0 { print("resize failed: \(e)") } }
+        if let old = encoder { encodeQ.async { VTCompressionSessionInvalidate(old) } }
+        encoder = makeEncoder(w, h)
+        size = (w, h)
+        needKey = true
+        clear = 0
+        send(Wire.info, try! JSONSerialization.data(withJSONObject: ["w": w, "h": h, "locked": locked ?? false]))
+        print("resize \(w)x\(h)")
     }
 
     private func same(_ a: String, _ b: String) -> Bool {
@@ -195,10 +246,12 @@ final class Session: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
             guard let display = content.displays.first(where: { $0.displayID == CGMainDisplayID() }) ?? content.displays.first else { return }
             let filter = SCContentFilter(display: display, excludingWindows: [])
             let mode = CGDisplayCopyDisplayMode(display.displayID)
-            let fullW = mode?.pixelWidth ?? display.width * 2, fullH = mode?.pixelHeight ?? display.height * 2
-            // 2160 wide, between his iPad's native 2420 (~9 ms a frame, ~90 fps) and 1920 (~5 ms, 120 fps): sharper than 1920 and still fast
-            // enough to keep up with capture. Send the iPad's size in the hello to make this adaptive if another iPad drives this Mac.
-            let w = min(fullW, 2160) / 2 * 2, h = fullH * w / fullW / 2 * 2
+            let (w, h) = q.sync {
+                full = (mode?.pixelWidth ?? display.width * 2, mode?.pixelHeight ?? display.height * 2)
+                rate = max(rate, lowest)
+                let w = pick()
+                return (w, height(w))
+            }
 
             let cfg = SCStreamConfiguration()
             cfg.width = w; cfg.height = h
@@ -211,6 +264,7 @@ final class Session: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
             q.sync {
                 encoder = makeEncoder(w, h)
                 size = (w, h)
+                self.cfg = cfg
                 watchLock()
             }
             let s = SCStream(filter: filter, configuration: cfg, delegate: self)
@@ -247,11 +301,23 @@ final class Session: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
         if captured > 0 {
             print("1s: captured \(captured) sent \(sentFrames) \(sentBytes * 8 / 1_000_000) Mbit delivered \(delivered * 8 / 1_000_000) Mbit stalls \(stalls) unacked \(unackedBytes / 1000) kB rate \(rate / 1_000_000) ack avg \(ackCount > 0 ? ackSum / UInt64(ackCount) / 1_000_000 : 0) max \(ackMax / 1_000_000) ms encode \(encodeBusy / 1_000_000) ms")
         }
+        if sentFrames >= 30, let was = Session.encodeNs[size.0] { Session.encodeNs[size.0] = was * 0.8 + Double(encodeBusy) / Double(sentFrames) * 0.2 }
+        // the iPad's panel: frames that went, the width, the bitrate, how long a frame took to be acked, and each width's fps estimate
+        if size.0 > 0 {
+            let est = Dictionary(uniqueKeysWithValues: Session.widths.filter { $0 <= full.0 }.map { (String($0), estimate($0)) })
+            send(Wire.stats, try! JSONSerialization.data(withJSONObject: ["fps": sentFrames, "w": size.0, "mbps": sentBytes * 8 / 1_000_000,
+                                                                          "ms": ackCount > 0 ? Int(ackSum / UInt64(ackCount) / 1_000_000) : 0, "est": est]))
+        }
         // stalls while the link carried well under the bitrate are the link stuttering, not too little room: a lower bitrate cures nothing
         let roomy = acks && delivered * 8 < rate * 6 / 10
+        // auto, "fps": a link that still stalls at a low bitrate gets a narrower stream; ten clear seconds with room try the next wider
+        if pinned == 0 && prefer == "fps", let i = Session.widths.firstIndex(of: size.0) {
+            if stalls > 0 && !roomy && rate <= 12_000_000 && i > 0 { resize(Session.widths[i - 1]) }
+            else if clear >= 10 && rate >= 20_000_000 && i + 1 < Session.widths.count && Session.widths[i + 1] <= pick() { resize(Session.widths[i + 1]) }
+        }
         captured = 0; sentFrames = 0; sentBytes = 0; delivered = 0; ackCount = 0; ackSum = 0; ackMax = 0; encodeBusy = 0
         if stalls > 0 {
-            if !roomy { rate = max(rate * 2 / 3, Session.floorRate) }
+            if !roomy { rate = max(rate * 2 / 3, lowest) }
             clear = 0
         } else {
             clear += 1
@@ -308,7 +374,7 @@ final class Session: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
     }
 
     private func encode(_ pixels: CVPixelBuffer, at t: CMTime) {
-        guard let encoder, !ended else { return }
+        guard let encoder, !ended, CVPixelBufferGetWidth(pixels) == size.0 else { return }
         let props = needKey ? [kVTEncodeFrameOptionKey_ForceKeyFrame: true] as CFDictionary : nil
         if encoding { missed = true; return }
         encoding = true

@@ -205,16 +205,25 @@ struct RemoteScreen: View {
     let session = RemoteSession()
     @ObservationIgnored lazy var canvas = RemoteCanvas(session: session)
     private(set) var state = RemoteSession.State.connecting
+    private(set) var stats = StreamStats()
 
     init() {
         session.onState = { [weak self] in self?.state = $0 }
         session.onSize = { [weak self] in self?.canvas.videoSize = $0 }
+        session.onStats = { [weak self] in self?.stats = $0 }
     }
 
     func connect() {
         let mac = RemoteMac.shared
         guard mac.isPaired else { return }
-        session.start(host: mac.host, port: mac.port, token: mac.token, curtain: true)
+        session.start(host: mac.host, port: mac.port, token: mac.token, curtain: true, width: mac.width, prefer: mac.prefer)
+    }
+
+    /// The 画面 panel's choices: kept for next time and applied now.
+    func choose(width: Int, prefer: String) {
+        RemoteMac.shared.width = width
+        RemoteMac.shared.prefer = prefer
+        session.settings(width: width, prefer: prefer)
     }
 
     let voice = RemoteVoice()

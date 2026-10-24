@@ -14,11 +14,17 @@ import UIKit
     var isPaired: Bool { !token.isEmpty }
     /// Whether Jarvis Remote answered the last knock (every 30 s while paired).
     private(set) var isReachable = false
+    /// The stream's width (0 = the Mac chooses) and what gives when the link is short ("fps" keeps frames, "quality" keeps sharpness).
+    /// The 画面 panel sets them; they are kept for the next connect.
+    var width: Int { didSet { UserDefaults.standard.set(width, forKey: "remote-width") } }
+    var prefer: String { didSet { UserDefaults.standard.set(prefer, forKey: "remote-prefer") } }
 
     private static let linkAccount = "remote-mac"
     private static let passwordAccount = "remote-mac-password"
 
     private init() {
+        width = UserDefaults.standard.integer(forKey: "remote-width")
+        prefer = UserDefaults.standard.string(forKey: "remote-prefer") ?? "fps"
         Task { while true { reload(); await probe(); try? await Task.sleep(for: .seconds(30)) } }
     }
 
