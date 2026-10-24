@@ -4,7 +4,8 @@ import UIKit
 // The iPad's home (跨端UI标准 §11): the phone's four pages, 今天 · 聊天 · 地图 · 设置, switched by the bar at the foot (`ui.page`), and over every page her at the top centre with
 // the number of what waits on her, her card under her, and the bar. 今天 in a window wide enough for two columns: the strip (日历, the date under her, ✦ 润色), the day's bar at
 // the whole width with the place line and the day's numbers, pinned; under them the phone's list on the left and her stage on the right (what he is in now and what waits on
-// him, or the row he picked). Narrower (portrait, Split View) it is one column, the list's rows opening where they stand. 聊天, 地图 and 设置 are the phone's own pages for now.
+// him, or the row he picked). Narrower (portrait, Split View) it is one column, the list's rows opening where they stand. 聊天 in a wide window is her topics at the left and
+// the conversation at the right (Pad/PadChat.swift); 地图 and 设置 are the phone's own pages for now.
 // The rows, the bar, the chips and an opened row are the phone's own views; this file only lays them out at iPad size.
 
 private let ink = SetColor.ink
@@ -67,6 +68,7 @@ struct PadHome: View {
     @State private var nowInView = true
     @State private var leftAt: Date?
     @State private var listRoom = 600.0             // how tall the list is: a row opened from the bar in one column is carried up within it
+    @State private var chatFolded = false           // 聊天's left column folded away
     @Environment(\.scenePhase) private var phase
 
     private var ui: StarUI { engine.ui }
@@ -81,7 +83,7 @@ struct PadHome: View {
             TimelineView(.everyMinute) { ctx in
                 let built = builtDay()
                 ZStack(alignment: .topLeading) {
-                    page(built, width: w, top: top, wide: wide)
+                    page(built, width: w, height: geo.size.height + geo.safeAreaInsets.bottom + top, top: top, wide: wide)
                     // over every page: her card, her, the number on her, the bar at the foot (跨端UI标准 §1)
                     if ui.page != .talk {
                         HerWordsCard(engine: engine, ui: ui).frame(width: W, height: H)
@@ -117,14 +119,20 @@ struct PadHome: View {
 
     /// her middle under the status bar, the strip's buttons on the same line (the mock's 58 with a status bar of 24)
     static let herY = 34.0
+    /// the bar at the foot with the room under it, as a tab bar controller puts it (62 pt, 21 pt over the foot); a page runs on under it, and a list's room ends where the phone's
+    /// does, its 24 pt fade reaching 12 pt into the glass (TLLayout.listBottom)
+    static let barH = 83.0, barRoom = barH - 12 + TLLayout.fade
 
     // MARK: the pages
 
-    @ViewBuilder private func page(_ built: TLBuilt?, width w: Double, top: Double, wide: Bool) -> some View {
+    @ViewBuilder private func page(_ built: TLBuilt?, width w: Double, height h: Double, top: Double, wide: Bool) -> some View {
         switch ui.page {
         case .day: PadToday(engine: engine, built: built, width: w, top: top, wide: wide, flight: flight, nowInView: $nowInView, listRoom: $listRoom, empty: empty)
+        case .talk:
+            // ponytail: in one column the phone's page at the phone's width, centred, until narrow windows are revisited
+            if wide { PadChat(engine: engine, width: w, height: h, top: top, folded: $chatFolded) }
+            else { phonePage { TalkPanel(engine: engine, ui: ui, pull: .constant(nil), page: true) }.offset(x: (w - W) / 2, y: top) }
         // ponytail: the phone's own pages at the phone's width, centred, until each has its two panes
-        case .talk: phonePage { TalkPanel(engine: engine, ui: ui, pull: .constant(nil), page: true) }.offset(x: (w - W) / 2, y: top)
         case .map: phonePage { FootprintDayLayer(engine: engine, ui: ui) }.offset(x: (w - W) / 2)
         case .settings: SettingsSheet(asPage: true, cardUp: ui.herCardOn, tuneNear: { engine.showPage(.day) }).frame(width: W).frame(maxWidth: .infinity).padding(.top, top)
         }
@@ -138,8 +146,8 @@ struct PadHome: View {
     @ViewBuilder private func tabBar(width w: Double, height h: Double) -> some View {
         if #available(iOS 26.0, *) {
             let shows = ui.barShows
-            HomeStockTabs(engine: engine).environment(\.horizontalSizeClass, .compact).frame(width: 460, height: 83)          // the phone's tabs, icon over word
-                .position(x: w / 2, y: h - 83 / 2)
+            HomeStockTabs(engine: engine).environment(\.horizontalSizeClass, .compact).frame(width: 460, height: Self.barH)          // the phone's tabs, icon over word
+                .position(x: w / 2, y: h - Self.barH / 2)
                 .opacity(shows ? 1 : 0).offset(y: shows ? 0 : 16).allowsHitTesting(shows).accessibilityHidden(!shows)
                 .animation(.easeOut(duration: shows ? 0.25 : 0.2), value: shows)
         } else {
@@ -172,7 +180,7 @@ struct PadHome: View {
 
     private func appear() {
         HomeModule.shared.kind = .timeline          // the iPad's home is the timeline's
-        engine.beginEditing = { engine.showPage(.talk) }          // ponytail: 聊天 is the phone's history for now, with no field to take the keyboard; its own page brings one
+        engine.beginEditing = { engine.showPage(.talk) }          // ponytail: 聊天 has no field yet to take the keyboard; the phone's composer, once a view of its own, brings one
         StallLog.context = { [engine] in engine.stallContext() }
         engine.watchVoice()
         if CardsRequest.pending { openCards() }
@@ -195,6 +203,17 @@ struct PadHome: View {
     #if DEBUG
     /// `-padScene row` a row of the list with more to show tapped, `-padScene bar` a block of the bar tapped
     private func padScene(_ s: String) {
+        switch s {
+        case "topic":           // 看原话 on the first of `-scene 时间线:聊天:话题`'s topics: its last place lit, the ‹ › bar over the field
+            // a moment after the page has listed its rows, as a tap would come
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [engine] in
+                guard let t = ChatSearchModel.sceneTopics?.first else { return }
+                engine.goTrail(ChatTrail(name: t.name, places: t.places.map { .init(recordId: $0.recordId, seq: $0.seq, lines: $0.lines) }, at: t.places.count - 1), to: t.places.count - 1)
+            }
+            return
+        case "fold": chatFolded = true; return          // 聊天's left column folded away
+        default: break
+        }
         guard let m = builtDay()?.model else { return }
         switch s {
         case "bar":             // a tap on the bar in the middle of the first stretch of the afternoon
@@ -336,9 +355,11 @@ private struct PadToday: View {
     @ViewBuilder private func list(_ m: DayTimelineModel?) -> some View {
         if let m {
             GeometryReader { g in
-                TLList(model: m, engine: engine, tl: tl, room: g.size.height, lens: tl.activeLens(in: m), nowInView: $nowInView, inPlace: !wide)
+                // it runs on to the foot under the bar; its room is what is over the bar, as on the phone
+                let room = g.size.height - PadHome.barRoom
+                TLList(model: m, engine: engine, tl: tl, room: room, lens: tl.activeLens(in: m), nowInView: $nowInView, inPlace: !wide)
                     .id("\(tl.day) \(wide)")          // the list is laid out for one way of opening its rows
-                    .onChange(of: g.size.height, initial: true) { _, h in listRoom = h }
+                    .onChange(of: room, initial: true) { _, h in listRoom = h }
                     .mask(LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black, location: 12 / max(g.size.height, 1)),
                                                  .init(color: .black, location: 1 - 24 / max(g.size.height, 1)), .init(color: .clear, location: 1)], startPoint: .top, endPoint: .bottom))
             }

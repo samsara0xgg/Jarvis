@@ -14,5 +14,9 @@ extension Words {
         static var unpaired: String { pick(zh: "还没连上大脑，连上以后这里会排出你的一天。", en: "Not connected to your brain yet. Once it is, your day lines up here.") }
         static var nothing: String { pick(zh: "这一天没有记下什么。", en: "Nothing was recorded that day.") }
         static var bar: String { pick(zh: "一天的概览", en: "The day at a glance") }
+
+        // 聊天
+        static var foldTopics: String { pick(zh: "收起左栏", en: "Hide sidebar") }
+        static var unfoldTopics: String { pick(zh: "展开左栏", en: "Show sidebar") }
     }
 }

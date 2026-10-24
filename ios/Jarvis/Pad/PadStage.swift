@@ -75,7 +75,7 @@ struct PadStage: View {
             VStack(alignment: .leading, spacing: 0) {
                 if let e = opened { page(e) } else if let m = model { now(m); waiting(m) } else { waitingCards }
             }
-            .padding(.horizontal, side).padding(.top, 18).padding(.bottom, 60)
+            .padding(.horizontal, side).padding(.top, 18).padding(.bottom, PadHome.barRoom)          // its foot clear of the bar
             .frame(maxWidth: .infinity, alignment: .leading)
             .id(opened?.id ?? "now")
             .transition(reduce ? .opacity : .opacity.combined(with: .offset(x: 12)))

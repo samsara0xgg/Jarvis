@@ -192,21 +192,22 @@ struct ChatSearchCard: View {
     @Bindable var model: ChatSearchModel
     let engine: StarEngine
     let close: () -> Void
+    var column = false                          // the iPad's left column, always open: no card round the list, only round her 前情; the list as tall as the column
     @FocusState private var focused: Bool
     @State private var opened: ChatTopic?       // a topic tapped: her 前情 of it, in the card's place
 
     static let width = 320.0, listMax = 380.0
 
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: 20, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: 20, style: .continuous), card = !column || opened != nil
         VStack(alignment: .leading, spacing: 8) {
             if let t = opened { recap(t) } else { list }
         }
         .padding(10)
-        .frame(width: Self.width)
-        .background(Look.card, in: shape)
-        .overlay(shape.strokeBorder(Look.glow.opacity(0.2), lineWidth: 0.6))
-        .shadow(color: .black.opacity(0.5), radius: 25, y: 18)
+        .frame(width: column ? nil : Self.width)
+        .background(card ? Look.card : .clear, in: shape)
+        .overlay(shape.strokeBorder(Look.glow.opacity(card ? 0.2 : 0), lineWidth: 0.6))
+        .shadow(color: .black.opacity(card ? 0.5 : 0), radius: 25, y: 18)
         .animation(.easeOut(duration: 0.2), value: opened)
         .onChange(of: model.query) { model.queryChanged() }
         .task { await model.refreshTopics() }
@@ -228,7 +229,7 @@ struct ChatSearchCard: View {
             }
             .frame(maxHeight: 240).fixedSize(horizontal: false, vertical: true).padding(.horizontal, 6)
             HStack(spacing: 8) {
-                recapButton(Words.PhoneChat.goOnTopic, strong: true) { engine.endTrail(); engine.follow(t); close() }
+                recapButton(Words.PhoneChat.goOnTopic, strong: true) { engine.endTrail(); engine.follow(t); done() }
                 recapButton(Words.PhoneChat.seeWords, strong: false) {
                     go(ChatTrail(name: t.name, places: t.places.map { .init(recordId: $0.recordId, lines: $0.lines) }, at: t.places.count - 1))
                 }
@@ -247,7 +248,7 @@ struct ChatSearchCard: View {
     @ViewBuilder private var list: some View {
             field
             if !model.trimmed.isEmpty || !model.topics.isEmpty {          // no topics yet: the card is the field alone
-                ScrollView(showsIndicators: false) { if model.trimmed.isEmpty { topics } else { hits } }.frame(maxHeight: Self.listMax).fixedSize(horizontal: false, vertical: true)
+                ScrollView(showsIndicators: false) { if model.trimmed.isEmpty { topics } else { hits } }.frame(maxHeight: column ? .infinity : Self.listMax).fixedSize(horizontal: false, vertical: !column)
             }
     }
 
@@ -288,6 +289,8 @@ struct ChatSearchCard: View {
                         if !t.line.isEmpty { Text(t.line).font(.system(size: Look.note)).foregroundStyle(Look.ink3).lineLimit(1) }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 10).padding(.vertical, 9).contentShape(Rectangle())
+                    .background(column && (engine.ui.trail?.name == t.name || engine.ui.following?.id == t.id) ? Color.white.opacity(0.065) : .clear,
+                                in: RoundedRectangle(cornerRadius: 12, style: .continuous))          // in the column, the topic followed now
                     .opacity(t.done ? 0.5 : 1)
                 }
                 .buttonStyle(RowTap())
@@ -321,7 +324,10 @@ struct ChatSearchCard: View {
         }
     }
 
-    private func go(_ t: ChatTrail) { focused = false; engine.follow(nil); engine.goTrail(t, to: t.at); close() }
+    private func go(_ t: ChatTrail) { focused = false; engine.follow(nil); engine.goTrail(t, to: t.at); done() }
+
+    /// the card has done its work: it goes, or in the column, which stays, its 前情 goes back to the list
+    private func done() { if column { opened = nil }; close() }
 }
 
 /// The bar over the field while a hit or a topic is followed: its name, which place of how many, ‹ › to step and ✕ to stop.
