@@ -4,10 +4,12 @@
 ``poll_interval_s``, runs one pass on a worker thread, and goes back to sleep; the pass reads
 TimeSink's database read-only (:mod:`mac_ship_timesink`) and the Claude Code logs of the
 configured accounts (:mod:`mac_ship_sessions`), ships the Markdown day reports of his Claude Code
-work (:mod:`mac_ship_days`, ADR 0303), ships the app use of his iPhone and iPad that the Mac's
-Screen Time sync holds (:mod:`mac_ship_devices`, ADR 0304) and what else his devices sync to it
-(:mod:`mac_ship_records`, ADR 0305), and sends what changed to the brain's
-``/inherent/imports`` routes with this device's token. Its cursors live in
+work (:mod:`mac_ship_days`, ADR 0303) and every raw transcript file of both accounts and of his
+cloud sessions (:mod:`mac_ship_code_log`, :mod:`mac_ship_cloud_log`, ADR 0387), ships the app
+use of his iPhone and iPad that the Mac's Screen Time sync holds (:mod:`mac_ship_devices`,
+ADR 0304) and what else his devices sync to it (:mod:`mac_ship_records`, ADR 0305), and sends
+what changed to the brain's ``/inherent/imports`` routes with this device's token. Its cursors
+live in
 ``<runtime root>/mac-ship/state.db`` and move only after the brain has kept what they stand for.
 
 Layer rules: L5 surface; reads only files its own config names.
@@ -25,12 +27,16 @@ from typing import TYPE_CHECKING, Any, Final
 import httpx
 
 from jarvis.surface import (
+    mac_ship_cloud_log,
+    mac_ship_code_log,
     mac_ship_days,
     mac_ship_devices,
     mac_ship_records,
     mac_ship_sessions,
     mac_ship_timesink,
 )
+from jarvis.surface.mac_ship_cloud_log import CloudLogConfig
+from jarvis.surface.mac_ship_code_log import CodeLogConfig, Tree
 from jarvis.surface.mac_ship_core import Conflict, Report, ShipFailed, Sink, State
 from jarvis.surface.mac_ship_timesink import TimesinkConfig
 
@@ -47,6 +53,11 @@ _DEFAULT_POLL_S: Final = 300.0
 _DEFAULT_TIMESINK: Final = "~/Library/Application Support/TimeSink/timesink.sqlite"
 _DEFAULT_ROOTS: Final = (("a", "~/.claude/projects"), ("b", "~/.claude-b/projects"))
 _DEFAULT_DESKTOP: Final = "~/Library/Application Support/Claude/claude-code-sessions"
+_DEFAULT_CONFIG_DIRS: Final = (("a", "~/.claude"), ("b", "~/.claude-b"))
+_DEFAULT_CLOUD_REPO: Final = "samsara0xgg/jarvis-cloud-log"
+CLOUD_IDENTITY: Final = Path("mac-ship") / "cloud-log-identity.txt"
+"""Under the terminal's runtime root: the Mac's ``age`` key; without it the relay is off."""
+CLOUD_GIT: Final = Path("mac-ship") / "cloud-log.git"
 
 
 @dataclass(frozen=True)
@@ -63,6 +74,10 @@ class ShipConfig:
     """Where the iPhone/iPad app step keeps its names (ADR 0304); ``None``: that step is off."""
     device_records: Path | None = None
     """The same file for the iPhone/iPad records step (ADR 0305); ``None``: that step is off."""
+    code_log: CodeLogConfig | None = None
+    """Every raw transcript file (ADR 0387); ``None``: that step is off."""
+    cloud_log: CloudLogConfig | None = None
+    """The cloud sessions' transcripts from the relay repository (ADR 0387); ``None``: off."""
 
 
 def _section(parent: Mapping[str, Any], key: str) -> Mapping[str, Any] | None:
@@ -75,6 +90,37 @@ def _number(section: Mapping[str, Any], key: str, default: float) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return default
     return float(value)
+
+
+def _pairs(listed: object, keys: tuple[str, ...]) -> list[tuple[str, ...]]:
+    return [
+        tuple(str(item.get(key, "")) for key in keys) for item in listed if isinstance(item, dict)
+    ] if isinstance(listed, list) else []
+
+
+def _code_log(
+    part: Mapping[str, Any], runtime_root: Path,
+) -> tuple[CodeLogConfig | None, CloudLogConfig | None]:
+    """The transcript steps' configs (ADR 0387), or ``None``s when ``enabled`` is false."""
+    if part.get("enabled", True) is False:
+        return None, None
+    dirs = _pairs(part.get("dirs"), ("account", "dir")) if "dirs" in part else _DEFAULT_CONFIG_DIRS
+    keep = _pairs(part.get("keep"), ("account", "dir", "under"))
+    logs = CodeLogConfig(
+        tuple(Tree(account, Path(where).expanduser()) for account, where in dirs),
+        tuple(Tree(account, Path(where).expanduser(), under) for account, where, under in keep),
+        max_bytes=int(_number(part, "per_pass_mb", 256) * 1024 * 1024),
+    )
+    cloud = _section(part, "cloud") or {}
+    if cloud.get("enabled", True) is False:
+        return logs, None
+    repo = cloud.get("repo")
+    identity = cloud.get("identity")
+    return logs, CloudLogConfig(
+        f"https://github.com/{repo if isinstance(repo, str) else _DEFAULT_CLOUD_REPO}.git",
+        Path(identity).expanduser() if isinstance(identity, str) else runtime_root / CLOUD_IDENTITY,
+        runtime_root / CLOUD_GIT,
+    )
 
 
 def ship_config(config: Mapping[str, Any], runtime_root: Path) -> ShipConfig | None:
@@ -110,12 +156,14 @@ def ship_config(config: Mapping[str, Any], runtime_root: Path) -> ShipConfig | N
     devices = _section(section, "device_apps") or {}
     records = _section(section, "device_records") or {}
     names = runtime_root / STATE_PATH.parent / mac_ship_devices.NAMES_FILE
+    logs, cloud = _code_log(_section(section, "claude_code_log") or {}, runtime_root)
     return ShipConfig(
         runtime_root / STATE_PATH, max(1.0, _number(section, "poll_interval_s", _DEFAULT_POLL_S)),
         timesink, roots, desktop,
         None if days.get("enabled", True) is False else runtime_root / mac_ship_days.DIRNAME,
         None if devices.get("enabled", True) is False else names,
         None if records.get("enabled", True) is False else names,
+        logs, cloud,
     )
 
 
@@ -173,7 +221,7 @@ class Shipper:
         self.state = state or State(config.state_path)
         self._desktop: dict[Path, tuple[int, str, str, str]] = {}
 
-    def poll(self, now_ms: int | None = None) -> Report:
+    def poll(self, now_ms: int | None = None) -> Report:  # noqa: C901 - one branch per step
         """One pass; a part the brain refuses is retried next pass, the other part still runs."""
         now = int(time.time() * 1000) if now_ms is None else now_ms
         report = Report()
@@ -204,6 +252,16 @@ class Shipper:
             steps.append(("device-records", lambda: mac_ship_records.ship(
                 records_names, self.state, self._sink, report, now,
             )))
+        cloud = self.config.cloud_log
+        if cloud is not None:
+            steps.append(("claude-code-cloud", lambda: mac_ship_cloud_log.relay(
+                cloud, self.state, self._sink, report,
+            )))
+        logs = self.config.code_log
+        if logs is not None:
+            steps.append(("claude-code-log", lambda: mac_ship_code_log.ship(
+                logs, self.state, self._sink, report, now,
+            )))
         for name, step in steps:
             try:
                 step()
@@ -220,7 +278,9 @@ async def run_shipper(config: ShipConfig, brain_url: str, token: str) -> None:
     """Pass after pass until cancelled. A pass that raises anything else is logged, not fatal."""
     sink = HttpSink(brain_url, token)
     shipper = Shipper(config, sink)
-    LOGGER.info("mac-ship: copying TimeSink, Claude Code, day reports, device apps, device records")
+    LOGGER.info(
+        "mac-ship: copying TimeSink, Claude Code, day reports, transcripts, device apps, records",
+    )
     try:
         while True:
             try:
