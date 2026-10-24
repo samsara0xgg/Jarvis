@@ -563,11 +563,11 @@ extension StarEngine {
         put(\.level, Int(clamp(qGoal.rounded(), -1, 2)))
         put(\.camE, camE)
         let dd = HomeModule.shared.isTimeline ? ui.tl.day : floorDay(F)       // the timeline's own day, else the one the dial is turned to
-        if dd != dateD || epoch != dateEpoch {      // the date, and the day's all-day events when the days change
+        let lang = MainActor.assumeIsolated { Words.shared.language }
+        if dd != dateD || epoch != dateEpoch || lang != dateLang {      // the date, and the day's all-day events when the days change; the date again in a new language
             if dd != dateD { dateD = dd; askDays() }
-            dateEpoch = epoch
-            let (mo, da) = dateOf(dd)
-            put(\.dateText, "\(mo)月\(da)日 \(dayName(dd))"); put(\.dateLabel, Cal.cur.real ? RealDay.shared.dayLabel(dd) : nil)
+            dateEpoch = epoch; dateLang = lang
+            put(\.dateText, MainActor.assumeIsolated { Words.date(Cal.cur.date(dd), in: Cal.cur.cal) }); put(\.dateLabel, Cal.cur.real ? RealDay.shared.dayLabel(dd) : nil)
         }
         stepTalk(now)
         let ms: MicState = !ui.text.trimmingCharacters(in: .whitespaces).isEmpty ? .send : talk != nil ? .on : .mic

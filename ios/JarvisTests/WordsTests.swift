@@ -29,6 +29,20 @@ final class WordsTests: XCTestCase {
         XCTAssertNil(Words.Lang(reply: Data("[]".utf8)))
     }
 
+    func testADayIsWrittenOneWayInEachLanguageOnItsCalendarsDays() throws {
+        let saved = Words.shared.language
+        defer { Words.shared.set(saved) }
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = try XCTUnwrap(TimeZone(identifier: "America/Vancouver"))
+        let d = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-10-24T05:30:00Z"))          // 22:30 on Friday the 23rd in Vancouver, Saturday in UTC
+        Words.shared.set(.zh)
+        XCTAssertEqual(Words.date(d, in: cal), "10月23日 周五")
+        XCTAssertEqual(Words.PhoneMap.title(date: Words.date(d, in: cal)), "10月23日 周五 · 足迹", "the map's line under her")
+        Words.shared.set(.en)
+        XCTAssertEqual(Words.date(d, in: cal), "Fri, Oct 23", "the day of the calendar given, not the device's zone")
+        XCTAssertEqual(Words.PhoneMap.title(date: Words.date(d, in: cal)), "Fri, Oct 23 · Footprint")
+    }
+
     func testEntriesFollowTheLanguage() {
         let saved = Words.shared.language
         defer { Words.shared.set(saved) }

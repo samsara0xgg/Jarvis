@@ -145,7 +145,7 @@ struct FootprintOutingPage: View {
     }
 
     private var dateLine: String {
-        let day = Words.Footprint.dateLine(Date(timeIntervalSince1970: Double(outing.start_ms) / 1000), in: model.clock.cal)
+        let day = Words.date(Date(timeIntervalSince1970: Double(outing.start_ms) / 1000), in: model.clock.cal)
         return day + " · " + time(outing.start_ms) + (outing.end_ms == nil ? "" : "–" + time(end))
     }
 

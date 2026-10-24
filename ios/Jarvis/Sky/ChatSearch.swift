@@ -282,7 +282,7 @@ struct ChatSearchCard: View {
     }
 
     /// when, as the list says it: 今天, 昨天, then the date
-    private func when(_ at: Date) -> String { TalkStream.title(at, Cal.cur.cal, Date()) }
+    private func when(_ at: Date) -> String { let cal = Cal.cur.cal; return cal.isDateInToday(at) ? Words.today : cal.isDateInYesterday(at) ? Words.yesterday : Words.date(at, in: cal) }
 
     // her topics, newest first
     private var topics: some View {
