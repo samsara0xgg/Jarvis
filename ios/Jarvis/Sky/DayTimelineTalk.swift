@@ -94,6 +94,8 @@ struct HerWordsCard: View {
     /// the most the card grows to, 45% of the screen; her words get it less what stands around them (his line, the padding, 去聊天接着说)
     static let most = 0.45 * H
     private let wordsRoom = most - 64
+    /// her words past two lines read from the left, his line over them too; two lines or fewer stay centred
+    private var left: Bool { tall > 46 }
 
     var body: some View {
         let on = ui.herCardOn, talk = !ui.panelOpen && ui.tlTalk
@@ -129,7 +131,7 @@ struct HerWordsCard: View {
         VStack(spacing: 0) {
             if let heard = talk.heard {
                 Text(heard).font(.system(size: Look.note)).foregroundStyle(muted).lineLimit(1).truncationMode(.middle).contentTransition(.identity)
-                    .frame(maxWidth: .infinity, minHeight: 16).padding(.bottom, 3)
+                    .frame(maxWidth: .infinity, minHeight: 16, alignment: left ? .leading : .center).padding(.bottom, 3)
             }
             words(talk, scrolls: scrolls)
             if let links = talk.hers.last(where: { !$0.leadIn && $0.status == nil && !$0.failed })?.links, !links.isEmpty {
@@ -174,11 +176,10 @@ struct HerWordsCard: View {
                 if let u = talk.unsent { notSent(u) }
             }
             .frame(maxWidth: .infinity)
+            .onGeometryChange(for: Double.self) { Double($0.size.height) } action: { tall = $0 }
             VStack(spacing: 0) {
                 if scrolls {
-                    ScrollView {
-                        rows.onGeometryChange(for: Double.self) { Double($0.size.height) } action: { tall = $0 }
-                    }
+                    ScrollView { rows }
                     .defaultScrollAnchor(.top, for: .initialOffset)
                     .defaultScrollAnchor(.bottom, for: .sizeChanges)
                     .scrollBounceBehavior(.basedOnSize)
@@ -219,7 +220,8 @@ struct HerWordsCard: View {
             AnswerView(blocks: blocks, size: Look.body, lineSpacing: 3)
         } else {
             RevealText(text: styledWords(r.text, base: ink), reveal: r.reveal)
-                .font(.system(size: Look.body, weight: .medium)).lineSpacing(3).multilineTextAlignment(.center).tint(retryAmber).frame(maxWidth: .infinity)
+                .font(.system(size: Look.body, weight: .medium)).lineSpacing(3).multilineTextAlignment(left ? .leading : .center).tint(retryAmber)
+                .frame(maxWidth: .infinity, alignment: left ? .leading : .center)
         }
     }
 

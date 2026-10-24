@@ -144,6 +144,12 @@ final class PageShots: XCTestCase {
         shot("23-her-card-long")
     }
 
+    func testHerCardShort() {
+        _ = open("时间线", voice: "speaking")
+        sleep(5)
+        shot("26-her-card-short")
+    }
+
     func testHerCardDismissed() {
         _ = open("时间线", voice: "dismiss")
         shot("24-her-card-dismiss-said")
