@@ -63,10 +63,10 @@ struct SettingsMainPage: View {
                 }
                 NavRow(label: "重新配对") { push(.pair) }
             }
-            SetSection(header: "和她说话", footer: "「App 打开时喊 Jarvis 唤醒」开着时，App 在前台会一直听，比较费电。") {
+            SetSection(header: "和她说话", footer: "「App 打开时喊 Hey Jarvis 唤醒」开着时，App 在前台会一直听，比较费电。") {
                 InfoRow(label: "嘿 Siri，叫 Jarvis", detail: model.siri)
                 SwitchRow(title: "操作按钮叫她", isOn: $model.actionButton)
-                SwitchRow(title: "App 打开时喊 Jarvis 唤醒", isOn: $model.wakeInApp)
+                SwitchRow(title: "App 打开时喊 Hey Jarvis 唤醒", isOn: $model.wakeInApp)
                 SliderRow(title: "说话速度", value: $model.speechRate) { Text("慢") } hi: { Text("快") }
                 SliderRow(title: "音量", value: $model.volume) {
                     Image(systemName: "speaker.fill")

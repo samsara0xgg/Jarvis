@@ -32,7 +32,7 @@ final class VoiceSession {
     private(set) var language = VoiceLang.zh
     private(set) var modelProgress: Double?
 
-    /// Listen for "Jarvis" / "贾维斯" while the app is open and nothing else is going on.
+    /// Listen for "Hey Jarvis" / 「嘿，贾维斯」 while the app is open and nothing else is going on.
     var wakeWordInApp: Bool {
         get { wake }
         set { wake = newValue; refreshArming() }
