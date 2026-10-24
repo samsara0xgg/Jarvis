@@ -21,12 +21,23 @@ struct CircularComplication<Her: View>: View {
     }
 }
 
-/// the headline: title and its note
-struct RectangularComplication: View {
+/// her, and beside her what waits (等你 N and the first of it) or else the headline: the face's rectangle and the Smart Stack's card
+struct RectangularComplication<Her: View>: View {
     var day: WatchDay?
+    @ViewBuilder var her: Her
     var body: some View {
+        HStack(spacing: 6) {
+            her.frame(width: 36, height: 36)
+            lines
+        }
+    }
+
+    @ViewBuilder private var lines: some View {
         VStack(alignment: .leading, spacing: 1) {
-            if let h = day?.headline {
+            if let w = day?.waiting, let first = w.first {
+                Text(Words.Watch.waitingCount(w.count)).font(.system(size: 13, weight: .semibold)).foregroundStyle(WatchTheme.amber).widgetAccentable()
+                Text(first.title).font(.system(size: 15, weight: .semibold)).lineLimit(1).minimumScaleFactor(0.8)
+            } else if let h = day?.headline {
                 Text(h.title).font(.system(size: 15, weight: .semibold)).lineLimit(1).minimumScaleFactor(0.8)
                 Text(h.note).font(.system(size: 13)).foregroundStyle(h.waits ? WatchTheme.amber : WatchTheme.muted).lineLimit(1)
                     .widgetAccentable(h.waits)
@@ -34,7 +45,7 @@ struct RectangularComplication: View {
                 Text(Words.Watch.name).font(.system(size: 15, weight: .semibold))
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

@@ -10,6 +10,8 @@ struct DayEntry: TimelineEntry {
     let date: Date
     let day: WatchDay?
     var now: Double { day.map { WatchRing.nowMinute($0, at: date) } ?? 0 }
+    /// the Smart Stack puts her first only while something waits on him
+    var relevance: TimelineEntryRelevance? { TimelineEntryRelevance(score: day?.waiting.isEmpty == false ? 100 : 1) }
 }
 
 struct HerComplication: Widget {
@@ -47,7 +49,7 @@ struct ComplicationEntryView: View {
 
     var body: some View {
         switch family {
-        case .accessoryRectangular: RectangularComplication(day: entry.day)
+        case .accessoryRectangular: RectangularComplication(day: entry.day) { her("her-comp-out") }
         case .accessoryInline: InlineComplication(day: entry.day)
         case .accessoryCorner: CornerComplication(day: entry.day) { her("her-comp") }
         default: CircularComplication(day: entry.day, now: entry.now) { her("her-comp-out") }

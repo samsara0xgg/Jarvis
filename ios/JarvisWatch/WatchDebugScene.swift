@@ -81,7 +81,7 @@ struct WatchComplicationGallery: View {
                         HStack { CornerComplication(day: day) { HerSprite(face: .rest, size: 30, paused: true) }.frame(width: 40, height: 40); Text(complicationLine(day)).font(.system(size: 12)).foregroundStyle(WatchTheme.ink) }
                     }
                 }
-                card("rectangular", w: 160, h: 56) { RectangularComplication(day: day) }
+                card("rectangular", w: 160, h: 56) { RectangularComplication(day: day) { HerSprite(face: .rest, size: 30, paused: true) } }
                 card("inline", w: 170, h: 22) { InlineComplication(day: day) }
             }
         }
