@@ -1,32 +1,29 @@
 import SwiftUI
 import WatchKit
 
-/// The watch app: one vertical scroll (home, then the list), the screens it opens, and the talk laid over all of it.
-/// Everything grows out of her and goes back into her: 0.3 s, no bounce. She is one view over all of it, which moves and resizes from the ring to the corner, to the middle of a
-/// talk and to the corner of her answer.
+/// The watch app (跨端UI标准 §12): the screen is her. A talk keeps her in the middle, a little smaller, his words under her; a card lies over her and she peeks out
+/// above it; the crown turns to the pages (今天要办的, 坐车), where she sits in the top-right corner. She is one view over all of it, which moves and resizes between
+/// these places on one spring. Sizes are read off the boards, drawn at 208 × 248 (46 mm), and scale with the screen.
 struct WatchRoot: View {
-    private static let grow = Animation.smooth(duration: 0.3)
-    private static let cornerAt: CGFloat = 90          // points of scroll for her to travel from the middle to the corner
+    /// a card rises and drops, and she moves, on this one spring
+    static let spring = Animation.spring(duration: 0.45, bounce: 0.15)
 
-    enum Route: Hashable { case waiting(String), ride }
+    enum Page: Hashable { case home, today, ride }
     private enum Phase { case idle, listening, thinking, answer, failed }
 
     private let model = WatchModel.shared
-    @State private var path: [Route] = []
-    @State private var told: Int?
+    @State private var page: Page
+    /// waiting items to lay over her as cards: what he opened from 今天要办的 first, then what came in
+    @State private var queue: [String]
     @State private var answered: Set<String> = []
-    @State private var scroll: CGFloat = 0
-    /// scrolled far enough that she has reached the corner: from here the system's own corner item carries her (it also moves the time out of her way)
-    @State private var inList = false
-    @State private var herHome: CGRect = .zero
-    private let scrollToList: Bool
-    /// a screen to push once home is up (the debug scenes): a stack that starts with a path is blank until it finds its destinations
-    private let opening: Route?
-    @State private var opened = false
+    /// the 该出门了 he put away (its `leaveAt`), so it does not come back
+    @State private var leaveDismissed: Date?
+    @State private var cardHeight: CGFloat = 0
+    @Environment(\.isLuminanceReduced) private var aod
 
-    init(opening: Route? = nil, scrollToList: Bool = false) {
-        self.opening = opening
-        self.scrollToList = scrollToList
+    init(page: Page = .home, card: String? = nil) {
+        _page = State(initialValue: page)
+        _queue = State(initialValue: card.map { [$0] } ?? [])
     }
 
     private var phase: Phase {
@@ -39,147 +36,191 @@ struct WatchRoot: View {
         }
     }
 
+    private var answerCard: WatchCard? {
+        if case .answer(let spoken, let written, let action) = model.talk { return .answer(spoken: spoken, written: written, action: action) }
+        return nil
+    }
+
+    private var waits: Bool { model.day?.waiting.contains { !answered.contains($0.id) } ?? false }
+
     var body: some View {
-        ZStack {
-            NavigationStack(path: $path) {
-                home
-                    .navigationDestination(for: Route.self) { route in
-                        switch route {
-                        case .waiting(let id): waitingPage(id)
-                        case .ride: if let r = model.day?.ride { WatchRideView(ride: r) }
-                        }
-                    }
-            }
-            // one layer for the whole talk: it grows in once and goes once, and only its content changes from step to step (a transition on the switch itself would take the
-            // layer out and back at every step, showing the home between)
-            if phase != .idle {
-                ZStack { Color.black.ignoresSafeArea(); talk }.transition(.opacity)          // a fade: she is what grows, not a square over the round ring
-            }
-            ZStack { her }.ignoresSafeArea()          // she is placed in screen coordinates, the ones her place is measured in (`.global`)
+        TimelineView(.periodic(from: .now, by: 10)) { ctx in          // 该出门了 comes up and counts down by the clock
+            let card = WatchCard.top(answer: answerCard, day: model.day, queue: queue, answered: answered, leaveDismissed: leaveDismissed, now: ctx.date)
+            stage(card, now: ctx.date)
+                .onChange(of: card != nil) { _, up in if up { withAnimation(Self.spring) { page = .home } } }          // a card lies over her in the middle
         }
-        .animation(Self.grow, value: phase)
         .onChange(of: model.day) { old, new in
             answered = []
-            path.removeAll { !Self.exists($0, in: new) }                 // answered on the phone or ended while its screen was open: back to the list, not a blank page
             if let old, let new {
                 let had = Set(old.waiting.map(\.id))
-                if new.waiting.contains(where: { !had.contains($0.id) }) { WatchHaptics.play(.waits) }
+                let came = new.waiting.map(\.id).filter { !had.contains($0) }
+                if !came.isEmpty { WatchHaptics.play(.waits); queue += came }
             }
+            if (page == .ride && new?.ride == nil) || (page == .today && new == nil) { page = .home }          // ended while its page was open
         }
         .onChange(of: model.day?.ride?.alightNext) { old, new in if new == true, old != true { WatchHaptics.play(.alight) } }
-        .onChange(of: phase) { _, new in if new == .listening { WatchHaptics.play(.listening) } }
+        .onChange(of: phase) { _, new in
+            if new == .listening { WatchHaptics.play(.listening) }
+            if new != .idle { withAnimation(Self.spring) { page = .home } }
+        }
         .task(id: model.day?.leaveAt) {
             guard let t = model.day?.leaveAt, t > .now else { return }
             try? await Task.sleep(for: .seconds(t.timeIntervalSinceNow))
             if !Task.isCancelled { WatchHaptics.play(.leave) }
         }
-        .onOpenURL { if $0.scheme == "jarvis-watch", $0.host == "talk" { model.startTalk() } }
+        .onOpenURL { if $0.scheme == "jarvis-watch", $0.host == "talk" { page = .home; model.startTalk() } }
     }
 
-    // MARK: home and the list
+    private func stage(_ card: WatchCard?, now: Date) -> some View {
+        let s = WKInterfaceDevice.current().screenBounds.size
+        let k = s.width / 208, ky = s.height / 248
+        return ZStack {
+            pages
+            if phase == .listening || phase == .thinking || phase == .failed { captions(ky: ky).transition(.opacity) }
+            if phase == .idle, card == nil, page == .home, waits {
+                Circle().fill(WatchTheme.amber).frame(width: 8 * k, height: 8 * k).shadow(color: WatchTheme.amber.opacity(0.7), radius: 4)
+                    .opacity(aod ? 0.45 : 1)
+                    .position(x: 22 * k, y: 18 * ky)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity).ignoresSafeArea().allowsHitTesting(false)
+            }
+            ZStack { her(card, s: s, k: k, ky: ky) }.frame(maxWidth: .infinity, maxHeight: .infinity).ignoresSafeArea()          // placed in screen points
+            if let card {
+                VStack {
+                    Spacer(minLength: 0)
+                    WatchCardView(card: card, now: now, maxHeight: s.height - 6 * k - 92 * ky,
+                                  answer: { id, action in answer(card, id, action) }, dismiss: { dismiss(card) })
+                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { cardHeight = $0 }
+                }
+                .padding([.horizontal, .bottom], 6 * k)
+                .ignoresSafeArea()
+                .id(Self.key(card))
+                .transition(.move(edge: .bottom))
+            }
+        }
+        .animation(Self.spring, value: card.map(Self.key))
+        .animation(Self.spring, value: phase)
+        .animation(Self.spring, value: page)
+        .animation(Self.spring, value: cardHeight)
+    }
 
-    private var home: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                VStack(spacing: 0) {
-                    WatchHomePage(day: model.day, aod: aod, quiet: phase != .idle, told: $told, openRide: { path.append(.ride) }, herPlace: { herHome = $0 })
-                        .frame(height: WKInterfaceDevice.current().screenBounds.height)
-                    if let day = model.day {
-                        WatchList(day: day, answered: answered, open: { path.append($0) }, answer: send)
-                            .padding(.horizontal, 2).id("list")
+    // MARK: the pages, turned with the crown
+
+    private var pages: some View {
+        NavigationStack {
+            TabView(selection: $page) {
+                Group {
+                    if model.day == nil {
+                        Text(Words.Watch.noDay).font(.system(size: 13)).foregroundStyle(WatchTheme.muted)
+                            .frame(maxHeight: .infinity, alignment: .bottom)
+                    } else {
+                        Color.clear
                     }
                 }
+                .tag(Page.home)
+                if let day = model.day {
+                    WatchTodayPage(day: day, answered: answered, open: openCard, answer: { id, action in send(id, action) }).tag(Page.today)
+                }
+                if let r = model.day?.ride { WatchRideView(ride: r).tag(Page.ride) }
             }
-            .onScrollGeometryChange(for: CGFloat.self) { max(0, $0.contentOffset.y + $0.contentInsets.top) } action: { _, y in scroll = y; inList = y >= Self.cornerAt }
-            .onAppear {
-                if let opening, !opened { opened = true; Task { try? await Task.sleep(for: .seconds(0.4)); path = [opening] } }
-                if scrollToList { Task { try? await Task.sleep(for: .seconds(0.4)); withAnimation(Self.grow) { proxy.scrollTo("list", anchor: .top) } } }
-            }
+            .tabViewStyle(.verticalPage)
         }
-        .ignoresSafeArea()
-        .task(id: told) { if told != nil { try? await Task.sleep(for: .seconds(4)); if !Task.isCancelled { withAnimation(Self.grow) { told = nil } } } }
-        .animation(Self.grow, value: told)
-        .toolbar {
-            if inList && phase == .idle { WatchCornerHer(face: .rest, primary: true) }
-            else if phase != .idle { ToolbarItem(placement: .topBarTrailing) { Color.clear.frame(width: 28, height: 28) } }          // her answer puts her in this corner: the time keeps out of her way from the talk's start, so the bar does not change under the answer's move
-        }
-        .toolbar(inList || phase != .idle ? .visible : .hidden, for: .navigationBar)
     }
 
-    /// She: the ball in the middle of the ring; as the list scrolls up she shrinks into the top-right corner, and grows back at the top. In a talk she goes to its middle, and with
-    /// her answer to the top-right corner. At rest in the list or on a pushed screen the system's corner item carries her, and this one is not shown.
-    private var her: some View {
-        let screen = WKInterfaceDevice.current().screenBounds.size
-        let corner = CGPoint(x: screen.width - 32.5, y: 35)          // where the system puts a 28 pt top-trailing item
-        let middle = CGPoint(x: screen.width / 2, y: screen.height / 2 - WatchTalkView.herLift)
-        let p = path.isEmpty ? min(1, scroll / Self.cornerAt) : 1
-        let (at, d, face): (CGPoint, CGFloat, HerFace) = switch phase {
-        case .idle: (CGPoint(x: herHome.midX + (corner.x - herHome.midX) * p, y: herHome.midY + (corner.y - herHome.midY) * p), 80 + (28 - 80) * p, aodFace)
-        case .listening: (middle, 80, .listen)
-        case .thinking: (middle, 80, .think)
-        case .answer: (corner, 28, .talk)
-        case .failed: (middle, 80, .rest)
-        }
-        let shown = phase != .idle || (!inList && path.isEmpty && herHome != .zero)
-        let b = Button {
-            switch phase {
-            case .idle, .answer: model.startTalk()
-            case .listening: model.endTalk()
-            case .thinking: model.cancelTalk()
-            case .failed: model.talk = .idle
+    // MARK: her
+
+    /// She: full screen in the middle at home; a little smaller and higher in a talk; peeking above a card; in the top-right corner on a page.
+    private func her(_ card: WatchCard?, s: CGSize, k: CGFloat, ky: CGFloat) -> some View {
+        let mid = s.width / 2
+        let (at, d): (CGPoint, CGFloat) =
+            if card != nil {
+                (CGPoint(x: mid, y: s.height - 6 * k - (cardHeight > 0 ? cardHeight : 136 * ky) - 36 * k), 144 * k)          // her eyes just over the card's top edge
+            } else if phase != .idle {
+                (CGPoint(x: mid, y: 98 * ky), 141 * k)
+            } else if page != .home {
+                (CGPoint(x: s.width - 34 * k, y: 30 * ky), 42 * k)          // the corner the page's toolbar keeps free (the system then centres the time)
+            } else {
+                (CGPoint(x: mid, y: 132 * ky), 170 * k)
             }
-        } label: {
-            HerSprite(face: face, size: d, paused: face == .doze).frame(width: max(d, 44), height: max(d, 44)).contentShape(Circle())
+        let b = Button { tapHer(card) } label: {
+            HerSprite(face: face(card), size: d, paused: aod).frame(width: max(d, 44), height: max(d, 44)).contentShape(Circle())
         }
         .buttonStyle(.plain)
-        return Group { if phase == .idle { b.handGestureShortcut(.primaryAction) } else { b } }          // in a talk its own screen answers the double tap
+        return Group { if phase == .idle && card == nil && page == .home { b.handGestureShortcut(.primaryAction) } else { b } }          // otherwise a card's first button, or the talk's own screen, answers the double tap
+            .opacity(aod ? 0.45 : 1)
             .position(at)
-            .opacity(shown ? 1 : 0).allowsHitTesting(shown)
     }
 
-    @Environment(\.isLuminanceReduced) private var aod
-    private var aodFace: HerFace { aod ? .doze : .rest }
+    private func face(_ card: WatchCard?) -> HerFace {
+        if aod { return .doze }
+        switch phase {
+        case .listening: return .listen
+        case .thinking: return .think
+        case .answer: return .talk
+        case .failed: return .rest
+        case .idle: break
+        }
+        if card != nil { return .ask }
+        if page != .home { return .talk }
+        return waits ? .ask : .rest
+    }
 
-    // MARK: screens
-
-    @ViewBuilder private func waitingPage(_ id: String) -> some View {
-        let items = (model.day?.waiting ?? []).filter { !answered.contains($0.id) }
-        if let i = items.firstIndex(where: { $0.id == id }) {
-            WatchWaitingView(item: items[i], index: i + 1, count: items.count) { action in
-                send(id, action)
-                path.removeAll()
-            }
+    private func tapHer(_ card: WatchCard?) {
+        switch phase {
+        case .idle:
+            if let card { dismiss(card) } else if page != .home { page = .home } else { model.startTalk() }
+        case .listening: model.endTalk()
+        case .thinking: model.cancelTalk()
+        case .answer, .failed: model.talk = .idle
         }
     }
 
-    /// whether the screen of a route still has what it shows in the day the phone sent
-    private static func exists(_ r: Route, in day: WatchDay?) -> Bool {
-        switch r {
-        case .waiting(let id): day?.waiting.contains { $0.id == id } ?? false
-        case .ride: day?.ride != nil
+    // MARK: the talk and the cards
+
+    /// his words under her as she hears them, dimmed while she thinks; or why the talk failed. A tap ends the listening, drops the question, or puts the failure away.
+    @ViewBuilder private func captions(ky: CGFloat) -> some View {
+        switch model.talk {
+        case .listening(let h):
+            WatchCaptions(text: h.isEmpty ? Words.Watch.listening : h, tint: h.isEmpty ? WatchTheme.muted : WatchTheme.ink, top: 186 * ky) { model.endTalk() }
+        case .thinking(let h):
+            WatchCaptions(text: h.isEmpty ? Words.Watch.thinking : h, tint: WatchTheme.faint, top: 186 * ky) { model.cancelTalk() }
+        case .failed(let reason):
+            WatchCaptions(text: reason, tint: WatchTheme.ink, top: 186 * ky) { model.talk = .idle }
+        default: EmptyView()
         }
+    }
+
+    private static func key(_ c: WatchCard) -> String {
+        switch c {
+        case .answer: "answer"
+        case .waiting(let w): "waiting." + w.id
+        case .leave: "leave"
+        }
+    }
+
+    /// a waiting item opened from 今天要办的: its card over her
+    private func openCard(_ id: String) {
+        queue.removeAll { $0 == id }
+        queue.insert(id, at: 0)
     }
 
     private func send(_ id: String, _ action: String) {
         model.answer(id, action)
-        withAnimation(Self.grow) { _ = answered.insert(id) }
+        withAnimation(Self.spring) {
+            _ = answered.insert(id)
+            queue.removeAll { $0 == id }
+        }
     }
 
-    @ViewBuilder private var talk: some View {
-        switch model.talk {
-        case .idle: EmptyView()
-        case .listening(let h), .thinking(let h):           // one view for both: his words stay where they are while she goes from listening to thinking
-            let listening = phase == .listening
-            WatchTalkView(heard: h, placeholder: listening ? Words.Watch.listening : Words.Watch.thinking) {
-                if listening { model.endTalk() } else { model.cancelTalk() }
-            }
-        case .answer(let spoken, let written, let card):
-            WatchAnswerView(spoken: spoken, written: written, card: card, answer: { id, action in
-                model.answer(id, action)
-                model.talk = .idle
-            }, dismiss: { model.talk = .idle })
-            .transition(.asymmetric(insertion: .opacity.animation(.easeOut(duration: 0.2).delay(0.25)), removal: .opacity))          // her words come once she has reached her corner, not under her on her way
-        case .failed(let reason): WatchFailedView(reason: reason) { model.talk = .idle }
+    private func answer(_ card: WatchCard, _ id: String, _ action: String) {
+        send(id, action)
+        if case .answer = card { model.talk = .idle }
+    }
+
+    private func dismiss(_ card: WatchCard) {
+        switch card {
+        case .answer: model.talk = .idle
+        case .waiting(let w): queue.removeAll { $0 == w.id }
+        case .leave(let t): leaveDismissed = t
         }
     }
 }

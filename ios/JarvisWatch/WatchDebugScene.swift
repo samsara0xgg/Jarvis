@@ -1,18 +1,22 @@
 #if DEBUG
 import SwiftUI
 
-/// Debug only: `-watchScene <name>` puts the app in one screen with the sample day, for screenshots (the simulator cannot easily set up a watch face).
-/// home, listen, think, answer, list, waiting, ride, aod, complications.
+/// Debug only: `-watchScene <name>` puts the app in one state with a made-up day (WatchDaySample), for screenshots: the home (rest, waiting, aod), a talk
+/// (listen, think, answer), a card (reminder, leave), a page (today, ride), and the complications' gallery.
 enum WatchScene: String {
-    case home, listen, think, answer, list, waiting, ride, aod, complications
+    case home, waiting, aod, listen, think, answer, reminder, leave, today, ride, complications
 
     static var current: WatchScene? { UserDefaults.standard.string(forKey: "watchScene").flatMap(WatchScene.init(rawValue:)) }
 
-    /// adopt the sample day, and make the talk buttons play a small talk of their own (there is no phone here)
+    /// adopt the sample day (with nothing waiting where the board's her is at rest), and make the talk buttons play a small talk of their own (there is no phone here)
     @MainActor static func apply() {
         guard let scene = current else { return }
         let m = WatchModel.shared
-        m.adopt(.sample)
+        switch scene {
+        case .waiting, .reminder, .today, .ride, .complications: m.adopt(.sample)
+        case .leave: m.adopt(.sampleLeaving)
+        default: m.adopt(.sampleQuiet)
+        }
         m.startTalk = { m.talk = .listening(heard: "") }
         m.endTalk = { m.talk = .thinking(heard: WatchDay.sampleHeard) }
         m.cancelTalk = { m.talk = .idle }
@@ -29,9 +33,9 @@ struct WatchDebugHost: View {
     var body: some View {
         switch WatchScene.current {
         case .complications: WatchComplicationGallery()
-        case .waiting: WatchRoot(opening: .waiting(WatchDay.sample.waiting[0].id))
-        case .ride: WatchRoot(opening: .ride)
-        case .list: WatchRoot(scrollToList: true)
+        case .reminder: WatchRoot(card: WatchDay.sample.waiting[0].id)
+        case .today: WatchRoot(page: .today)
+        case .ride: WatchRoot(page: .ride)
         case .aod: WatchRoot().transformEnvironment(\.isLuminanceReduced) { $0 = true }
         default: WatchRoot()
         }

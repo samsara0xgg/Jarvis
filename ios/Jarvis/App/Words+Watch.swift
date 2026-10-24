@@ -7,18 +7,21 @@ extension Words {
 
         static var name: String { pick(zh: "Jarvis", en: "Jarvis") }
 
-        // the list's three sections
         static var now: String { pick(zh: "现在", en: "Now") }
         static var waiting: String { pick(zh: "等你", en: "Waiting") }
         static var next: String { pick(zh: "接下来", en: "Next") }
-
-        /// the top-left of a waiting item's screen: which of how many
-        static func waitingOf(_ i: Int, _ n: Int) -> String { pick(zh: "等你 \(i)/\(n)", en: "Waiting \(i)/\(n)") }
-        /// the inline complication and the corner's label
+        /// 今天要办的's 等你 header, the inline complication and the corner's label
         static func waitingCount(_ n: Int) -> String { pick(zh: "等你 \(n)", en: "\(n) waiting") }
 
+        // the cards over her
+        static var reminder: String { pick(zh: "提醒", en: "Reminder") }
+        static var leave: String { pick(zh: "该出门了", en: "Time to go") }
+        /// 该出门了's countdown
+        static func minutes(_ n: Int) -> String { pick(zh: "\(n) 分钟", en: "\(n) min") }
+        /// 该出门了's line: when to go (`21:52`)
+        static func leaveAt(_ time: String) -> String { pick(zh: "\(time) 走", en: "Leave at \(time)") }
+
         static var doubleTap: String { pick(zh: "双击", en: "Double tap") }
-        static var done: String { pick(zh: "好了", en: "Done") }
         static var listening: String { pick(zh: "在听", en: "Listening") }
         static var thinking: String { pick(zh: "在想", en: "Thinking") }
         static var noDay: String { pick(zh: "等手机发来今天", en: "Waiting for the phone") }

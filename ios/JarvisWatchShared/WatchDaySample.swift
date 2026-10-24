@@ -40,6 +40,11 @@ extension WatchDay {
             leaveAt: Date().addingTimeInterval(4800))
     }
 
+    /// the board's her at rest: nothing waits, and leaving is far off
+    static var sampleQuiet: WatchDay { var d = sample; d.waiting = []; return d }
+    /// 该出门了 two minutes before he should go
+    static var sampleLeaving: WatchDay { var d = sampleQuiet; d.leaveAt = Date().addingTimeInterval(120); return d }
+
     /// what he said, what she said and the card she put up, for the talk scenes
     static let sampleHeard = "陶艺课改到明天同一时间"
     static let sampleSpoken = "好，改到明天 22:00。"

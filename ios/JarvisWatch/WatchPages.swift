@@ -1,70 +1,93 @@
 import SwiftUI
 
-/// the corner she sits in on every screen but home: top right, 28 pt (watchOS then centres the time)
-struct WatchCornerHer: ToolbarContent {
-    var face: HerFace
-    /// the screen's primary action (double tap) is talking to her
-    var primary = false
-    var model = WatchModel.shared
+/// the corner she sits in on a page: top right, about 58 pt of her on 208, kept free here (WatchRoot draws her there). With something at the top left too,
+/// watchOS centres the time; a page with nothing there keeps that place empty (`balanced`) so the time is centred all the same.
+struct WatchCornerSeat: ToolbarContent {
+    var balanced = false
     var body: some ToolbarContent {
-        ToolbarItem(placement: .topBarTrailing) {
-            let b = Button { model.startTalk() } label: { HerSprite(face: face, size: 28) }.buttonStyle(.plain)
-            if primary { b.handGestureShortcut(.primaryAction) } else { b }
-        }
+        if balanced { ToolbarItem(placement: .topBarLeading) { Color.clear.frame(width: 44, height: 44).accessibilityHidden(true) } }
+        ToolbarItem(placement: .topBarTrailing) { Color.clear.frame(width: 44, height: 44).accessibilityHidden(true) }
     }
 }
 
-/// big amber (or white) pill; the primary one answers a double tap
+/// a card's button: the first filled (amber, or white on her answer) and answering a double tap; the second quiet. Both big enough for a finger.
 struct WatchPill: View {
     var title: String
     var primary: Bool
     var fill: Color = WatchTheme.amber
-    var hint: String?
     var action: () -> Void
 
     var body: some View {
         let b = Button(action: action) {
-            HStack {
-                Text(title).font(.system(size: primary ? 18 : 15, weight: primary ? .semibold : .medium)).lineLimit(1).minimumScaleFactor(0.7)
-                if let hint { Spacer(minLength: 4); Text(hint).font(.system(size: 10)).opacity(0.6) }
+            HStack(spacing: 4) {
+                Text(title).font(.system(size: 14.5, weight: .semibold)).lineLimit(1).minimumScaleFactor(0.7)
+                if primary { Text(Words.Watch.doubleTap).font(.system(size: 10, weight: .medium)).lineLimit(1).opacity(0.65) }
             }
             .foregroundStyle(primary ? WatchTheme.darkInk : WatchTheme.ink)
-            .padding(.horizontal, 14)
-            .frame(maxWidth: .infinity, minHeight: primary ? 46 : 38)
-            .background(primary ? fill : Color.white.opacity(0.12), in: Capsule())
+            .padding(.horizontal, 8)
+            .frame(maxWidth: .infinity, minHeight: 40)
+            .background(primary ? fill : Color.white.opacity(0.14), in: Capsule())
+            .contentShape(Capsule())
         }
         .buttonStyle(.plain)
         if primary { b.handGestureShortcut(.primaryAction) } else { b }
     }
 }
 
-/// 等你 1/2: one waiting item, one screen. The first action is the big one (double tap), the second a quiet one.
-struct WatchWaitingView: View {
-    var item: WatchDay.Waiting
-    var index: Int
-    var count: Int
-    var answer: (_ action: String) -> Void
+/// 今天要办的: the headline the phone sent, then 等你 N (a reminder's check answers it here; a tap on a row opens its card over her), then 接下来.
+struct WatchTodayPage: View {
+    var day: WatchDay
+    var answered: Set<String>
+    var open: (_ id: String) -> Void
+    var answer: (_ id: String, _ action: String) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(item.title).font(.system(size: 28, weight: .semibold)).foregroundStyle(WatchTheme.ink).lineLimit(2).minimumScaleFactor(0.7)
-            Text(item.sub).font(.system(size: 13)).foregroundStyle(WatchTheme.muted).lineLimit(2)
-            Spacer(minLength: 6)
-            if let a = item.actions.first { WatchPill(title: a.title, primary: true, hint: Words.Watch.doubleTap) { answer(a.id) } }
-            if item.actions.count > 1 { WatchPill(title: item.actions[1].title, primary: false) { answer(item.actions[1].id) } }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 2)
-        .navigationBarBackButtonHidden(true)
-        .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                HStack(spacing: 4) {
-                    Circle().fill(WatchTheme.amber).frame(width: 7, height: 7)
-                    Text(Words.Watch.waitingOf(index, count)).font(.system(size: 13, weight: .semibold)).foregroundStyle(WatchTheme.amber)
+        let waiting = day.waiting.filter { !answered.contains($0.id) }
+        ScrollView {
+            VStack(spacing: 0) {
+                if let h = day.headline {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(h.title).font(.system(size: 14, weight: .semibold)).foregroundStyle(WatchTheme.ink)
+                        Text(h.note).font(.system(size: 13)).foregroundStyle(h.waits ? WatchTheme.amber : WatchTheme.muted)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                if !waiting.isEmpty {
+                    WatchHeader(text: Words.Watch.waitingCount(waiting.count), tint: WatchTheme.amber)
+                    ForEach(waiting) { w in
+                        Button { open(w.id) } label: {
+                            WatchRowView(symbol: w.symbol, color: WatchTheme.icon, title: w.title, sub: w.sub, right: "") {
+                                if w.kind == .reminder, let a = w.actions.first { check(w.id, a) }
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                if !day.next.isEmpty {
+                    WatchHeader(text: Words.Watch.next)
+                    ForEach(day.next) { r in
+                        WatchRowView(symbol: r.symbol, color: r.rgb.map(WatchTheme.color) ?? WatchTheme.icon, title: r.title, sub: r.sub, right: r.right, planned: r.planned)
+                    }
+                }
+                if day.headline == nil, waiting.isEmpty, day.next.isEmpty {
+                    Text(Words.Watch.nothingMore).font(.system(size: 13)).foregroundStyle(WatchTheme.muted).padding(.top, 16)
                 }
             }
-            WatchCornerHer(face: .ask)
+            .padding(.horizontal, 4)
+            .padding(.bottom, 16)
         }
+        .toolbar { WatchCornerSeat(balanced: true) }
+    }
+
+    /// a reminder's check: its first action, without opening it
+    private func check(_ id: String, _ a: WatchDay.Action) -> some View {
+        Button { answer(id, a.id) } label: {
+            Image(systemName: "checkmark").font(.system(size: 13, weight: .semibold)).foregroundStyle(WatchTheme.amber)
+                .frame(width: 30, height: 30).overlay(Circle().strokeBorder(WatchTheme.amber, lineWidth: 1.6))
+                .frame(width: 40, height: 40).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(a.title)
     }
 }
 
@@ -74,7 +97,7 @@ struct WatchRideView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(ride.title).font(.system(size: 30, weight: .semibold)).foregroundStyle(WatchTheme.ink).lineLimit(1).minimumScaleFactor(0.6)
+            Text(ride.title).font(.system(size: 28, weight: .semibold)).foregroundStyle(WatchTheme.ink).lineLimit(1).minimumScaleFactor(0.6)
             Text(ride.sub).font(.system(size: 13)).foregroundStyle(WatchTheme.muted).lineLimit(1)
             stops.padding(.top, 14)
             HStack {
@@ -94,15 +117,15 @@ struct WatchRideView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 2)
-        .navigationBarBackButtonHidden(true)
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
                 HStack(spacing: 4) {
-                    Image(systemName: "bus").font(.system(size: 12)).foregroundStyle(WatchTheme.ink)
-                    Text(ride.route).font(.system(size: 13, weight: .semibold)).foregroundStyle(WatchTheme.ink)
+                    Image(systemName: "bus").font(.system(size: 12))
+                    Text(ride.route).font(.system(size: 12.5, weight: .semibold))
                 }
+                .foregroundStyle(WatchTheme.trip)
             }
-            WatchCornerHer(face: ride.alightNext ? .ask : .rest)
+            WatchCornerSeat()
         }
     }
 

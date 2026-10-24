@@ -1,75 +1,105 @@
 import SwiftUI
 
-/// Listening and thinking: she stays in the middle, his words come in under her; a tap ends the listening (or drops the question while she thinks).
-struct WatchTalkView: View {
-    /// how far over the screen's middle she sits in a talk (WatchRoot draws her); his words are under her
-    static let herLift = 34.0
-    var heard: String
-    var placeholder: String
+/// The line under her in a talk (WatchRoot draws her): his words as she hears them, or why the talk failed. The whole screen is its button.
+struct WatchCaptions: View {
+    var text: String
+    var tint: Color
+    /// where the line starts, in screen points
+    var top: CGFloat
     var tap: () -> Void
 
     var body: some View {
         Button(action: tap) {
-            Group {
-                if heard.isEmpty { Text(placeholder).foregroundStyle(WatchTheme.muted) } else { Text(heard).foregroundStyle(WatchTheme.ink) }
-            }
-            .font(.system(size: 17, weight: .medium)).multilineTextAlignment(.center).lineLimit(3).minimumScaleFactor(0.8)
-            .padding(.horizontal, 10)
-            .frame(height: 72, alignment: .top)
-            .offset(y: 56)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .handGestureShortcut(.primaryAction)
-        .ignoresSafeArea()
-    }
-}
-
-/// Her answer: she is in the top-right corner with the talk face (WatchRoot draws her), her words under, scrollable; a card she put up has its buttons at the end.
-struct WatchAnswerView: View {
-    var spoken: String
-    var written: String
-    var card: WatchDay.Waiting?
-    var answer: (_ id: String, _ action: String) -> Void
-    var dismiss: () -> Void
-
-    var body: some View {
-        // no stack of its own (a new one is a few frames of black before it draws): the home's bar keeps the time out of her corner (WatchRoot draws her there)
-        ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
-                Text(written.isEmpty ? spoken : written).font(.system(size: 17, weight: .medium)).foregroundStyle(WatchTheme.ink)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                if let c = card {
-                    HStack(spacing: 6) {
-                        ForEach(Array(c.actions.prefix(2).enumerated()), id: \.offset) { i, a in
-                            WatchPill(title: a.title, primary: i == 0, fill: WatchTheme.ink) { answer(c.id, a.id) }
-                        }
-                    }
-                } else {
-                    WatchPill(title: Words.Watch.done, primary: false, hint: nil, action: dismiss)
-                }
-            }
-            .padding(.horizontal, 2)
-        }
-    }
-}
-
-/// a talk that failed: her words for why, a tap puts it away
-struct WatchFailedView: View {
-    var reason: String
-    var dismiss: () -> Void
-    var body: some View {
-        Button(action: dismiss) {
-            Text(reason).font(.system(size: 15)).foregroundStyle(WatchTheme.ink).multilineTextAlignment(.center).lineLimit(4)          // under her, where his words were (WatchRoot draws her)
-                .padding(.horizontal, 10)
-                .frame(height: 80, alignment: .top)
-                .offset(y: 60)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            Text(text).font(.system(size: 16, weight: .medium)).foregroundStyle(tint)
+                .multilineTextAlignment(.center).lineLimit(2).truncationMode(.head).minimumScaleFactor(0.85)          // the newest words stay
+                .padding(.horizontal, 12)
+                .padding(.top, top)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .handGestureShortcut(.primaryAction)
         .ignoresSafeArea()
+    }
+}
+
+/// A card over her (WatchRoot lays it at the bottom and makes her peek above it): the watch's own dark material, translucent, a thin light line along its top
+/// edge. Her answer, a waiting item, or 该出门了. With buttons, they answer it; without, a tap on it puts it away. Too long for the screen, it scrolls inside.
+struct WatchCardView: View {
+    var card: WatchCard
+    var now: Date
+    var maxHeight: CGFloat
+    var answer: (_ id: String, _ action: String) -> Void
+    var dismiss: () -> Void
+
+    private static let shape = RoundedRectangle(cornerRadius: 30, style: .continuous)
+
+    var body: some View {
+        ViewThatFits(in: .vertical) {
+            content
+            ScrollView { content }
+        }
+        .frame(maxWidth: .infinity, maxHeight: maxHeight)
+        .background(.regularMaterial, in: Self.shape)
+        .overlay(Self.shape.strokeBorder(LinearGradient(colors: [.white.opacity(0.22), .clear], startPoint: .top, endPoint: .init(x: 0.5, y: 0.25)), lineWidth: 0.7))
+        .shadow(color: .black.opacity(0.45), radius: 12, y: -6)
+        .environment(\.colorScheme, .dark)
+        .contentShape(Self.shape)
+        .onTapGesture { if actions == nil { dismiss() } }
+    }
+
+    /// the id the buttons answer, and its actions; none on a card without buttons
+    private var actions: (id: String, list: [WatchDay.Action])? {
+        switch card {
+        case .answer(_, _, let a?): (a.id, a.actions)
+        case .waiting(let w) where !w.actions.isEmpty: (w.id, w.actions)
+        default: nil
+        }
+    }
+
+    private var content: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            switch card {
+            case .answer(let spoken, let written, _):
+                // her first line is the card's title, the rest under it
+                let lines = (written.isEmpty ? spoken : written).split(separator: "\n", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
+                Text(lines.first ?? "").font(.system(size: 16.5, weight: .semibold)).foregroundStyle(WatchTheme.ink)
+                if lines.count > 1 { line(lines[1]) }
+            case .waiting(let w):
+                label(w.symbol, w.kind == .reminder ? Words.Watch.reminder : Words.Watch.waiting, WatchTheme.amber)
+                Text(w.title).font(.system(size: 18, weight: .semibold)).foregroundStyle(WatchTheme.ink).padding(.top, 1)
+                if !w.sub.isEmpty { line(w.sub) }
+            case .leave(let t):
+                label("figure.walk", Words.Watch.leave, WatchTheme.trip)
+                let left = Int((t.timeIntervalSince(now) / 60).rounded(.up))
+                Text(left > 0 ? Words.Watch.minutes(left) : Words.Watch.now)
+                    .font(.system(size: 24, weight: .semibold, design: .rounded)).monospacedDigit().foregroundStyle(WatchTheme.ink)
+                line(Words.Watch.leaveAt(t.formatted(.dateTime.hour(.twoDigits(amPM: .omitted)).minute(.twoDigits))))
+            }
+            if let a = actions {
+                HStack(spacing: 6) {
+                    ForEach(Array(a.list.prefix(2).enumerated()), id: \.offset) { i, act in
+                        WatchPill(title: act.title, primary: i == 0, fill: isAnswer ? WatchTheme.ink : WatchTheme.amber) { answer(a.id, act.id) }
+                    }
+                }
+                .padding(.top, 8)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(EdgeInsets(top: 13, leading: 14, bottom: 12, trailing: 14))
+    }
+
+    private var isAnswer: Bool { if case .answer = card { true } else { false } }
+
+    private func label(_ symbol: String, _ text: String, _ tint: Color) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: symbol).font(.system(size: 11, weight: .semibold))
+            Text(text).font(.system(size: 11.5, weight: .semibold))
+        }
+        .foregroundStyle(tint)
+    }
+
+    private func line(_ text: String) -> some View {
+        Text(text).font(.system(size: 13.5)).foregroundStyle(WatchTheme.ink.opacity(0.82)).fixedSize(horizontal: false, vertical: true)
     }
 }
