@@ -60,6 +60,10 @@ if CommandLine.arguments.dropFirst().first == "pair" {
     exit(0)
 }
 
+// Ask for both grants at launch, while he is at the Mac, not at the first connection from the iPad.
+if !CGPreflightScreenCaptureAccess() { CGRequestScreenCaptureAccess() }
+if !CGPreflightPostEventAccess() { CGRequestPostEventAccess() }
+
 let secret = token()
 let listener = try NWListener(using: .tcp, on: port)
 listener.newConnectionHandler = { c in
