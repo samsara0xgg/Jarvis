@@ -44,6 +44,7 @@ cat > "$agent" <<EOF
   <key>ProgramArguments</key><array><string>$HOME/Applications/$app/Contents/MacOS/JarvisRemote</string></array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
+  <key>ProcessType</key><string>Interactive</string>
   <key>StandardOutPath</key><string>$HOME/Library/Logs/jarvis-remote.log</string>
   <key>StandardErrorPath</key><string>$HOME/Library/Logs/jarvis-remote.log</string>
 </dict></plist>

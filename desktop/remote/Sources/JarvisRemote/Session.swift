@@ -32,10 +32,10 @@ final class Session: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
 
     private let conn: NWConnection
     private let secret: String
-    private let q = DispatchQueue(label: "jarvis.remote.session")
+    private let q = DispatchQueue(label: "jarvis.remote.session", qos: .userInteractive)
     // The low-latency encoder's call returns only when the frame is done (~10 ms here): on `q` it held up the iPad's acks behind it,
     // which read as a late link. It runs on its own queue, one frame at a time; a screen that came meanwhile goes next, the newest.
-    private let encodeQ = DispatchQueue(label: "jarvis.remote.encode")
+    private let encodeQ = DispatchQueue(label: "jarvis.remote.encode", qos: .userInteractive)
     private var encoding = false, missed = false
     private var inbox = Data()
     private var authed = false
@@ -77,6 +77,9 @@ final class Session: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
 
     private var curtain: [NSWindow] = []
     private var awake: IOPMAssertionID = 0
+    // A windowless background agent is napped and its work run at low priority: the same encoder took ~11 ms a frame here
+    // against <1 ms in a foreground benchmark at 120 fps. While he is here it is latency-critical.
+    private var activity: NSObjectProtocol?
     private let input = Input()
 
     init(_ conn: NWConnection, secret: String) {
@@ -173,6 +176,7 @@ final class Session: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
         var poke: IOPMAssertionID = 0
         IOPMAssertionDeclareUserActivity("Jarvis Remote" as CFString, kIOPMUserActiveLocal, &poke)
         IOPMAssertionCreateWithName(kIOPMAssertionTypePreventUserIdleDisplaySleep as CFString, IOPMAssertionLevel(kIOPMAssertionLevelOn), "Jarvis Remote" as CFString, &awake)
+        activity = ProcessInfo.processInfo.beginActivity(options: [.userInitiated, .latencyCritical, .idleDisplaySleepDisabled], reason: "Jarvis Remote streams the screen")
         let folded = Displays.fold()
         // the windows take a moment to move and the display list to settle before the curtain and the capture look at it
         DispatchQueue.main.asyncAfter(deadline: .now() + (folded ? 2 : 0)) { [self] in
@@ -375,6 +379,7 @@ final class Session: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
         DispatchQueue.main.async { [self] in
             curtain.forEach { $0.close() }
             if awake != 0 { IOPMAssertionRelease(awake) }
+            if let activity { ProcessInfo.processInfo.endActivity(activity) }
             guard Session.live === self else { return }
             Session.live = nil
             Displays.unfold()
