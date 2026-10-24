@@ -173,14 +173,19 @@ final class DayTimelineDoingRowsTests: XCTestCase {
         }
         let table: [(String, String, RGB?)] = [("work", "briefcase", RGB(91, 140, 255)), ("study", "book", RGB(155, 123, 255)), ("rest", "sofa", RGB(111, 168, 200)), ("social", "person.2", RGB(233, 121, 166)),
                                                ("meal", "fork.knife", RGB(240, 176, 79)), ("home", "house", RGB(168, 159, 145)), ("sleep", "moon", TLPaint.sleep), ("exercise", "figure.run", RGB(76, 195, 138)),
-                                               ("errand", "bag", RGB(232, 135, 90)), ("commute", "tram", TLPaint.trip), ("unknown", "circle.dashed", nil), ("something new", "circle.dashed", nil)]
+                                               ("errand", "bag", RGB(232, 135, 90)), ("commute", "arrow.right", TLPaint.trip), ("unknown", "circle.dashed", nil), ("something new", "circle.dashed", nil)]
         for (name, symbol, color) in table { XCTAssertEqual(TLCategory.of(name), TLCategory(color: color, symbol: symbol), name) }
         XCTAssertFalse(table.contains { ["laptopcomputer", "iphone", "ipad"].contains($0.1) }, "what he was doing, never the device")
-        // a commute by the way he went: walks alone, else transit
-        let walked = try reply([item("w", "move", 600, 620, #""activity": "walking""#)], spans: [span("c", 600, 620, "走回家", "commute", items: ["w"])])
-        let drove = try reply([item("w", "move", 600, 620, #""activity": "walking""#), item("a", "move", 620, 650, #""activity": "automotive""#)], spans: [span("c", 600, 650, "回家", "commute", items: ["w", "a"])])
-        XCTAssertEqual(try entry(DayTimelineModel.build(walked, now: 900), "c").symbol, "figure.walk")
-        XCTAssertEqual(try entry(DayTimelineModel.build(drove, now: 900), "c").symbol, "tram")
+        // a commute by the way he went on its longest leg
+        func way(_ legs: [(String, Double, Double)]) throws -> String {
+            let items = legs.enumerated().map { k, l in item("m\(k)", "move", l.1, l.2, #""activity": "\#(l.0)""#) }
+            return try entry(DayTimelineModel.build(try reply(items, spans: [span("c", 600, 700, "回家", "commute", items: items.indices.map { "m\($0)" })]), now: 900), "c").symbol
+        }
+        XCTAssertEqual(try way([("walking", 600, 620)]), "figure.walk", "walks alone")
+        XCTAssertEqual(try way([("walking", 600, 610), ("automotive", 610, 650)]), "car", "a drive, the longest leg, after a short walk")
+        XCTAssertEqual(try way([("walking", 600, 640), ("automotive", 640, 650)]), "figure.walk", "a long walk to a short drive")
+        XCTAssertEqual(try way([("cycling", 600, 640)]), "bicycle")
+        XCTAssertEqual(try entry(DayTimelineModel.build(try reply([], spans: [span("c", 600, 640, "路上", "commute")]), now: 900), "c").symbol, "arrow.right", "no trip to tell the way")
     }
 
     func testAStretchThatReachesPastNowEndsThereAndOneThatBeginsAfterItIsNotARow() throws {

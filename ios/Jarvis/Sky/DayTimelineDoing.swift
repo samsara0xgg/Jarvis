@@ -22,7 +22,7 @@ struct TLCategory: Equatable {
         case "rest": TLCategory(color: RGB(111, 168, 200), symbol: "sofa")
         case "sleep": TLCategory(color: TLPaint.sleep, symbol: "moon")
         case "exercise": TLCategory(color: RGB(76, 195, 138), symbol: "figure.run")
-        case "commute": TLCategory(color: TLPaint.trip, symbol: "tram")                 // by the way he went: the stretch picks it from the trips inside it (`segmentRow`)
+        case "commute": TLCategory(color: TLPaint.trip, symbol: "arrow.right")          // by the way he went: the stretch picks it from the trips inside it (`segmentRow`); this with none
         case "errand": TLCategory(color: RGB(232, 135, 90), symbol: "bag")
         case "social": TLCategory(color: RGB(233, 121, 166), symbol: "person.2")
         case "home": TLCategory(color: RGB(168, 159, 145), symbol: "house")
@@ -118,9 +118,10 @@ extension DayTimelineModel {
         e.time = clock(st.t0); e.t1 = st.t1; e.going = st.going
         e.unknown = hole
         e.right = tlDur(tlInt(st.t1 - st.t0))
-        // a commute wears the way he went: a bus for a ride, walking for walks alone, else transit; a hole a question mark
-        let trips = inside.filter { $0.row.kind == .trip }
-        let way = trips.contains { $0.row.ride } ? "bus" : !trips.isEmpty && trips.allSatisfy({ $0.item.activity == "walking" }) ? "figure.walk" : cat.symbol
+        // a commute wears the way he went on its longest leg (a car for a drive, a bus for a ride, on foot, by bike); a hole a question mark. Rail would be a tram: the brain has no such mode yet
+        let legs = inside.filter { $0.row.kind == .trip }.map { x in (x, min(x.row.t1 ?? x.row.t0, st.t1) - max(x.row.t0, st.t0)) }
+        let longest = legs.max { $0.1 < $1.1 }?.0
+        let way = longest.map { $0.row.ride ? "bus" : Self.ways[$0.item.activity ?? ""] ?? cat.symbol } ?? cat.symbol
         e.symbol = hole ? "questionmark" : s.category == "commute" ? way : call ? "phone" : cat.symbol
         e.color = cat.color
         // where he was: the place he keeps that the brain points to (its stay names it and gives its hue), else the stay that holds most of the stretch
@@ -163,6 +164,9 @@ extension DayTimelineModel {
         func held(_ r: TLEntry) -> Double { max(0, min(r.t1 ?? st.t1, st.t1) - max(r.t0, st.t0)) }
         return inside.map { $0.row }.filter { $0.kind == .stay && held($0) > 0 }.max { held($0) < held($1) }
     }
+
+    /// a commute's symbol by the way he went on a trip's leg
+    static let ways = ["automotive": "car", "walking": "figure.walk", "running": "figure.run", "cycling": "bicycle"]
 
     /// a run in Claude Code that says nothing more of what it was on
     static let untitled = "没起名的会话"
