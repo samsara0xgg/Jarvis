@@ -253,7 +253,7 @@ class InherentDeps:
     # thread. LookupError (no such item on that day) is 404, ``HighlightCapReached`` 409, a
     # ValueError 422; ``None`` leaves ``POST /inherent/day/highlight`` unregistered.
     highlight_set: (
-        Callable[[date, str, bool, str | None], Awaitable[list[dict[str, str]]]] | None
+        Callable[[date, str, bool, str | None], Awaitable[list[dict[str, Any]]]] | None
     ) = None
     # ADR 0409: ``(day, at_ms, label)`` -> what ``mark_highlight`` answers for the item covering
     # that minute, with its id, off the loop thread. LookupError (nothing covers it) is 404, a

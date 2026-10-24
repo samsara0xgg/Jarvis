@@ -286,7 +286,7 @@ async def serve_day(  # noqa: PLR0913 — the route's stores, its zone, the term
 
 async def set_highlight(
     marks: HighlightMarks, day: date, item_id: str, on: bool, label: str | None,  # noqa: FBT001 — the route's argument.
-) -> list[dict[str, str]]:
+) -> list[dict[str, Any]]:
     """``POST /inherent/day/highlight`` (ADR 0297): his mark, written off the loop thread."""
     return await asyncio.to_thread(marks.set_item, day, item_id, on, label)
 

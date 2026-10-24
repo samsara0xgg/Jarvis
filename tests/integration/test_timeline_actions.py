@@ -102,6 +102,11 @@ def _rows(src: LedgerSources) -> list[tuple[Any, ...]]:
         ).fetchall()
 
 
+def _his(label: str) -> dict[str, Any]:
+    """Stay v3 as his highlight; a highlight says when its item starts (ADR 0410)."""
+    return {"id": "v3", "label": label, "start_ms": moment_ms(ledger_at(7, 9)), "by": "him"}
+
+
 def _mark(
     peers: Peers, item_id: str, *, on: bool = True, label: str | None = None, on_day: str = DAY_KEY,
 ) -> Any:  # noqa: ANN401 — a response
@@ -118,7 +123,7 @@ def test_his_mark_is_the_row_the_tool_writes_and_the_day_serves_it(
     reply = _mark(day.peers, "v3", label="Long lunch")
     assert reply.status_code == 200
     assert reply.json() == {
-        "ok": True, "highlights": [{"id": "v3", "label": "Long lunch", "by": "him"}],
+        "ok": True, "highlights": [_his("Long lunch")],
     }
     assert reply.json()["highlights"] == served_day(day.src)["highlights"]
 
@@ -138,7 +143,7 @@ def test_marking_is_idempotent_and_a_mark_without_a_label_keeps_the_label(day: D
     assert _mark(day.peers, "v3").json() == first
     assert len(_rows(day.src)) == 1
     renamed = _mark(day.peers, "v3", label="  Brunch  ").json()
-    assert renamed["highlights"] == [{"id": "v3", "label": "Brunch", "by": "him"}]
+    assert renamed["highlights"] == [_his("Brunch")]
     assert len(_rows(day.src)) == 2
 
 
@@ -246,7 +251,7 @@ def test_a_body_of_the_wrong_shape_is_a_422_and_writes_nothing(
 def test_a_blank_label_is_no_label(day: Day) -> None:
     """Whitespace only is the same as leaving it out: the label is hers, else kind and time."""
     reply = _mark(day.peers, "v3", label="   ")
-    assert reply.json()["highlights"] == [{"id": "v3", "label": "stay 09:00", "by": "him"}]
+    assert reply.json()["highlights"] == [_his("stay 09:00")]
 
 
 def test_the_highlight_route_is_for_the_local_key_and_paired_devices_alone(day: Day) -> None:
@@ -302,7 +307,7 @@ def test_a_moment_marks_what_covers_it_as_saying_that_time_does(
         "status": "marked", "day": DAY_KEY, "kind": "stay", "when": "09:00-09:30",
         "label": "Long lunch", "id": "v3",
     }}
-    assert served_day(watch.src)["highlights"] == [{"id": "v3", "label": "Long lunch", "by": "him"}]
+    assert served_day(watch.src)["highlights"] == [_his("Long lunch")]
 
     other = ledger_world(tmp_path_factory.mktemp("tool"))
     stays_of(other)
@@ -330,7 +335,7 @@ def test_a_second_tap_writes_again_as_saying_it_twice_does(watch: Day) -> None:
     again = _tap(watch.peers, ledger_at(7, 9, 20))
     assert again.json()["marked"]["label"] == "stay 09:00"
     assert len(_rows(watch.src)) == 2
-    assert served_day(watch.src)["highlights"] == [{"id": "v3", "label": "stay 09:00", "by": "him"}]
+    assert served_day(watch.src)["highlights"] == [_his("stay 09:00")]
 
 
 def test_a_tap_now_marks_the_stay_he_is_still_in(watch: Day) -> None:

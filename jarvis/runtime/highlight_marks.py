@@ -148,7 +148,7 @@ class HighlightMarks:
 
     def set_item(
         self, on_day: date, item_id: str, on: bool, label: str | None,  # noqa: FBT001 — the route's argument.
-    ) -> list[dict[str, str]]:
+    ) -> list[dict[str, Any]]:
         """Mark (``on``) or unmark the item ``item_id`` of ``on_day`` for him (ADR 0296).
 
         Writes the same row ``mark`` does, and answers with the day's highlights after it, as

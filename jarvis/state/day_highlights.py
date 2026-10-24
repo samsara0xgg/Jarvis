@@ -91,12 +91,12 @@ def merge_highlights(
 
 def day_notes(
     memory_db: Path | None, day: str, items: Sequence[Mapping[str, Any]], zone: tzinfo | None,
-) -> tuple[dict[str, Any] | None, list[dict[str, str]]]:
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
     """``(line, highlights)`` as the day line serves them for ``day``, its ``items`` in hand.
 
     ``line`` is ``{"text", "draft", "written_at"}`` or None; highlights are ``{"id", "label",
-    "by"}`` for the ids still on the line. A store that cannot be read is no line and no
-    highlights, not a failed day.
+    "start_ms", "by"}`` for the ids still on the line (``start_ms`` since ADR 0410). A store that
+    cannot be read is no line and no highlights, not a failed day.
     """
     if memory_db is None or not memory_db.is_file():
         return None, []
@@ -113,7 +113,9 @@ def day_notes(
     line = None if row is None else {
         "text": row.line, "draft": row.draft, "written_at": row.written_at,
     }
-    return line, [{"id": h.id, "label": h.label, "by": h.by} for h in merged]
+    return line, [
+        {"id": h.id, "label": h.label, "start_ms": h.start_ms, "by": h.by} for h in merged
+    ]
 
 
 def resolve_day(text: str, today: date) -> date:

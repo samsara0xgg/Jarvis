@@ -135,8 +135,11 @@ def test_the_night_stores_prose_line_and_highlights_and_the_day_serves_them(
     assert day["line"]["draft"] is False
     assert datetime.fromisoformat(day["line"]["written_at"]).tzinfo is not None
     assert day["highlights"] == [
-        {"id": "v-cafe", "label": "Coffee at the cafe", "by": "her"},
-        {"id": work, "label": "Ledger work", "by": "her"},
+        {
+            "id": "v-cafe", "label": "Coffee at the cafe",
+            "start_ms": moment_ms(ledger_at(7, 12)), "by": "her",
+        },
+        {"id": work, "label": "Ledger work", "start_ms": moment_ms(ledger_at(7, 13)), "by": "her"},
     ]
     assert "The day: He had coffee and worked on the ledger." in standing_text(
         src, MIDNIGHT, notes_as_of=WRITTEN,

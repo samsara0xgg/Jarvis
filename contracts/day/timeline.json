@@ -173,11 +173,13 @@
         {
           "id": "stay-cafe",
           "label": "Best flat white",
+          "start_ms": 1791992100000,
           "by": "him"
         },
         {
           "id": "stay-library",
           "label": "The long stretch at the library",
+          "start_ms": 1791994800000,
           "by": "her"
         }
       ],

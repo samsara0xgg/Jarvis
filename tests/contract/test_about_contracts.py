@@ -48,7 +48,12 @@ def test_the_brain_takes_the_item_a_phone_has_open_as_it_is_checked_and_refuses_
         body = {"text": WORDS, "about": about}
         return peers.paired.post("/inherent/submit", json=body).status_code
 
-    kinds = {kind: post({"kind": kind, "id": "x"}) for kind in inputs.doc["kinds"]}
+    # a stretch of the doing lane is named by its window (ADR 0410)
+    window = {"start_ms": 0, "end_ms": 1}
+    kinds = {
+        kind: post({"kind": kind, "id": "x", **(window if kind == "doing" else {})})
+        for kind in inputs.doc["kinds"]
+    }
     taken = {case.name: post(case.value) for case in inputs.valid}
     refused = {case.name: post(case.value) for case in inputs.invalid}
 

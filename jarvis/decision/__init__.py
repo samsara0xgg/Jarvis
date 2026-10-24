@@ -976,10 +976,18 @@ _ABOUT_TAILS: Final[Mapping[str, str]] = {
         "It is a picture he sent; its note is in the conversation, and look_at_picture "
         "takes this id to look at it again."
     ),
+    "doing": (
+        "It is a stretch of what he was doing, as his day page cuts it; it is found by its time,"
+        " and is not something to change."
+    ),
 }
 _ABOUT_DAY_TAIL: Final[str] = "It is a fact of his day, not something to change."
 # a plan item on his day line: plan-<day>-<item id> (ADR 0288)
 _PLAN_ITEM: Final = re.compile(r"plan-(\d{4}-\d{2}-\d{2})-(.+)")
+
+
+def _local_minute(ms: int) -> str:
+    return datetime.fromtimestamp(ms / 1000).astimezone().isoformat(timespec="minutes")
 
 
 def _about_line(packet: SituationPacket, record: str | None = None) -> str | None:
@@ -988,7 +996,8 @@ def _about_line(packet: SituationPacket, record: str | None = None) -> str | Non
     It is the phone's claim and its title may be a third party's words, so it is checked again
     here, as ``jarvis.shared.about`` defines it, and shown on one line: quoted, at most 80
     characters, and named a label. ``record`` is the item's record on his day line (ADR 0298),
-    shown after it when the composition root found the item.
+    or what the stretch of time a ``doing`` about names holds (ADR 0410), shown after it when the
+    composition root found it.
     """
     raw = packet.trigger_event.payload.get("about")
     if raw is None:
@@ -1001,9 +1010,11 @@ def _about_line(packet: SituationPacket, record: str | None = None) -> str | Non
     title = prompt_title(str(about.get("title", "")))
     start = about.get("start_ms")
     opened = f'{kind} "{title}"' if title else kind
-    if isinstance(start, int):
-        when = datetime.fromtimestamp(start / 1000).astimezone().isoformat(timespec="minutes")
-        opened = f"{opened} at {when}"
+    end = about.get("end_ms")
+    if isinstance(start, int) and isinstance(end, int):
+        opened = f"{opened} from {_local_minute(start)} to {_local_minute(end)}"
+    elif isinstance(start, int):
+        opened = f"{opened} at {_local_minute(start)}"
     if kind == "todo" and "|" in item_id:
         list_id, task_id = item_id.split("|", 1)
         tail = f"Its list is {list_id} and its task is {task_id}."

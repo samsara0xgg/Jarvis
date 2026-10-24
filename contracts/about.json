@@ -1,8 +1,8 @@
 {
   "route": "POST /inherent/submit",
   "direction": "client -> brain",
-  "description": "`about` is the item the phone has open when its owner speaks (ADR 0214), on a `POST /inherent/submit` from a paired device (and on a `say`, whose own refusal is `error bad_say`). It is an object of `kind` (one of `kinds`) and `id` (1 to `limits.id_chars` characters of letters, digits and `_-=+/.|:@`; a longer one is refused, never cut), with an optional `title` (text; the brain flattens it to one line and clips it to `limits.title_chars`) and `start_ms` (an integer epoch ms between 0 and `limits.start_ms`). No other key is allowed. A valid case that the brain changes names what it becomes in `becomes`. An invalid `about` is a 422; an `about` from the local key rather than a paired device is a 400.",
-  "kinds": ["reminder", "event", "todo", "stay", "move", "sleep", "work", "call", "talk", "picture", "ride", "departure", "payment", "claude_chat", "claude_day", "workout", "code", "screen", "media", "earbuds", "messages", "phone_call"],
+  "description": "`about` is the item the phone has open when its owner speaks (ADR 0214), on a `POST /inherent/submit` from a paired device (and on a `say`, whose own refusal is `error bad_say`). It is an object of `kind` (one of `kinds`) and `id` (1 to `limits.id_chars` characters of letters, digits and `_-=+/.|:@`; a longer one is refused, never cut), with an optional `title` (text; the brain flattens it to one line and clips it to `limits.title_chars`) and `start_ms` (an integer epoch ms between 0 and `limits.start_ms`). A stretch of what he was doing (`kind` `doing`, ADR 0410) is named by its time: it needs `start_ms` and an `end_ms` after it, up to the same limit, and the brain finds it by that window, not by its id, which changes when the lane is cut again; no other kind may carry `end_ms`. No other key is allowed. A valid case that the brain changes names what it becomes in `becomes`. An invalid `about` is a 422; an `about` from the local key rather than a paired device is a 400.",
+  "kinds": ["reminder", "event", "todo", "stay", "move", "sleep", "work", "call", "talk", "picture", "ride", "departure", "payment", "claude_chat", "claude_day", "workout", "code", "screen", "media", "earbuds", "messages", "phone_call", "doing"],
   "limits": {
     "id_chars": 256,
     "title_chars": 200,
@@ -64,6 +64,16 @@
         "kind": "sleep",
         "id": "sl1",
         "start_ms": 0
+      }
+    },
+    {
+      "name": "a stretch of what he was doing, by its window",
+      "value": {
+        "kind": "doing",
+        "id": "doing-1791997200000",
+        "title": "Jarvis",
+        "start_ms": 1791997200000,
+        "end_ms": 1792005600000
       }
     },
     {
@@ -178,6 +188,74 @@
         "kind": "reminder",
         "id": "r1",
         "start_ms": 4102444800001
+      },
+      "refusal": "422"
+    },
+    {
+      "name": "a stretch with no end",
+      "value": {
+        "kind": "doing",
+        "id": "doing-1",
+        "start_ms": 1791997200000
+      },
+      "refusal": "422"
+    },
+    {
+      "name": "a stretch with no start",
+      "value": {
+        "kind": "doing",
+        "id": "doing-1",
+        "end_ms": 1792005600000
+      },
+      "refusal": "422"
+    },
+    {
+      "name": "a stretch that ends where it starts",
+      "value": {
+        "kind": "doing",
+        "id": "doing-1",
+        "start_ms": 1791997200000,
+        "end_ms": 1791997200000
+      },
+      "refusal": "422"
+    },
+    {
+      "name": "a stretch that ends before it starts",
+      "value": {
+        "kind": "doing",
+        "id": "doing-1",
+        "start_ms": 1792005600000,
+        "end_ms": 1791997200000
+      },
+      "refusal": "422"
+    },
+    {
+      "name": "a stretch that ends after the limit",
+      "value": {
+        "kind": "doing",
+        "id": "doing-1",
+        "start_ms": 1791997200000,
+        "end_ms": 4102444800001
+      },
+      "refusal": "422"
+    },
+    {
+      "name": "a stretch whose end is text",
+      "value": {
+        "kind": "doing",
+        "id": "doing-1",
+        "start_ms": 1791997200000,
+        "end_ms": "1792005600000"
+      },
+      "refusal": "422"
+    },
+    {
+      "name": "an end on an item that is not a stretch",
+      "value": {
+        "kind": "stay",
+        "id": "stay-cafe",
+        "start_ms": 1791997200000,
+        "end_ms": 1792005600000
       },
       "refusal": "422"
     },

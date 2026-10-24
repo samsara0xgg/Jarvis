@@ -275,7 +275,7 @@ def _cuts(span: Span, horizon: int) -> bool:
     )
 
 
-def _best(spans: Iterable[Span], start: int, end: int, horizon: int) -> Span | None:
+def best(spans: Iterable[Span], start: int, end: int, horizon: int) -> Span | None:
     """The span sharing most of ``[start, end)``, the earlier and then the lower id on a tie."""
     ranked = [(s, _shared(s, start, end, horizon)) for s in spans]
     ranked = [(s, shared) for s, shared in ranked if shared > 0]
@@ -288,7 +288,7 @@ def _segment(facts: Sequence[Span], start: int, end: int, horizon: int) -> Segme
     held = sorted(
         (s for s in facts if _touches(s, start, end, horizon)), key=_order,
     )
-    place = _best((s for s in held if s["lane"] == "place"), start, end, horizon)
+    place = best((s for s in held if s["lane"] == "place"), start, end, horizon)
     return Segment(start, end, tuple(s["id"] for s in held), None if place is None else place["id"])
 
 
@@ -379,11 +379,11 @@ def _dominant(
     start, end = segment.start_ms, segment.end_ms
     held = [by_id[i] for i in segment.item_ids]
     for kinds in _ACTIVITY_ORDER:
-        found = _best((s for s in held if s["kind"] in kinds), start, end, horizon)
+        found = best((s for s in held if s["kind"] in kinds), start, end, horizon)
         if found is not None and 2 * _shared(found, start, end, horizon) >= end - start:
             work = found["kind"] in _ACTIVITY_ORDER[0]
             return True, found["title"], "work" if work else found["category"]
-    primary = by_id.get(segment.place_span_id or "") or _best(
+    primary = by_id.get(segment.place_span_id or "") or best(
         held, segment.start_ms, segment.end_ms, horizon,
     )
     return False, None, "unknown" if primary is None else primary["category"]
@@ -536,12 +536,12 @@ def serve(  # noqa: PLR0913 — what the lane is made of: cut, facts, run, answe
         spans.append(_program_span(segment, by_id, horizon))
     for answer in answers:  # a later answer is carved over an earlier one
         spans = _answered(sorted(spans, key=_order), answer, facts, horizon)
-    spans = [{**s, "item_ids": _held(s, items, horizon)} for s in spans]
+    spans = [{**s, "item_ids": held_by(s, items, horizon)} for s in spans]
     spans.extend(_planned(items, now_ms))
     return sorted(spans, key=_order)
 
 
-def _held(span: Span, items: Iterable[Mapping[str, Any]], horizon: int) -> list[str]:
+def held_by(span: Span, items: Iterable[Mapping[str, Any]], horizon: int) -> list[str]:
     """The ids of the items a stretch of the doing lane holds, by start.
 
     One that lasts is held by every stretch it overlaps; a moment, by the stretch it falls in.
@@ -621,7 +621,7 @@ def primary_place(doing: Doing, span: Span) -> Span | None:
     A place still going reaches the end of the waking window.
     """
     places = [s for s in doing.facts if s["lane"] == "place"]
-    return _best(places, span["start_ms"], span["end_ms"], doing.coverage["waking_end_ms"])
+    return best(places, span["start_ms"], span["end_ms"], doing.coverage["waking_end_ms"])
 
 
 __all__ = [
@@ -636,9 +636,11 @@ __all__ = [
     "Doing",
     "Segment",
     "Waking",
+    "best",
     "coverage",
     "cut",
     "fact_spans",
+    "held_by",
     "primary_place",
     "read_doing",
     "serve",

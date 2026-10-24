@@ -1,9 +1,10 @@
 """The item a paired phone has open when its owner speaks (ADR 0214).
 
-``about`` rides on the opening row of a phone's turn: ``{"kind", "id", "title", "start_ms"}``.
-It is the phone's claim, and its title can be a third party's words (an invite's subject), so
-every reader goes through :func:`clean_about`: the closed key set, the id shape, and a title
-flattened to one line. :func:`prompt_title` is the shorter form a prompt may carry.
+``about`` rides on the opening row of a phone's turn: ``{"kind", "id", "title", "start_ms"}``,
+and a stretch of the doing lane adds ``end_ms`` (ADR 0410). It is the phone's claim, and its
+title can be a third party's words (an invite's subject), so every reader goes through
+:func:`clean_about`: the closed key set, the id shape, and a title flattened to one line.
+:func:`prompt_title` is the shorter form a prompt may carry.
 
 Layer rules: stdlib only.
 """
@@ -17,9 +18,10 @@ from typing import Any, Final
 ABOUT_KINDS: Final = (
     "reminder", "event", "todo", "stay", "move", "sleep", "work", "call", "talk", "picture",
     "ride", "departure", "payment", "claude_chat", "claude_day", "workout", "code", "screen",
-    "media", "earbuds", "messages", "phone_call",
+    "media", "earbuds", "messages", "phone_call", "doing",
 )
-"""What the phone may have open: a reminder, an Outlook event, a task, or a day-line item."""
+"""What the phone may have open: a reminder, an Outlook event, a task, a day-line item, or a
+stretch of what he was doing (``doing``, ADR 0410)."""
 MAX_ID_CHARS: Final = 256
 MAX_TITLE_CHARS: Final = 200
 MAX_START_MS: Final = 4_102_444_800_000
@@ -27,7 +29,7 @@ MAX_START_MS: Final = 4_102_444_800_000
 PROMPT_TITLE_CHARS: Final = 80
 
 _ID: Final = re.compile(r"[A-Za-z0-9_\-=+/.|:@]{1,256}")
-_KEYS: Final = frozenset({"kind", "id", "title", "start_ms"})
+_KEYS: Final = frozenset({"kind", "id", "title", "start_ms", "end_ms"})
 
 
 def _one_line(text: str) -> str:
@@ -44,9 +46,11 @@ def clean_about(raw: object) -> dict[str, Any]:
     anything else is refused. The id is refused when it is too long or has a character outside
     the id set; it is never cut. The title is flattened to one line and clipped
     to :data:`MAX_TITLE_CHARS`. ``start_ms`` is an integer epoch ms in ``[0, MAX_START_MS]``.
+    A ``doing`` stretch is named by its time (ADR 0410): it needs ``start_ms`` and an ``end_ms``
+    after it, in the same range, and no other kind has an ``end_ms``.
     """
     if not isinstance(raw, dict) or not set(raw) <= _KEYS:
-        msg = "about is an object with kind, id, title and start_ms"
+        msg = "about is an object with kind, id, title, start_ms and end_ms"
         raise ValueError(msg)
     kind, about_id = raw.get("kind"), raw.get("id")
     if kind not in ABOUT_KINDS:
@@ -68,7 +72,20 @@ def clean_about(raw: object) -> dict[str, Any]:
             msg = f"about.start_ms is an integer epoch ms in [0, {MAX_START_MS}]"
             raise ValueError(msg)
         cleaned["start_ms"] = start
+    if kind == "doing" or "end_ms" in raw:
+        cleaned["end_ms"] = _stretch_end(kind, cleaned.get("start_ms"), raw.get("end_ms"))
     return cleaned
+
+
+def _stretch_end(kind: str, start: int | None, end: object) -> int:
+    """The checked ``end_ms`` of a ``doing`` stretch, or ``ValueError`` saying what is wrong."""
+    if kind != "doing":
+        msg = "about.end_ms is for a doing stretch only"
+        raise ValueError(msg)
+    if start is None or type(end) is not int or not start < end <= MAX_START_MS:
+        msg = f"a doing about has start_ms and an end_ms after it, up to {MAX_START_MS}"
+        raise ValueError(msg)
+    return end
 
 
 def prompt_title(title: str) -> str:
