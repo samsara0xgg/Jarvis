@@ -34,12 +34,15 @@ struct WatchPill: View {
     }
 }
 
-/// 今天要办的: the headline the phone sent, then 等你 N (a reminder's check answers it here; a tap on a row opens its card over her), then 接下来.
+/// 今天要办的: the headline the phone sent, then 等你 N (a reminder's check answers it here; a tap on a row opens its card over her), then 接下来,
+/// and last the way into 设置.
 struct WatchTodayPage: View {
     var day: WatchDay
     var answered: Set<String>
     var open: (_ id: String) -> Void
     var answer: (_ id: String, _ action: String) -> Void
+    var openSettings: () -> Void
+    var atEnd = false          // opens scrolled to the bottom (the debug scenes)
 
     var body: some View {
         let waiting = day.waiting.filter { !answered.contains($0.id) }
@@ -72,10 +75,18 @@ struct WatchTodayPage: View {
                 if day.headline == nil, waiting.isEmpty, day.next.isEmpty {
                     Text(Words.Watch.nothingMore).font(.system(size: 13)).foregroundStyle(WatchTheme.muted).padding(.top, 16)
                 }
+                Button(action: openSettings) {
+                    WatchRowView(symbol: "gearshape", color: WatchTheme.icon, title: Words.Watch.settings, sub: "", right: "") {
+                        Image(systemName: "chevron.right").font(.system(size: 13, weight: .semibold)).foregroundStyle(WatchTheme.muted.opacity(0.8))
+                    }
+                }
+                .buttonStyle(.plain)
+                .padding(.top, 14)
             }
             .padding(.horizontal, 4)
             .padding(.bottom, 16)
         }
+        .defaultScrollAnchor(atEnd ? .bottom : .top)
         .toolbar { WatchCornerSeat(balanced: true) }
     }
 
@@ -89,6 +100,97 @@ struct WatchTodayPage: View {
         .buttonStyle(.plain)
         .accessibilityLabel(a.title)
     }
+}
+
+/// 设置, pushed from the end of 今天要办的; she stays in the corner. Only what belongs on the wrist: her voice and her taps (kept on the watch, WatchSettings),
+/// whether the phone is there, and how to make her what he sees when he raises his wrist. The rest is on the iPhone.
+struct WatchSettingsPage: View {
+    var reachable: Bool
+    var atEnd = false          // opens scrolled to the bottom (the debug scenes)
+    @AppStorage(WatchSettings.speaks) private var speaks = false
+    @AppStorage(WatchSettings.headphonesOnly) private var headphonesOnly = true
+    @AppStorage(WatchSettings.taps) private var taps = true
+
+    var body: some View {
+        ScrollViewReader { proxy in ScrollView {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(Words.Watch.settings).font(.system(size: 17, weight: .bold)).foregroundStyle(WatchTheme.ink).padding(.leading, 2)
+                header(Words.Watch.settingsHer)
+                toggle(Words.Watch.speaks, speaks ? Words.Watch.speaksOn : Words.Watch.speaksOff, $speaks)
+                if speaks { toggle(Words.Watch.headphonesOnly, Words.Watch.headphonesOnlyNote, $headphonesOnly).transition(.opacity) }
+                toggle(Words.Watch.taps, nil, $taps)
+                header(Words.Watch.link)
+                cell {
+                    HStack {
+                        Text(Words.Watch.iPhone).font(.system(size: 14.5, weight: .medium)).foregroundStyle(WatchTheme.ink)
+                        Spacer(minLength: 4)
+                        Circle().fill(reachable ? Color.green : WatchTheme.faint).frame(width: 7, height: 7)
+                        Text(reachable ? Words.Watch.linked : Words.Watch.unlinked).font(.system(size: 13)).foregroundStyle(WatchTheme.muted).lineLimit(1)
+                    }
+                }
+                cell {          // 以后: phone-free cellular is not in this version
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(Words.Watch.standalone).font(.system(size: 14.5, weight: .medium)).foregroundStyle(WatchTheme.ink)
+                        HStack(alignment: .firstTextBaseline, spacing: 4) {
+                            Text(Words.Watch.later).font(.system(size: 10.5, weight: .medium)).foregroundStyle(WatchTheme.ink)
+                                .padding(.horizontal, 6).padding(.vertical, 1).background(Color.white.opacity(0.14), in: Capsule())
+                            Text(Words.Watch.standaloneNote).font(.system(size: 11.5)).foregroundStyle(WatchTheme.muted)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .opacity(0.45)
+                .accessibilityAddTraits(.isStaticText)
+                header(Words.Watch.stayTitle)
+                Text(Words.Watch.stayHow).font(.system(size: 12)).foregroundStyle(WatchTheme.muted).padding(.horizontal, 2).fixedSize(horizontal: false, vertical: true)
+                Text(Words.Watch.elsewhere(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""))
+                    .font(.system(size: 11.5)).foregroundStyle(WatchTheme.faint).multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity).padding(.top, 7)
+                    .id("end")
+            }
+            .padding(.horizontal, 8)
+            .padding(.bottom, 12)
+            .animation(WatchRoot.spring, value: speaks)
+        }
+        .task {          // after the push has laid it out (an initial anchor lands short of the end here)
+            guard atEnd else { return }
+            try? await Task.sleep(for: .milliseconds(600))
+            proxy.scrollTo("end", anchor: .bottom)
+        } }
+        .toolbar { WatchCornerSeat() }
+    }
+
+    private func header(_ text: String) -> some View {
+        Text(text).font(.system(size: 11.5, weight: .semibold)).foregroundStyle(WatchTheme.faint).padding(.top, 8).padding(.leading, 2)
+    }
+
+    /// a setting's rounded cell, in the board's grey
+    private func cell<C: View>(@ViewBuilder _ content: () -> C) -> some View {
+        content()
+            .padding(.horizontal, 12).padding(.vertical, 7)
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .background(Color.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    private func toggle(_ title: String, _ sub: String?, _ on: Binding<Bool>) -> some View {
+        cell {
+            Toggle(isOn: on) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(title).font(.system(size: 14.5, weight: .medium)).foregroundStyle(WatchTheme.ink)
+                    if let sub { Text(sub).font(.system(size: 11.5)).foregroundStyle(WatchTheme.muted) }
+                }
+            }
+            .tint(WatchTheme.her)
+        }
+    }
+}
+
+/// The wrist's own settings, kept on the watch (UserDefaults). In v1 nothing sends 她说出声 to the phone and nothing plays her voice on the watch:
+/// the switches store and show his choice. 提醒时轻敲 gates the tap when something new waits (WatchRoot).
+enum WatchSettings {
+    static let speaks = "watch.speaks"                      // 她说出声: off, words only
+    static let headphonesOnly = "watch.speaksHeadphonesOnly"  // 只在戴耳机时: shown once she speaks
+    static let taps = "watch.taps"                          // 提醒时轻敲: on
 }
 
 /// the bus he is on: how many stops, where to, the stops as dots on a line, and the tap he will get

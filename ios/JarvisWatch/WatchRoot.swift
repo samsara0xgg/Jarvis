@@ -3,7 +3,7 @@ import WatchKit
 
 /// The watch app (跨端UI标准 §12): the screen is her. A talk keeps her in the middle, a little smaller, his words under her; a card lies over her and she peeks out
 /// above it; the crown turns to the pages (今天要办的, 坐车), where she sits in the top-right corner. She is one view over all of it, which moves and resizes between
-/// these places on one spring. Sizes are read off the boards, drawn at 208 × 248 (46 mm), and scale with the screen.
+/// these places on one spring. 设置 is pushed from the end of 今天要办的, she still in the corner. Sizes are read off the boards, drawn at 208 × 248 (46 mm), and scale with the screen.
 struct WatchRoot: View {
     /// a card rises and drops, and she moves, on this one spring
     static let spring = Animation.spring(duration: 0.45, bounce: 0.15)
@@ -19,11 +19,17 @@ struct WatchRoot: View {
     /// the 该出门了 he put away (its `leaveAt`), so it does not come back
     @State private var leaveDismissed: Date?
     @State private var cardHeight: CGFloat = 0
+    @State private var settingsOpen: Bool
+    /// the pages open scrolled to their end (the debug scenes)
+    private let atEnd: Bool
+    @AppStorage(WatchSettings.taps) private var taps = true
     @Environment(\.isLuminanceReduced) private var aod
 
-    init(page: Page = .home, card: String? = nil) {
+    init(page: Page = .home, card: String? = nil, settings: Bool = false, atEnd: Bool = false) {
         _page = State(initialValue: page)
         _queue = State(initialValue: card.map { [$0] } ?? [])
+        _settingsOpen = State(initialValue: settings)
+        self.atEnd = atEnd
     }
 
     private var phase: Phase {
@@ -54,10 +60,14 @@ struct WatchRoot: View {
             if let old, let new {
                 let had = Set(old.waiting.map(\.id))
                 let came = new.waiting.map(\.id).filter { !had.contains($0) }
-                if !came.isEmpty { WatchHaptics.play(.waits); queue += came }
+                if !came.isEmpty {
+                    if taps { WatchHaptics.play(.waits) }          // 提醒时轻敲
+                    queue += came
+                }
             }
             if (page == .ride && new?.ride == nil) || (page == .today && new == nil) { page = .home }          // ended while its page was open
         }
+        .onChange(of: page) { _, new in if new == .home { settingsOpen = false } }          // back to her: 设置 goes with the page it came from
         .onChange(of: model.day?.ride?.alightNext) { old, new in if new == true, old != true { WatchHaptics.play(.alight) } }
         .onChange(of: phase) { _, new in
             if new == .listening { WatchHaptics.play(.listening) }
@@ -118,11 +128,13 @@ struct WatchRoot: View {
                 }
                 .tag(Page.home)
                 if let day = model.day {
-                    WatchTodayPage(day: day, answered: answered, open: openCard, answer: { id, action in send(id, action) }).tag(Page.today)
+                    WatchTodayPage(day: day, answered: answered, open: openCard, answer: { id, action in send(id, action) },
+                                   openSettings: { settingsOpen = true }, atEnd: atEnd).tag(Page.today)
                 }
                 if let r = model.day?.ride { WatchRideView(ride: r).tag(Page.ride) }
             }
             .tabViewStyle(.verticalPage)
+            .navigationDestination(isPresented: $settingsOpen) { WatchSettingsPage(reachable: model.phoneReachable, atEnd: atEnd) }
         }
     }
 

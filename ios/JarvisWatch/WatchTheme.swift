@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// The watch's few colours, the one table of 跨端UI标准 §7: ink, muted, faint, amber for what waits on him, warm white for now, 路上's blue.
+/// The watch's few colours, the one table of 跨端UI标准 §7: ink, muted, faint, amber for what waits on him, warm white for now, 路上's blue, her light.
 enum WatchTheme {
     static let ink = Color(.sRGB, red: 238 / 255, green: 240 / 255, blue: 251 / 255)
     static let muted = Color(.sRGB, red: 196 / 255, green: 204 / 255, blue: 238 / 255, opacity: 0.62)
@@ -8,6 +8,7 @@ enum WatchTheme {
     static let amber = Color(.sRGB, red: 1, green: 201 / 255, blue: 143 / 255)
     static let trip = Color(.sRGB, red: 196 / 255, green: 208 / 255, blue: 1)          // 路上: 该出门了, the ride
     static let warm = Color(.sRGB, red: 1, green: 240 / 255, blue: 220 / 255)
+    static let her = Color(.sRGB, red: 157 / 255, green: 180 / 255, blue: 1)          // 她的光: the settings' switches
     static let icon = Color(.sRGB, red: 214 / 255, green: 220 / 255, blue: 246 / 255).opacity(0.82)
     static let darkInk = Color(.sRGB, red: 11 / 255, green: 13 / 255, blue: 26 / 255)
     static let track = ink.opacity(0.14)
