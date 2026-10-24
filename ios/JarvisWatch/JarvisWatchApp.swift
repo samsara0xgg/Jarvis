@@ -6,7 +6,6 @@ struct JarvisWatchApp: App {
 
     init() {
         WatchLink.shared.start()
-        WatchCharge.schedule()
         Task { await WatchCharge.send() }
         #if DEBUG
         WatchScene.apply()
@@ -21,7 +20,11 @@ struct JarvisWatchApp: App {
             WatchRoot()
             #endif
         }
-        .onChange(of: phase) { _, p in if p == .active { Task { await WatchCharge.send() } } }
+        .onChange(of: phase) { _, p in
+            guard p == .active else { return }
+            WatchCharge.schedule()   // not in init: watchOS aborts a refresh asked for before SwiftUI's delegate is there
+            Task { await WatchCharge.send() }
+        }
         .backgroundTask(.appRefresh(WatchCharge.refreshID)) { await WatchCharge.refresh() }
     }
 }

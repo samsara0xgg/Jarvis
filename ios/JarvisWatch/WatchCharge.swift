@@ -3,7 +3,8 @@ import WatchConnectivity
 import WatchKit
 
 // The watch's charge, for the brain (ADR 0377): read when the app starts, when it comes to the front, and in a background refresh asked for
-// every 15 minutes, each refresh asking for the next. Every reading goes, unchanged ones too: a run of them says the watch stayed on its charger.
+// every 15 minutes, first when it comes to the front, then by each refresh for the next. Every reading goes, unchanged ones too: a run of
+// them says the watch stayed on its charger.
 // Each is queued to the phone with `transferUserInfo`, never `sendMessage`, so one read while the phone is out of reach still arrives.
 
 @MainActor
@@ -43,9 +44,13 @@ enum WatchCharge {
         session.transferUserInfo(WatchWire.encode(WatchAsk.charge(percent: r.percent, state: r.state, at: now)))
     }
 
-    /// The next background refresh, 15 minutes on (watchOS keeps one; asking again moves it).
+    /// The next background refresh, 15 minutes on (watchOS keeps one; asking again moves it). watchOS aborts the app when it is asked before
+    /// the app has a delegate that handles background tasks (`handleBackgroundTasks:`, the method its abort names): SwiftUI puts its own in
+    /// place after the app's `init`, so this is asked only once the app is running, and skipped while that delegate is not there.
     static func schedule() {
-        WKApplication.shared().scheduleBackgroundRefresh(withPreferredDate: Date(timeIntervalSinceNow: every), userInfo: refreshID as NSString) { _ in }
+        let app = WKApplication.shared()
+        guard let delegate = app.delegate as? NSObject, delegate.responds(to: NSSelectorFromString("handleBackgroundTasks:")) else { return }
+        app.scheduleBackgroundRefresh(withPreferredDate: Date(timeIntervalSinceNow: every), userInfo: refreshID as NSString) { _ in }
     }
 
     /// A background refresh: the next one is asked for first, so one that runs out of time still has a successor.
