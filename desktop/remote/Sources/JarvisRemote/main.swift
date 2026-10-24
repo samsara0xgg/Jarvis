@@ -65,7 +65,10 @@ if !CGPreflightScreenCaptureAccess() { CGRequestScreenCaptureAccess() }
 if !CGPreflightPostEventAccess() { CGRequestPostEventAccess() }
 
 let secret = token()
-let listener = try NWListener(using: .tcp, on: port)
+// Nagle would hold each frame's last segment until the iPad acks the one before, which iOS delays: frames arrived 100 ms+ late
+let tcp = NWProtocolTCP.Options()
+tcp.noDelay = true
+let listener = try NWListener(using: NWParameters(tls: nil, tcp: tcp), on: port)
 listener.newConnectionHandler = { c in
     guard allowed(c.endpoint) else { c.cancel(); return }
     Session(c, secret: secret).begin()
