@@ -17,11 +17,13 @@ export type MemNav = { tab: Tab; query: string; who: Who; stack: MemView[] };
 export const MEM_HOME: MemNav = { tab: 'items', query: '', who: 'all', stack: [] };
 
 export type Quote = { who: 'user' | 'jarvis' | 'other'; text: string };
-export type Entry = { kind: 'add' | 'rewrite' | 'stale' | 'suggest_stale'; id: string; section: string; text: string; before?: string; quote: Quote | null };
+export type Entry = { kind: 'add' | 'rewrite' | 'stale' | 'suggest_stale'; id: string; section: string; text: string; before?: string; why?: string; quote: Quote | null };
 export type MemItem = { id: string; text: string; pinned: boolean };
+// ADR 0389: an item that ended (a closed thread, a stale line) stays in the store, out of the prompt.
+export type EndedItem = { id: string; text: string; state: 'closed' | 'stale'; ended_on: string | null; why: string | null };
 export type MemoryOverview = {
   version: { id: string; ts: string; origin: string }; items: number; days: number; chars: number; max_chars: number; booted_max_chars: number;
-  sections: { name: string; items: MemItem[] }[]; new: { day: string | null; ts: string | null; version: string | null; entries: Entry[] };
+  sections: { name: string; items: MemItem[]; ended?: EndedItem[] }[]; new: { day: string | null; ts: string | null; version: string | null; origin?: string | null; entries: Entry[] };
 };
 type Source = { id: string; who: Quote['who']; ts: string; day: string; text: string };
 type When = { ts: string; origin: string; day: string };
@@ -31,7 +33,7 @@ type Found = { words: string[]; days: { day: string; hits: Hit[] }[]; total: num
 type Card = { day: string; ts: string; kind: 'model' | 'verbatim' | 'user'; records: number; lines: string[] };
 type DayDetail = { day: string; ts: string; kind: Card['kind']; records: number; sections?: Record<'topics' | 'decisions' | 'unfinished', string[]>; lines?: string[] };
 type Version = { id: string; ts: string; origin: string; kind: string; day: string | null; current: boolean; undoable: boolean; chars: number; edited: number; moved: number;
-  counts: { add: number; chg: number; old: number }; lines: { tag: 'add' | 'chg' | 'old'; text: string }[]; more: number };
+  counts: { add: number; chg: number; old: number }; lines: { tag: 'add' | 'chg' | 'old'; text: string; why?: string }[]; more: number };
 type Role = 'home' | 'school' | 'other';
 type Place = { id: string; name: string; role: Role; has_centre?: boolean; address?: string | null; days_28?: number; last_visit?: string | null; median_stay_min?: number | null };
 type PlaceState = { name?: string; role?: Role } | null;
@@ -191,16 +193,18 @@ function Items({ o, a }: { o: MemoryOverview; a: Acts }) {
     if (!r) setGone(g => g.filter(x => x !== k));
     else if (say) a.toast(t(say), r.version);
   };
-  const today = o.new.ts ? sameDay(new Date(o.new.ts), new Date()) : false;
+  const today = o.new.ts ? sameDay(new Date(o.new.ts), new Date()) : false, rebuilt = o.new.origin === 'rebuild';
+  const restore = async (i: EndedItem) => { const r = await a.run<{ version: string }>('/item/restore', { id: i.id }); if (r) a.toast(t(['Put back · pinned', '放回来了 · 已钉住']), r.version); };
   return <>
     {entries.length > 0 && <section className="mem-sec" aria-label={t(['Added last night', '昨晚新记的'])}>
-      <div className="mem-sh"><h4>{today ? t(['Added last night', '昨晚新记的']) : t(['Added in the last tidy-up', '上次整理新记的'])} · {entries.length}</h4>{o.new.day && <small>{t([`from ${md(o.new.day)}`, `从 ${md(o.new.day)} 的话里`])}</small>}</div>
+      <div className="mem-sh"><h4>{rebuilt ? t(['The monthly rewrite', '每月重写']) : today ? t(['Added last night', '昨晚新记的']) : t(['Added in the last tidy-up', '上次整理新记的'])} · {entries.length}</h4>{o.new.day && !rebuilt && <small>{t([`from ${md(o.new.day)}`, `从 ${md(o.new.day)} 的话里`])}</small>}</div>
       <div className="mem-new">{entries.map(e => <Fold key={e.id + e.kind} gone={gone.includes(e.id + e.kind)}><article className="mem-ent" data-kind={e.kind}>
         <span className={`mem-tag is-${TAG[e.kind][0]}`}>{t(TAG[e.kind][1])}</span>
         <div className="mem-ent-b">
           {e.kind === 'stale' ? <p className="mem-ent-t is-struck">{e.text}</p>
             : <button className="mem-ent-t is-link" aria-label={`${t(['Open', '打开'])}: ${e.text}`} onClick={() => a.push({ k: 'item', id: e.id })}>{e.text}</button>}
           {e.kind === 'rewrite' && e.before && <p className="mem-was">{t(['was', '原来'])}: {e.before}</p>}
+          {e.why && <p className="mem-was">{t(['why', '理由'])}: {e.why}</p>}
           {e.quote ? <p className="mem-q"><b>{e.quote.who === 'user' ? t(['You said', '你说']) : t(['Jarvis said', '她说'])}</b>{lang === 'zh' ? `「${e.quote.text}」` : `“${e.quote.text}”`}</p>
             : e.kind === 'suggest_stale' ? <p className="mem-q">{t(['It looks out of date, but you set this one, so it stayed.', '夜里觉得可能过时了，但这条是你定的，没动。'])}</p> : null}
           <div className="mem-acts">
@@ -223,6 +227,10 @@ function Items({ o, a }: { o: MemoryOverview; a: Acts }) {
       {s.items.length ? <div className="mem-rows">{s.items.map(i => <button className="mem-row" key={i.id} data-id={i.id} onClick={() => a.push({ k: 'item', id: i.id })}>
         <span className="mem-row-t">{i.text}</span>{i.pinned && <em className="mem-tag is-mine"><PushPin size={9} weight="fill"/>{t(['Yours', '你改的'])}</em>}<CaretRight size={11} weight="bold"/></button>)}</div>
         : <p className="mem-empty">{t(['Nothing yet.', '还没有'])}</p>}
+      {(s.ended?.length ?? 0) > 0 && <details className="mem-ended"><summary>{t(['Ended', '已结束'])} · {s.ended!.length}</summary>
+        <div className="mem-rows">{s.ended!.map(i => <div className="mem-row" key={i.id}>
+          <span className="mem-row-t is-struck">{i.text}{i.why && <small> · {i.why}</small>}</span>
+          <button className="mem-act" disabled={a.busy} onClick={() => void restore(i)}>{t(['Put back', '放回'])}</button></div>)}</div></details>}
     </section>)}
   </>;
 }
@@ -231,7 +239,7 @@ function Items({ o, a }: { o: MemoryOverview; a: Acts }) {
 const whenText = (lang: Lang, w: When, verb: 'born' | 'edit') => {
   const t = (l: L) => l[lang === 'zh' ? 1 : 0], d = md(w.origin === 'nightly' ? w.day : w.ts);
   if (verb === 'born') return w.origin === 'nightly' ? t([`Noted from ${d}`, `${d} 的话里记下`]) : w.origin === 'remember' ? t([`You asked her to keep it · ${d}`, `${d} 你让她记的`])
-    : w.origin === 'setup' ? t(['Written at first setup', '首次设置时写的']) : w.origin === 'migration' ? t(['Carried over from the old notes', '从旧记录搬来的']) : t([`You kept it · ${d}`, `${d} 你留着的`]);
+    : w.origin === 'setup' ? t(['Written at first setup', '首次设置时写的']) : w.origin === 'rebuild' ? t([`Written in the monthly rewrite · ${d}`, `${d} 每月重写时写的`]) : w.origin === 'migration' ? t(['Carried over from the old notes', '从旧记录搬来的']) : t([`You kept it · ${d}`, `${d} 你留着的`]);
   return w.origin === 'user' ? t([`you edited it ${d}`, `${d} 你改过`]) : t([`rewritten ${d}`, `${d} 夜里改过`]);
 };
 const stamp = (iso: string, lang: Lang) => { const d = new Date(iso); return sameDay(d, new Date()) ? `${lang === 'zh' ? '今天' : 'Today'} ${hhmm(d)}` : `${d.getMonth() + 1}/${d.getDate()} ${hhmm(d)}`; };
@@ -500,6 +508,7 @@ function PlaceRow({ p, open, toggle, a }: { p: Place; open: boolean; toggle: () 
 function title(v: Version, t: (l: L) => string): string {
   const n = (c: number, en: string, zh: string) => c ? [t([`${en} ${c}`, `${zh} ${c} 条`])] : [];
   if (v.kind === 'nightly') return v.day ? t([`Night pass · ${md(v.day)}`, `夜里整理 ${md(v.day)}`]) : t(['Night pass', '夜里整理']);
+  if (v.kind === 'rebuild') return t(['The monthly rewrite', '每月重写']);
   if (v.kind === 'migration') return t(['First version, from the old notes', '第一版 · 从旧记录搬来']);
   if (v.kind === 'setup') return t(['First-run setup', '首次设置']);
   if (v.kind === 'remember') return t(['You asked her to remember', '你让她记了']);
@@ -535,7 +544,7 @@ function Changes({ o, a, places }: { o: MemoryOverview; a: Acts; places: PlaceCh
         <i className={`mem-dot ${v.origin === 'user' ? 'is-you' : ''}`}/>
         <div className="mem-ver-b"><span className="mem-ver-t">{title(v, t)}{v.current && <em className="mem-tag is-now">{t(['Now', '现在'])}</em>}</span>
           <span className="mem-ver-s"><time>{stamp(v.ts, lang)}</time></span>
-          {v.lines.length > 0 && <div className="mem-ver-l">{v.lines.map((l, i) => <div className="mem-vl" key={i}><span className={`mem-tag is-${l.tag}`}>{t(LINE_TAG[l.tag][1])}</span><span>{l.text}</span></div>)}
+          {v.lines.length > 0 && <div className="mem-ver-l">{v.lines.map((l, i) => <div className="mem-vl" key={i}><span className={`mem-tag is-${l.tag}`}>{t(LINE_TAG[l.tag][1])}</span><span>{l.text}{l.why && <small> · {l.why}</small>}</span></div>)}
             {v.more > 0 && <small>{t([`and ${v.more} more`, `还有 ${v.more} 条`])}</small>}</div>}</div>
         {v.undoable && <button className="mem-act" disabled={pending !== null || a.busy} aria-label={`${t(['Undo', '撤回'])}: ${title(v, t)}`} onClick={async () => { setPending(v.id); try { await a.undo(v.id); } finally { setPending(null); } }}><ArrowCounterClockwise size={11} weight="bold"/>{t(['Undo', '撤回'])}</button>}
       </li>)(row.v))}</ol>}

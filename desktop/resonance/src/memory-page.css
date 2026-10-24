@@ -218,3 +218,7 @@
   .ad .mem-pane > *, .ad .mem-cards > *, .ad .mem-move, .ad .mem-bar i { animation:none; }
   .ad .mem-act:active, .ad .mem-chip:active, .ad .mem-row:active, .ad .mem-src:active, .ad .mem-hit:active { transform:none; }
 }
+/* ADR 0389: what ended, folded under its section, with a way back. */
+.ad .mem-ended { margin-top:6px; }
+.ad .mem-ended summary { cursor:pointer; font-size:11px; color:var(--p-muted); }
+.ad .mem-row-t.is-struck { color:var(--p-muted); text-decoration:line-through; text-decoration-color:rgb(255 255 255 / .3); }

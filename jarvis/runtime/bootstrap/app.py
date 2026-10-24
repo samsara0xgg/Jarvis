@@ -41,6 +41,7 @@ from jarvis.runtime.bootstrap.llm import (
     build_llm,
 )
 from jarvis.runtime.bootstrap.places import _start_locating_places
+from jarvis.runtime.core_memory import checkin_line
 from jarvis.runtime.decision_state import DecisionStateCache
 from jarvis.runtime.departures import Departures
 from jarvis.runtime.mail_page import MailPage
@@ -217,6 +218,8 @@ def _assemble(  # noqa: PLR0913 - one argument per stage; the runtime is every s
                 plan_line, paths.event_log, config.zone, clock.now,
                 config.plan_day_ends,
             ),
+            # ADR 0389: once a day, a thread of his life that has gone quiet, to ask about.
+            partial(checkin_line, memory.db_path, config.zone, clock.now),
         ),
         voice_cues=features.voice_cues,
         turn_end_asks=_turn_end_asks(config.jev.turn_end_asks, clock, features.jev_log),

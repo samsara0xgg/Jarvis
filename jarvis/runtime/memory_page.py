@@ -86,6 +86,10 @@ class MemoryPage:
         """Keep an item the night marked stale."""
         return memory_page.keep_stale(self._path, version, item_id, **self._limits())
 
+    def restore(self, item_id: str) -> dict[str, Any]:
+        """Bring an ended item back (ADR 0389)."""
+        return memory_page.restore_item(self._path, item_id, **self._limits())
+
     def versions(self) -> dict[str, Any]:
         """The 改动 screen."""
         return memory_page.versions(self._path)

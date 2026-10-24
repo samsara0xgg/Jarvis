@@ -68,7 +68,8 @@ def _versions(path: Path) -> list[tuple[str, str | None, list[dict[str, Any]]]]:
 
 
 def _items(path: Path) -> dict[str, list[str]]:
-    doc = current_core_memory(path).doc
+    """The live items' texts by section: what the prompt shows."""
+    doc = core_memory.live(current_core_memory(path).doc)
     return {section: [item["text"] for item in doc[section]] for section in doc if doc[section]}
 
 
@@ -244,7 +245,10 @@ def test_the_schedule_consolidates_each_day_in_order_after_the_summaries(tmp_pat
     assert asked_days(model) == [d4, d3, d2]
     shown = {day: consolidation_input(model, day) for day in (d4, d3)}
     assert "[1] 城市: Victoria" in shown[d4]
-    expected = "### 兴趣和品味 (6/2000)\n[2] 喜欢咖啡\n### 生活里的几件事 (5/10000)\n[3] 写论文"
+    expected = (
+        f"### 兴趣和品味 (6/2000)\n[2] 喜欢咖啡 [cites e1]\n"
+        f"### 生活里的几件事 (5/10000)\n[3] 写论文 (evidence {d4}) [cites e1]"
+    )
     assert expected in shown[d3]
     assert f"[Summary of {d3}]\n## {d3} (the whole day, word for word)" in shown[d3]
     assert f"r1 | {stamp_ago(3, 9)} | allen | 第3天说的话" in shown[d3]
@@ -872,3 +876,27 @@ def test_a_date_is_not_an_id_number_but_a_long_run_of_digits_is() -> None:
     core_memory.check_item("钱", "卡号 1234567890")
     with pytest.raises(ValueError, match="dates only"):
         core_memory.check_item("证件和硬期限", "护照 123456")
+
+
+def test_a_reviewed_change_citing_an_earlier_day_lands(tmp_path: Path, jev: _Jev) -> None:
+    """ADR 0389: Jev sees the day's lines only; a citation of an earlier record does not stop it."""
+    path = tmp_path / "memory.db"
+    seed_days(path, 3, 2)
+    d3, d2 = day_ago(3).isoformat(), day_ago(2).isoformat()
+    model = consolidator(
+        {
+            d3: [consolidator_changes(
+                {"op": "add", "section": "生活里的几件事", "text": "HIGH 找工作",
+                 "sources": ["r1"]},
+            )],
+            d2: [consolidator_changes(
+                {"op": "rewrite", "item": 1, "text": "HIGH 找工作: 二面", "sources": ["e1", "r1"]},
+            )],
+        },
+    )
+
+    _reviewed(tmp_path, model, jev.route(None), review_min_confidence=0.9).write(TODAY)
+
+    assert _items(path) == {"生活里的几件事": ["HIGH 找工作: 二面"]}
+    assert current_core_memory(path).upto_day == d2
+    assert len(jev.requests) == 2

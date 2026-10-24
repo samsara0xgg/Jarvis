@@ -60,9 +60,13 @@ def core_schedule(
     model: ScriptedModel,
     *,
     summariser: ScriptedModel | None = None,
+    rebuild_model: ScriptedModel | None = None,
     **core: Any,  # noqa: ANN401
 ) -> DaySummarySchedule:
-    """The nightly schedule over a temp store: ``summariser`` writes days, ``model`` the core."""
+    """The nightly schedule over a temp store: ``summariser`` writes days, ``model`` the core.
+
+    ``rebuild_model`` answers the monthly rebuild (ADR 0389) when ``core`` carries ``rebuild``.
+    """
     log = tmp_path / "events.db"
     open_event_log(log).close()
     return DaySummarySchedule(
@@ -75,6 +79,7 @@ def core_schedule(
         core_memory=CoreMemorySettings(preset="c", prompt="consolidate", **core),
         client=(day_summariser() if summariser is None else summariser).as_llm_client(),
         core_client=model.as_llm_client(),
+        rebuild_client=None if rebuild_model is None else rebuild_model.as_llm_client(),
     )
 
 

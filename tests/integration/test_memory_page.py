@@ -231,8 +231,8 @@ def test_edit_and_move_append_user_versions_pin_the_item_and_never_touch_older_r
     world.post("/item/edit", {"id": first["id"], "text": "写论文: 第三章", "section": "兴趣和品味"})
     assert world.items()["写论文: 第三章"]["section"] == "兴趣和品味"
     assert len(world.rows()) == len(snapshot) + 2
-    last = json.loads(world.rows()[-1][3])["sections"]["兴趣和品味"][-1]
-    assert last["pinned"] is True
+    stored = json.loads(world.rows()[-1][3])["sections"]["兴趣和品味"]
+    assert next(i for i in stored if i["text"] == "写论文: 第三章")["pinned"] is True
     for bad in (
         {"id": first["id"], "text": "  "},
         {"id": first["id"], "text": "x", "section": "没有"},
@@ -647,7 +647,7 @@ def test_a_fresh_store_migrates_on_the_first_read_and_has_nothing_new(tmp_path: 
     open_memory_db(world.path).close()
     page = world.overview()
     assert page["items"] == 0
-    assert page["new"] == {"day": None, "ts": None, "version": None, "entries": []}
+    assert page["new"] == {"day": None, "ts": None, "version": None, "origin": None, "entries": []}
     assert [v["kind"] for v in world.get("/versions")["versions"]] == ["migration"]
 
 
@@ -686,3 +686,23 @@ def test_an_edit_that_grows_a_section_past_its_cap_or_puts_an_id_number_in_docum
     )
     assert ids.status_code == 400
     assert made.items()["睡眠: 十点睡"]["section"] == "身体"
+
+
+def test_an_item_the_night_ended_is_listed_apart_and_restore_brings_it_back_pinned(
+    world: World,
+) -> None:
+    """ADR 0389: a stale item stays in the store, shown under its section as ended, not loaded."""
+    tastes = next(s for s in world.overview()["sections"] if s["name"] == "兴趣和品味")
+    ended = tastes["ended"]
+    assert [(e["text"], e["state"], e["ended_on"]) for e in ended] == [
+        ("饮食: 每天喝咖啡", "stale", day_ago(2).isoformat()),
+    ]
+    assert "饮食: 每天喝咖啡" not in world.items()
+
+    world.post("/item/restore", {"id": ended[0]["id"]})
+
+    back = world.items()["饮食: 每天喝咖啡"]
+    assert (back["section"], back["pinned"]) == ("兴趣和品味", True)
+    assert world.rows()[-1][1] == "user"
+    assert world.post("/item/restore", {"id": ended[0]["id"]}, status=400)
+    assert world.post("/item/restore", {"id": "nope"}, status=404)

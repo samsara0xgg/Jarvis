@@ -5,7 +5,9 @@ local day after the current version's ``upto_day`` that has a day summary, up to
 yesterday, oldest first and one at a time. Each day is one call on a dedicated client
 pinned to ``core_memory.preset``; L3 builds the input and gates the answer, L2 appends
 the version. A day that fails both attempts stops the chain (later days build on it) and
-is picked up again on the next run.
+is picked up again on the next run. The monthly rebuild that follows lives in
+:mod:`jarvis.runtime.core_memory_rebuild`; the once-a-day check-in on a quiet thread is
+:func:`checkin_line` (ADR 0389).
 """
 
 from __future__ import annotations
@@ -14,6 +16,7 @@ import logging
 from collections.abc import Mapping
 from contextlib import closing
 from dataclasses import dataclass, field
+from datetime import date
 from typing import TYPE_CHECKING, Any, Final
 
 from jarvis.decision.core_memory import build_core_memory_messages, check_core_memory, day_labels
@@ -24,6 +27,7 @@ from jarvis.state.event_log import open_runtime_event_log
 from jarvis.state.memory_db import (
     MemorySettings,
     append_nightly_core_memory,
+    checkin_once,
     core_memory_pending_days,
     current_core_memory,
     day_records,
@@ -32,7 +36,8 @@ from jarvis.state.memory_db import (
 )
 
 if TYPE_CHECKING:
-    from datetime import date
+    from collections.abc import Callable
+    from datetime import datetime, tzinfo
     from pathlib import Path
 
     from jarvis.decision.llm import LLMClient
@@ -45,6 +50,34 @@ _DEFAULT_MAX_CHARS: Final[int] = 40000
 _DEFAULT_MAX_STALE: Final[int] = 5
 DEFAULT_REVIEW_MODEL: Final[str] = "typesafe/jev-1.13"
 _DEFAULT_REVIEW_TIMEOUT_MS: Final[int] = 10_000
+QUIET_DAYS: Final[int] = 21  # ADR 0389: an open thread this long without evidence is asked about
+CHECKIN_LINE_PREFIX: Final[str] = "[Thread]"
+CHECKIN_LINE: Final[str] = (
+    CHECKIN_LINE_PREFIX + " A thread of his life has had nothing new for {days} days (since "
+    "{since}). First look in his data (mail, calendar, his things) for where it stands. Only if "
+    "nothing answers, and the moment suits, ask him once, in passing, whether it is still going. "
+    "This note is not shown again. The thread: “{text}”"
+)
+CHECKIN_LINE_CHARS: Final[int] = 800  # the note and an item of up to 400 characters, whole
+
+
+@dataclass(frozen=True)
+class RebuildSettings:
+    """``core_memory.rebuild``: the monthly rebuild's preset and prompt (ADR 0389)."""
+
+    preset: str
+    prompt: str
+
+    @classmethod
+    def from_config(cls, raw: object) -> RebuildSettings | None:
+        """The settings, or None (no monthly rebuild) when the block, preset or prompt is absent."""
+        if not isinstance(raw, Mapping):
+            return None
+        preset, prompt = raw.get("preset"), raw.get("prompt")
+        if not (isinstance(preset, str) and preset and isinstance(prompt, str) and prompt.strip()):
+            LOGGER.warning("core_memory.rebuild needs preset and prompt; no monthly rebuild runs")
+            return None
+        return cls(preset=preset, prompt=prompt.strip())
 
 
 def section_caps(raw: object) -> dict[str, int]:
@@ -71,6 +104,7 @@ class CoreMemorySettings:
     review_drop: bool = False  # False: Jev's verdicts are only logged, every change lands
     review_model: str = DEFAULT_REVIEW_MODEL
     review_timeout_ms: int = _DEFAULT_REVIEW_TIMEOUT_MS
+    rebuild: RebuildSettings | None = None  # None = no monthly rebuild
 
     @classmethod
     def from_config(cls, raw: object) -> CoreMemorySettings | None:
@@ -107,6 +141,7 @@ class CoreMemorySettings:
                 if isinstance(timeout, int) and not isinstance(timeout, bool) and timeout > 0
                 else _DEFAULT_REVIEW_TIMEOUT_MS
             ),
+            rebuild=RebuildSettings.from_config(raw.get("rebuild")),
         )
 
 
@@ -157,6 +192,7 @@ def consolidate_day(  # noqa: PLR0913 — the day, the store, the knobs, the cli
         max_chars=settings.max_chars,
         section_caps=settings.section_caps,
         day=day,
+        since=base.upto_day,
     )
     if changes is None or notes is None:
         LOGGER.warning("core_memory: %s rejected (%s); nothing stored", day, reason)
@@ -236,4 +272,28 @@ def run_core_memory(  # noqa: PLR0913 — the store, the knobs, the client and t
     return outcomes
 
 
-__all__ = ["CoreMemorySettings", "consolidate_day", "run_core_memory", "section_caps"]
+def checkin_line(memory_db: Path, zone: tzinfo, clock: Callable[[], datetime]) -> str | None:
+    """ADR 0389: at most once a day, the open thread with no evidence for :data:`QUIET_DAYS`.
+
+    A live-context line for her to raise when it fits, after looking in his data first; the
+    store records it as shown, so the same thread comes again only after new evidence.
+    """
+    today = clock().astimezone(zone).date()
+    item = checkin_once(memory_db, today, QUIET_DAYS)
+    if item is None:
+        return None
+    since = str(core_memory.evidence_day(item) or "")
+    days = (today - date.fromisoformat(since)).days if since else QUIET_DAYS
+    return CHECKIN_LINE.format(days=days, since=since or "?", text=item["text"])
+
+
+__all__ = [
+    "CHECKIN_LINE_CHARS",
+    "CHECKIN_LINE_PREFIX",
+    "CoreMemorySettings",
+    "RebuildSettings",
+    "checkin_line",
+    "consolidate_day",
+    "run_core_memory",
+    "section_caps",
+]

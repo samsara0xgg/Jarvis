@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any, Final
 
 from jarvis.execution.tools import Tool, ToolError
 from jarvis.shared import CallerPrincipal
-from jarvis.state.core_memory import SECTIONS
+from jarvis.state.core_memory import SECTIONS, live
 from jarvis.state.memory_db import current_core_memory, keep_fact
 
 if TYPE_CHECKING:
@@ -181,7 +181,7 @@ class _Keeper:
             return []
         today = now.astimezone(self._zone).date()
         items = [
-            item for section in current_core_memory(self._memory_db).doc.values()
+            item for section in live(current_core_memory(self._memory_db).doc).values()
             for item in section
         ]
         # Newest day first; within a day the item written last.

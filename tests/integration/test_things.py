@@ -1572,10 +1572,10 @@ def test_the_night_cannot_add_to_a_section_that_is_not_one(section: str) -> None
 
 
 def test_a_date_in_a_goal_is_not_swept_stale_by_code() -> None:
-    """The date sweep belonged to 承诺和待办; nothing marks an item stale without the model."""
+    """A date that was history when the goal was worded (截至) does not close it (ADR 0389)."""
     doc = core_memory.empty_doc()
     doc["生活里的几件事"] = [
-        {"text": "写论文,截至 2026-10-01", "topic": None, "sources": [], "since": "x"},
+        {"text": "写论文,截至 2026-10-01", "topic": None, "sources": [], "since": "2026-10-01"},
     ]
     changes, notes, why = check_core_memory(
         '{"changes": []}', "stop", doc=doc, labels={}, max_stale=5, max_chars=40_000,

@@ -96,6 +96,8 @@ _MATCHERS: Final[dict[str, frozenset[str]]] = {
     ),
     # A letter is read for a sign of a date or an hour in Chinese or English (ADR 0274).
     "jarvis/decision/commitment_mail.py": frozenset({"_SIGNS"}),
+    # A thread's dates (ADR 0389) are read as he and the note write them: 2026年10月3日, 10月3号.
+    "jarvis/decision/core_memory.py": frozenset({"_DATE"}),
     "jarvis/runtime/daily_report.py": frozenset({"_PAST_DAY", "_YESTERDAY"}),
     # A deep-search brief written in Chinese opens its list of pages with a 来源 line.
     "jarvis/runtime/deep_search.py": frozenset({"_SOURCES_LINE"}),

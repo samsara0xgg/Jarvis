@@ -60,12 +60,11 @@ class ReviewFailed(Exception):  # noqa: N818 - reads as the fact: the review fai
 
 def _section_of(doc: core_memory.Doc, number: int) -> str:
     """The section of item ``number`` in ``numbered(doc)`` order."""
-    for section in core_memory.SECTIONS:
-        if number <= len(doc[section]):
-            return section
-        number -= len(doc[section])
-    msg = "item number out of range"  # check_core_memory has gated it
-    raise ValueError(msg)
+    items = core_memory.numbered_items(doc)
+    if not 1 <= number <= len(items):
+        msg = "item number out of range"  # check_core_memory has gated it
+        raise ValueError(msg)
+    return items[number - 1][0]
 
 
 def review_state(
@@ -148,7 +147,16 @@ def review_changes(  # noqa: PLR0913 - the day, its gated changes, what the mode
     lines = {record[0]: f"{record[1]} | {record[2]} | {record[3]}" for record in records}
     reviewed = [change for change in changes if change["op"] in _REVIEWED]
     asked = [
-        (change, review_state(change, doc=doc, lines=[lines[rid] for rid in change["sources"]]))
+        (
+            change,
+            review_state(
+                change,
+                doc=doc,
+                # A change may cite records of earlier days (ADR 0389): Jev sees the day's only.
+                lines=[lines[rid] for rid in change["sources"] if rid in lines]
+                or ["(records of earlier days)"],
+            ),
+        )
         for change in reviewed
     ]
     verdicts = dict(zip(map(id, reviewed), _verdicts(asked, route, day), strict=True))
