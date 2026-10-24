@@ -196,9 +196,10 @@ final class Session: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
             let filter = SCContentFilter(display: display, excludingWindows: [])
             let mode = CGDisplayCopyDisplayMode(display.displayID)
             let fullW = mode?.pixelWidth ?? display.width * 2, fullH = mode?.pixelHeight ?? display.height * 2
-            // ponytail: his iPad Pro 11" is 2420 px wide and shows the screen fit to its width; pixels past that only cost encode time
-            // (3024×1964 encoded at ~74 fps). Send the iPad's size in the hello if another iPad drives this Mac.
-            let w = min(fullW, 2420) / 2 * 2, h = fullH * w / fullW / 2 * 2
+            // 1920 wide, not his iPad's 2420: the hardware HEVC encoder does a 2420-wide frame in ~9 ms (a ~90 fps ceiling), a 1920 one
+            // in ~5 ms, which keeps up with capture for a true 120 fps. On an 11" screen the downscale barely shows. Send the iPad's size
+            // in the hello to make this adaptive if another iPad drives this Mac.
+            let w = min(fullW, 1920) / 2 * 2, h = fullH * w / fullW / 2 * 2
 
             let cfg = SCStreamConfiguration()
             cfg.width = w; cfg.height = h
