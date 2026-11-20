@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- Asleep while her tab is out of sight (her-icon.js). The rest of the ball is favicon.svg. -->
+  <defs>
+    <radialGradient id="halo"><stop offset=".78" stop-color="#7a6af0" stop-opacity=".7"/><stop offset="1" stop-color="#7a6af0" stop-opacity="0"/></radialGradient>
+    <radialGradient id="purple" cx="32" cy="41" r="22" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#5b3aae"/><stop offset="1" stop-color="#5b3aae" stop-opacity="0"/></radialGradient>
+    <radialGradient id="teal" cx="44" cy="22" r="13" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#1d5680" stop-opacity=".9"/><stop offset="1" stop-color="#1d5680" stop-opacity="0"/></radialGradient>
+    <linearGradient id="rim" x1="14" y1="8" x2="50" y2="58" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#cfc9ff"/><stop offset=".5" stop-color="#5e56a8"/><stop offset="1" stop-color="#8fd0f2"/></linearGradient>
+    <filter id="glow" filterUnits="userSpaceOnUse" x="0" y="0" width="64" height="64"><feGaussianBlur stdDeviation="1.7"/></filter>
+  </defs>
+  <circle cx="32" cy="32" r="32" fill="url(#halo)"/>
+  <circle cx="32" cy="32" r="26.5" fill="#110f28"/>
+  <circle cx="32" cy="32" r="26.5" fill="url(#purple)"/>
+  <circle cx="32" cy="32" r="26.5" fill="url(#teal)"/>
+  <path d="M13.6 22.5A21 21 0 0 1 27.5 10.2" fill="none" stroke="#fff" stroke-opacity=".38" stroke-width="2" stroke-linecap="round"/>
+  <g fill="#fff"><circle cx="45" cy="16.5" r=".55" opacity=".8"/><circle cx="20" cy="44" r=".5" opacity=".6"/><circle cx="41.5" cy="48" r=".6" opacity=".7"/><circle cx="25" cy="17" r=".45" opacity=".6"/></g>
+  <circle cx="32" cy="32" r="26.5" fill="none" stroke="url(#rim)" stroke-width="1.6"/>
+  <path d="M19.65 34.34Q24.40 38.62 29.15 34.34" fill="none" stroke="#c9c3ff" stroke-width="4.80" stroke-linecap="round" filter="url(#glow)"/>
+  <path d="M19.65 34.34Q24.40 38.62 29.15 34.34" fill="none" stroke="#fff" stroke-width="3.60" stroke-linecap="round"/>
+  <path d="M34.85 34.34Q39.60 38.62 44.35 34.34" fill="none" stroke="#c9c3ff" stroke-width="4.80" stroke-linecap="round" filter="url(#glow)"/>
+  <path d="M34.85 34.34Q39.60 38.62 44.35 34.34" fill="none" stroke="#fff" stroke-width="3.60" stroke-linecap="round"/>
+</svg>
